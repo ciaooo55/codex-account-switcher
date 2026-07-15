@@ -20,6 +20,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
   let server: Server
   let baseUrl: string
   let accessToken: string
+  let idToken: string
   const requests: string[] = []
 
   test.beforeAll(async () => {
@@ -41,14 +42,19 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       'https://api.openai.com/auth': { chatgpt_account_id: 'workspace-e2e' },
       'https://api.openai.com/profile': { email: 'e2e@example.com' }
     })
-    const idToken = jwt({
+    idToken = jwt({
       sub: 'user-e2e',
       exp: 1_910_000_000,
       email: 'e2e@example.com'
     })
     await writeFile(
       join(accountDirectory, 'account.json'),
-      JSON.stringify({ access_token: accessToken, id_token: idToken, account_id: 'workspace-e2e' }),
+      JSON.stringify({
+        access_token: accessToken,
+        id_token: idToken,
+        refresh_token: 'refresh-e2e',
+        account_id: 'workspace-e2e'
+      }),
       'utf8'
     )
     await writeFile(
@@ -172,7 +178,30 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('检测中')).toBeVisible()
     await expect(page.getByText('77%')).toBeVisible()
     await expect(page.getByText('Codex 周额度')).toBeVisible()
-    await expect(page.getByRole('row', { name: /e2e@example\.com/ })).toHaveClass(/status-row-valid/)
+    const accountRow = page.getByRole('row', { name: /e2e@example\.com/ })
+    await expect(accountRow).toHaveClass(/status-row-valid/)
+    await accountRow.hover()
+    const cellGeometry = await accountRow.locator('td').evaluateAll((cells) =>
+      cells.map((cell) => {
+        const bounds = cell.getBoundingClientRect()
+        return { top: bounds.top, height: bounds.height, background: getComputedStyle(cell).backgroundColor }
+      })
+    )
+    expect(new Set(cellGeometry.map((cell) => cell.top)).size).toBe(1)
+    expect(new Set(cellGeometry.map((cell) => cell.height)).size).toBe(1)
+    expect(new Set(cellGeometry.map((cell) => cell.background)).size).toBe(1)
+
+    await accountRow.click({ button: 'right', position: { x: 1_200, y: 20 } })
+    const contextMenu = page.getByRole('menu', { name: '账号管理' })
+    await expect(contextMenu).toBeVisible()
+    const menuBounds = await contextMenu.boundingBox()
+    const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }))
+    expect(menuBounds).not.toBeNull()
+    expect(menuBounds!.x).toBeGreaterThanOrEqual(8)
+    expect(menuBounds!.y).toBeGreaterThanOrEqual(8)
+    expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(viewport.width - 8)
+    expect(menuBounds!.y + menuBounds!.height).toBeLessThanOrEqual(viewport.height - 8)
+    await page.keyboard.press('Escape')
     expect(requests.slice(0, 2)).toEqual(['/usage', '/compact'])
 
     await page.getByLabel('选择 e2e@example.com').check()
@@ -201,11 +230,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '切换账号' }).click()
     await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
-      auth_mode: 'chatgptAuthTokens',
+      auth_mode: 'chatgpt',
       tokens: {
-        id_token: accessToken,
+        id_token: idToken,
         access_token: accessToken,
-        refresh_token: '',
+        refresh_token: 'refresh-e2e',
         account_id: 'workspace-e2e'
       }
     })

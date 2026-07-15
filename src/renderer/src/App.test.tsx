@@ -16,6 +16,7 @@ const snapshot: AppSnapshot = {
       sourceFormat: 'json',
       sourceDialect: 'cpa',
       canRefresh: true,
+      switchable: true,
       accessExpiresAt: '2026-10-14T12:00:00Z',
       lastRefresh: '2026-07-14T12:00:00Z',
       status: 'valid',
@@ -47,6 +48,7 @@ const snapshot: AppSnapshot = {
       sourceFormat: 'json',
       sourceDialect: 'sub2api',
       canRefresh: false,
+      switchable: false,
       accessExpiresAt: null,
       lastRefresh: null,
       status: 'untested',
@@ -273,16 +275,27 @@ describe('App', () => {
       restartResult: { ok: true, message: 'Codex 已重启' }
     })
     render(<App />)
-    const row = await screen.findByRole('row', { name: /second@example\.com/ })
+    const row = await screen.findByRole('row', { name: /person@example\.com/ })
 
     fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
     fireEvent.click(screen.getByRole('menuitem', { name: '切换并重启' }))
 
     await waitFor(() =>
-      expect(window.codexSwitcher.switchAccount).toHaveBeenCalledWith('account-b', true)
+      expect(window.codexSwitcher.switchAccount).toHaveBeenCalledWith('account-a', true)
     )
     expect(await screen.findByText('账号切换完成；Codex 已重启')).toBeInTheDocument()
     confirm.mockRestore()
+  })
+
+  it('keeps access-only accounts testable but disables official Codex switching', async () => {
+    render(<App />)
+    const row = await screen.findByRole('row', { name: /second@example\.com/ })
+
+    expect(row).toHaveTextContent('仅用于检测')
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
+    expect(screen.getByRole('menuitem', { name: '检测此账号' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: '切换到此账号' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: '切换并重启' })).toBeDisabled()
   })
 
   it('reports a restart failure without claiming the completed account switch was rolled back', async () => {

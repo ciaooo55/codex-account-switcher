@@ -93,6 +93,7 @@ export interface AccountSummary {
   sourceFormat: CredentialSourceFormat
   sourceDialect: CredentialDialect
   canRefresh: boolean
+  switchable: boolean
   accessExpiresAt: string | null
   lastRefresh: string | null
   status: AccountStatus

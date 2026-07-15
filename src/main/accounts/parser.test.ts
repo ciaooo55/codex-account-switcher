@@ -189,6 +189,58 @@ describe('parseCredentialText', () => {
     })
   })
 
+  it('supports current Sub2API token aliases and nested account identity fields', () => {
+    const accessToken = jwt({
+      sub: 'nested-user-claim',
+      'https://api.openai.com/auth': { chatgpt_plan_type: 'team' }
+    })
+    const result = parseCredentialText(
+      JSON.stringify({
+        accounts: [
+          {
+            name: 'Nested OpenAI',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              token: accessToken,
+              chatgptAccountId: 'nested-workspace',
+              user: { id: 'nested-user', email: 'nested@example.com' },
+              account: { chatgptPlanType: 'team' }
+            }
+          }
+        ]
+      }),
+      { sourcePath: 'sub2api-current.json', format: 'json' }
+    )
+
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      accessToken,
+      email: 'nested@example.com',
+      accountId: 'nested-workspace',
+      subject: 'nested-user-claim',
+      planType: 'team',
+      sourceDialect: 'sub2api'
+    })
+  })
+
+  it('rejects non-OpenAI Sub2API accounts even when their type is oauth', () => {
+    const result = parseCredentialText(
+      JSON.stringify({
+        accounts: [
+          {
+            platform: 'anthropic',
+            type: 'oauth',
+            credentials: { access_token: jwt({ sub: 'anthropic-user' }) }
+          }
+        ]
+      }),
+      { sourcePath: 'mixed-platforms.json', format: 'json' }
+    )
+
+    expect(result.credentials).toEqual([])
+  })
+
   it('does not mistake a Sub2API display name for an email address', () => {
     const result = parseCredentialText(
       JSON.stringify({
@@ -266,6 +318,37 @@ describe('parseCredentialText', () => {
       email: 'three@example.com',
       accountId: 'workspace-three'
     })
+  })
+
+  it('parses bare access tokens from text, paste and JSON arrays', () => {
+    const first = jwt({ sub: 'bare-one' })
+    const second = jwt({ sub: 'bare-two' })
+    const text = parseCredentialText(`${first}\nBearer ${second}`, {
+      sourcePath: 'tokens.txt',
+      format: 'txt'
+    })
+    const pasted = parseCredentialText(`账号如下：\n${first}`, {
+      sourcePath: 'pasted-credential.json',
+      format: 'paste'
+    })
+    const array = parseCredentialText(JSON.stringify([first, second]), {
+      sourcePath: 'tokens.json',
+      format: 'json'
+    })
+
+    expect(text.credentials).toHaveLength(2)
+    expect(text.credentials.every((item) => item.sourceDialect === 'sub2api')).toBe(true)
+    expect(pasted.credentials).toHaveLength(1)
+    expect(array.credentials).toHaveLength(2)
+  })
+
+  it('extracts an email from a Markdown filename', () => {
+    const result = parseCredentialText(
+      `\`\`\`json\n${JSON.stringify({ access_token: jwt({ sub: 'md-name' }) })}\n\`\`\``,
+      { sourcePath: 'person@example.com.md', format: 'md' }
+    )
+
+    expect(result.credentials[0].email).toBe('person@example.com')
   })
 
   it('returns a parse error instead of accepting executable or malformed input', () => {

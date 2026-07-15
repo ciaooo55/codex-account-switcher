@@ -88,26 +88,26 @@ interface AuthDocument {
 }
 
 function authDocument(credential: NormalizedCredential): AuthDocument {
-  const managed = Boolean(credential.idToken && credential.refreshToken)
-  if (!managed && !credential.accountId) {
-    throw new Error('CPA/Team access token 缺少 account_id，无法切换到官方 Codex')
+  if (!credential.idToken || !credential.refreshToken) {
+    throw new Error(
+      '该账号只有 access token，可用于 CPA/Sub2API 检测，但官方 Codex auth.json 登录必须同时包含 id_token 和 refresh_token'
+    )
   }
 
   const document = {
-    auth_mode: managed ? 'chatgpt' : 'chatgptAuthTokens',
+    auth_mode: 'chatgpt',
     OPENAI_API_KEY: null,
     tokens: {
-      // Codex derives identity claims from the access JWT for externally managed tokens.
-      id_token: managed ? credential.idToken : credential.accessToken,
+      id_token: credential.idToken,
       access_token: credential.accessToken,
-      refresh_token: managed ? credential.refreshToken : '',
+      refresh_token: credential.refreshToken,
       account_id: credential.accountId
     },
     last_refresh: credential.lastRefresh ?? new Date().toISOString()
   }
   return {
     text: `${JSON.stringify(document, null, 2)}\n`,
-    externallyManaged: !managed
+    externallyManaged: false
   }
 }
 
@@ -127,12 +127,7 @@ function validAuthDocument(value: unknown): boolean {
   if (typeof tokens.id_token !== 'string' || !tokens.id_token.trim()) return false
   if (typeof tokens.access_token !== 'string' || !tokens.access_token.trim()) return false
   if (typeof tokens.refresh_token !== 'string') return false
-  if (auth.auth_mode === 'chatgpt') return Boolean(tokens.refresh_token.trim())
-  return (
-    auth.auth_mode === 'chatgptAuthTokens' &&
-    typeof tokens.account_id === 'string' &&
-    Boolean(tokens.account_id.trim())
-  )
+  return auth.auth_mode === 'chatgpt' && Boolean(tokens.refresh_token.trim())
 }
 
 export class CredentialSwitcher {
@@ -172,9 +167,7 @@ export class CredentialSwitcher {
       await this.pruneBackups()
       return {
         ok: true,
-        message: auth.externallyManaged
-          ? '账号切换完成（CPA/Team 临时登录，token 到期后需重新导入）'
-          : '账号切换完成',
+        message: '账号切换完成',
         backupPath
       }
     } catch (error) {

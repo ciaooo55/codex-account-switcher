@@ -20,7 +20,7 @@ interface CredentialCandidate {
   dialect: CredentialDialect
 }
 
-const ACCESS_TOKEN_KEYS = ['access_token', 'accessToken', 'OPENAI_ACCESS_TOKEN'] as const
+const ACCESS_TOKEN_KEYS = ['access_token', 'accessToken', 'OPENAI_ACCESS_TOKEN', 'token'] as const
 const REFRESH_TOKEN_KEYS = ['refresh_token', 'refreshToken'] as const
 const ID_TOKEN_KEYS = ['id_token', 'idToken'] as const
 const MAX_PARSE_DEPTH = 64
@@ -106,7 +106,7 @@ function timestampFrom(...values: unknown[]): string | null {
 
 function filenameEmail(sourcePath: string): string | null {
   const filename = sourcePath.split(/[\\/]/).pop() ?? sourcePath
-  const stem = filename.replace(/\.(?:jsonl?|txt|[cm]?js)$/i, '')
+  const stem = filename.replace(/\.(?:jsonl?|txt|md|[cm]?js)$/i, '')
   return stem.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null
 }
 
@@ -119,7 +119,8 @@ function defaultOrganizationId(auth: Record<string, unknown> | null): string | n
       return firstString(item.id, item.organization_id, item.organizationId)
     }
   }
-  return null
+  const first = asRecord(organizations[0])
+  return first ? firstString(first.id, first.organization_id, first.organizationId) : null
 }
 
 function credentialId(
@@ -160,40 +161,75 @@ function normalizeCredential(
     'https://api.openai.com/profile',
     'profile'
   )
+  const account = asRecord(record.account)
+  const user = asRecord(record.user)
 
   const email = firstString(
     idPayload?.email,
     accessProfile?.email,
     record.email,
+    account?.email,
+    user?.email,
     emailFromName(record.name),
     filenameEmail(options.sourcePath)
   )
   const accountId = firstString(
     record.account_id,
+    record.accountId,
     record.chatgpt_account_id,
+    record.chatgptAccountId,
     record.organization_id,
     record.organizationId,
+    account?.id,
+    account?.account_id,
+    account?.accountId,
+    account?.chatgpt_account_id,
+    account?.chatgptAccountId,
     accessAuth?.chatgpt_account_id,
+    accessAuth?.chatgptAccountId,
     accessAuth?.poid,
     idAuth?.chatgpt_account_id,
+    idAuth?.chatgptAccountId,
+    idAuth?.poid,
     defaultOrganizationId(idAuth),
+    defaultOrganizationId(accessAuth),
     tokens?.account_id,
-    tokens?.chatgpt_account_id
+    tokens?.accountId,
+    tokens?.chatgpt_account_id,
+    tokens?.chatgptAccountId
   )
   const subject = firstString(
     idPayload?.sub,
     accessPayload?.sub,
     record.chatgpt_user_id,
+    record.chatgptUserId,
+    record.user_id,
+    record.userId,
+    user?.id,
+    user?.user_id,
+    user?.userId,
+    account?.user_id,
+    account?.userId,
     record.subject,
     record.sub
   )
   const planType = firstString(
     record.plan_type,
     record.planType,
+    record.chatgpt_plan_type,
+    record.chatgptPlanType,
+    account?.plan_type,
+    account?.planType,
+    account?.chatgpt_plan_type,
+    account?.chatgptPlanType,
     accessAuth?.plan_type,
     accessAuth?.planType,
+    accessAuth?.chatgpt_plan_type,
+    accessAuth?.chatgptPlanType,
     idAuth?.plan_type,
-    idAuth?.planType
+    idAuth?.planType,
+    idAuth?.chatgpt_plan_type,
+    idAuth?.chatgptPlanType
   )
   const lastRefresh = firstString(
     record.last_refresh,
@@ -254,9 +290,8 @@ function sub2ApiCandidate(record: Record<string, unknown>): CredentialCandidate 
   if (!credentials || !looksLikeCredential(credentials)) return null
   const platform = firstString(record.platform)?.toLowerCase()
   const accountType = firstString(record.type)?.toLowerCase()
-  if (platform !== 'openai' && !['oauth', 'setup_token', 'api_key', 'upstream'].includes(accountType ?? '')) {
-    return null
-  }
+  if (platform && platform !== 'openai') return null
+  if (accountType && !['oauth', 'setup_token', 'api_key', 'upstream'].includes(accountType)) return null
   const extra = asRecord(record.extra)
   return {
     dialect: 'sub2api',
@@ -279,6 +314,16 @@ function sub2ApiCandidate(record: Record<string, unknown>): CredentialCandidate 
   }
 }
 
+function isUnsupportedSub2ApiAccount(record: Record<string, unknown>): boolean {
+  if (!asRecord(record.credentials)) return false
+  const platform = firstString(record.platform)?.toLowerCase()
+  const accountType = firstString(record.type)?.toLowerCase()
+  return Boolean(
+    (platform && platform !== 'openai') ||
+      (accountType && !['oauth', 'setup_token', 'api_key', 'upstream'].includes(accountType))
+  )
+}
+
 function recordDialect(record: Record<string, unknown>): CredentialDialect {
   if (asRecord(record.tokens)) return 'codex'
   if (firstString(record.type)?.toLowerCase() === 'codex') return 'cpa'
@@ -288,11 +333,16 @@ function recordDialect(record: Record<string, unknown>): CredentialDialect {
 
 function credentialRecords(value: unknown, depth = 0): CredentialCandidate[] {
   if (depth > MAX_PARSE_DEPTH) throw new RangeError('Credential data exceeds maximum depth')
+  if (typeof value === 'string') {
+    const token = value.trim().replace(/^Bearer\s+/i, '')
+    return decodeJwtPayload(token) ? [{ record: { access_token: token }, dialect: 'sub2api' }] : []
+  }
   if (Array.isArray(value)) {
     return value.flatMap((item) => credentialRecords(item, depth + 1))
   }
   const record = asRecord(value)
   if (!record) return []
+  if (isUnsupportedSub2ApiAccount(record)) return []
   const sub2api = sub2ApiCandidate(record)
   if (sub2api) return [sub2api]
   if (looksLikeCredential(record)) return [{ record, dialect: recordDialect(record) }]
@@ -406,7 +456,14 @@ function pastedValues(text: string): unknown[] {
   if (values.length > 0) return values
   const fragments = jsonFragments(text)
   if (fragments.length > 0) return fragments
-  return tryJsonLines(text) ?? tryKeyValueBlocks(text) ?? tryStaticJavaScript(text) ?? []
+  return tryJsonLines(text) ?? tryKeyValueBlocks(text) ?? tryStaticJavaScript(text) ?? bareTokenValues(text)
+}
+
+function bareTokenValues(text: string): string[] {
+  return text
+    .split(/[\r\n,]+/)
+    .map((line) => line.trim().replace(/^Bearer\s+/i, ''))
+    .filter((value) => decodeJwtPayload(value) !== null)
 }
 
 function parseKeyValueValue(raw: string): StaticScalar {
@@ -654,7 +711,7 @@ function extractedValues(text: string, options: CredentialParseOptions): unknown
   const jsonLines = tryJsonLines(text)
   if (jsonLines !== undefined) return jsonLines
 
-  if (options.format === 'txt') return tryKeyValueBlocks(text) ?? []
+  if (options.format === 'txt') return tryKeyValueBlocks(text) ?? bareTokenValues(text)
   return []
 }
 

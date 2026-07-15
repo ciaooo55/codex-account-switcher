@@ -75,7 +75,7 @@ describe('CredentialSwitcher', () => {
     expect(backupRaw).not.toContain('api-secret')
   })
 
-  it('writes CPA access-only credentials in the Codex external token shape', async () => {
+  it('rejects CPA access-only credentials that official auth.json cannot deserialize', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
 
@@ -88,17 +88,10 @@ describe('CredentialSwitcher', () => {
       })
     )
 
-    expect(result).toMatchObject({ ok: true })
-    expect(result.message).toContain('CPA/Team 临时登录')
-    expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toMatchObject({
-      auth_mode: 'chatgptAuthTokens',
-      tokens: {
-        id_token: 'access-a',
-        access_token: 'access-a',
-        refresh_token: '',
-        account_id: 'workspace-a'
-      }
-    })
+    expect(result).toMatchObject({ ok: false })
+    expect(result.message).toContain('官方 Codex auth.json')
+    expect(JSON.parse(await readFile(paths.authPath, 'utf8')).auth_mode).toBe('apikey')
+    expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
   })
 
   it('rejects access-only credentials without an account id and restores prior config', async () => {
@@ -115,7 +108,7 @@ describe('CredentialSwitcher', () => {
     )
 
     expect(result).toMatchObject({ ok: false })
-    expect(result.message).toContain('缺少 account_id')
+    expect(result.message).toContain('官方 Codex auth.json')
     expect(JSON.parse(await readFile(paths.authPath, 'utf8')).auth_mode).toBe('apikey')
     expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
   })

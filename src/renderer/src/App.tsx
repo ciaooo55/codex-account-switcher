@@ -21,7 +21,7 @@ import {
   Wrench,
   X
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AppSnapshot, UpdateState } from '../../shared/ipc'
 import type {
   AccountStatus,
@@ -174,6 +174,16 @@ export function App(): React.JSX.Element {
     }
   }, [contextMenu])
 
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return
+    const margin = 8
+    const bounds = contextMenuRef.current.getBoundingClientRect()
+    const x = Math.max(margin, Math.min(contextMenu.x, window.innerWidth - bounds.width - margin))
+    const y = Math.max(margin, Math.min(contextMenu.y, window.innerHeight - bounds.height - margin))
+    if (x === contextMenu.x && y === contextMenu.y) return
+    setContextMenu((current) => current ? { ...current, x, y } : null)
+  }, [contextMenu])
+
   const accounts = useMemo(() => {
     if (!snapshot) return []
     const query = keyword.trim().toLowerCase()
@@ -323,8 +333,8 @@ export function App(): React.JSX.Element {
     setSelected(new Set([account.id]))
     setContextMenu({
       account,
-      x: Math.min(event.clientX, Math.max(8, window.innerWidth - 238)),
-      y: Math.min(event.clientY, Math.max(8, window.innerHeight - 310))
+      x: event.clientX,
+      y: event.clientY
     })
   }
 
@@ -377,6 +387,9 @@ export function App(): React.JSX.Element {
     result[status] = snapshot.accounts.filter((item) => item.status === status).length
     return result
   }, {})
+  const selectedAccount = selected.size === 1
+    ? snapshot.accounts.find((account) => selected.has(account.id)) ?? null
+    : null
 
   return (
     <div className="app-shell">
@@ -430,10 +443,10 @@ export function App(): React.JSX.Element {
           </button>
         )}
         <span className="toolbar-divider" />
-        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || selected.size !== 1}>
+        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少 id_token 或 refresh_token，只能检测' : undefined}>
           <CheckCircle2 size={16} />切换账号
         </button>
-        <button onClick={() => void switchSelected(true)} disabled={busy || selected.size !== 1}>
+        <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少 id_token 或 refresh_token，只能检测' : undefined}>
           <RotateCcw size={16} />切换并重启
         </button>
         <button onClick={() => void run(async () => {
@@ -494,12 +507,13 @@ export function App(): React.JSX.Element {
               <tr
                 key={account.id}
                 className={`account-row status-row-${account.status}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}`}
+                aria-busy={running}
                 onContextMenu={(event) => openContextMenu(event, account)}
               >
                 <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onChange={() => toggle(account.id)} /></td>
                 <td>
                   <div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div>
-                  <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {account.canRefresh ? '可刷新' : '仅 access token'}</div>
+                  <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {account.switchable ? '可切换并刷新' : '仅用于检测'}</div>
                 </td>
                 <td>
                   {running ? (
@@ -602,10 +616,10 @@ export function App(): React.JSX.Element {
           <button role="menuitem" onClick={() => contextAction(() => run(() => window.codexSwitcher.testAccounts([contextMenu.account.id]), '账号检测完成'))}>
             <TestTube2 size={15} />检测此账号
           </button>
-          <button role="menuitem" onClick={() => contextAction(() => switchAccount(contextMenu.account.id, false))}>
+          <button role="menuitem" disabled={!contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少 id_token 或 refresh_token' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, false))}>
             <CheckCircle2 size={15} />切换到此账号
           </button>
-          <button role="menuitem" onClick={() => contextAction(() => switchAccount(contextMenu.account.id, true))}>
+          <button role="menuitem" disabled={!contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少 id_token 或 refresh_token' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, true))}>
             <RotateCcw size={15} />切换并重启
           </button>
           <button role="menuitem" onClick={() => contextAction(() => openExport([contextMenu.account.id]))}>

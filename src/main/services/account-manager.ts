@@ -221,6 +221,7 @@ export class AccountManager {
           sourceFormat: credential.sourceFormat,
           sourceDialect: credential.sourceDialect,
           canRefresh: credential.canRefresh,
+          switchable: Boolean(credential.idToken && credential.refreshToken),
           accessExpiresAt: credential.accessExpiresAt,
           lastRefresh: credential.lastRefresh,
           status: status?.status ?? 'untested',
