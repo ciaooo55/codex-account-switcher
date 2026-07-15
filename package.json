@@ -61,10 +61,14 @@
       ]
     },
     "nsis": {
+      "artifactName": "Codex-Account-Switcher-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Codex-Account-Switcher-Portable-${version}.${ext}"
     }
   }
 }
