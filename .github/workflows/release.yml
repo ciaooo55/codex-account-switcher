@@ -47,6 +47,7 @@ jobs:
         run: npm run package:win
 
       - name: Smoke test single instance and installer replacement
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $exe = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/win-unpacked/Codex Account Switcher.exe").Path
@@ -68,6 +69,10 @@ jobs:
               throw "Expected one primary application window after two launches, found $($windows.Count)."
             }
 
+            $managedLibrary = Join-Path $testInstall "aa"
+            New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
+            $sentinel = Join-Path $managedLibrary "update-preservation-test.json"
+            Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
             $installer = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
             if ($installer.ExitCode -ne 0) {
               throw "Silent installer exited with code $($installer.ExitCode)."
@@ -76,13 +81,7 @@ jobs:
             if ((Get-PackagedSwitcherProcess).Count -ne 0) {
               throw "Installer did not close the running packaged application."
             }
-
-            $managedLibrary = Join-Path $testInstall "aa"
-            New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
-            $sentinel = Join-Path $managedLibrary "update-preservation-test.json"
-            Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
-            $reinstall = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
-            if ($reinstall.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $sentinel)) {
+            if (-not (Test-Path -LiteralPath $sentinel)) {
               throw "Installer update did not preserve the managed aa library."
             }
           } finally {
