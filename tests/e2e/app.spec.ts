@@ -287,5 +287,26 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       path: join(process.cwd(), 'test-results', 'settings-ui-bottom.png'),
       fullPage: true
     })
+
+    await settingsPanel.getByRole('button', { name: '取消' }).click()
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      if (!window) throw new Error('主窗口不存在')
+      Reflect.apply(window.emit, window, ['minimize'])
+    })
+    await expect
+      .poll(() => electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length))
+      .toBe(0)
+    expect(await electronApp.evaluate(({ app }) => app.isReady())).toBe(true)
+
+    const reopenedWindow = electronApp.waitForEvent('window')
+    await electronApp.evaluate(({ app }) => {
+      Reflect.apply(app.emit, app, ['second-instance', {}, [], process.cwd(), {}])
+    })
+    const reopenedPage = await reopenedWindow
+    await expect(reopenedPage.getByText('e2e@example.com').first()).toBeVisible()
+    expect(
+      await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
+    ).toBe(1)
   })
 })

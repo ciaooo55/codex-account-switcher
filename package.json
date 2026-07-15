@@ -1,6 +1,6 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Windows desktop account switcher for Codex file-based credentials",
   "repository": {
@@ -52,6 +52,12 @@
     "files": [
       "out/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
     ],
     "directories": {
       "output": "release"

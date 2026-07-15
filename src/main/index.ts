@@ -7,13 +7,16 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
+  nativeImage,
   safeStorage,
-  shell
+  shell,
+  Tray
 } from 'electron'
 import electronUpdater from 'electron-updater'
 import { z } from 'zod'
 import { ipcChannels, type TestProgress, type UpdateState } from '../shared/ipc'
-import type { AppSettings, SecretCipher } from '../shared/types'
+import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { AutoSwitchScheduler } from './services/auto-switch'
 import { CodexProcessManager } from './services/codex-process'
@@ -33,6 +36,10 @@ if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
   app.setPath('userData', resolve(process.env.CODEX_SWITCHER_USER_DATA))
 }
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let applicationInitialized = false
+let isQuitting = false
+let trayBackgroundHintShown = false
 let switchOperationActive = false
 let accountLibraryOperationActive = false
 let autoSwitchOperationActive = false
@@ -80,7 +87,9 @@ function createWindow(): BrowserWindow {
       sandbox: true
     }
   })
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) window.show()
+  })
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
@@ -93,8 +102,39 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-function focusMainWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+function showTrayMessage(title: string, content: string): void {
+  if (!tray || tray.isDestroyed() || isQuitting) return
+  tray.displayBalloon({
+    title,
+    content: content.length > 240 ? `${content.slice(0, 237)}...` : content,
+    iconType: 'info',
+    noSound: true
+  })
+}
+
+function attachWindowLifecycle(window: BrowserWindow): void {
+  window.on('minimize', () => {
+    if (isQuitting) return
+    setImmediate(() => {
+      if (!isQuitting && !window.isDestroyed()) window.destroy()
+    })
+  })
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
+    if (!isQuitting && !trayBackgroundHintShown) {
+      trayBackgroundHintShown = true
+      showTrayMessage('已转入后台', '主界面已释放，托盘和定时自动切换仍在运行')
+    }
+  })
+}
+
+function showMainWindow(): void {
+  if (!applicationInitialized) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow()
+    attachWindowLifecycle(mainWindow)
+    return
+  }
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
@@ -223,6 +263,8 @@ async function main(): Promise<void> {
     mainWindow?.webContents.send(ipcChannels.updateState, updateState)
   }
 
+  let rebuildTrayMenu: () => Promise<void> = async () => undefined
+  let previousAutoSwitchState: AutoSwitchState | null = null
   const autoSwitchScheduler = new AutoSwitchScheduler({
     getSettings: () => settingsStore.get(),
     execute: async () => {
@@ -250,7 +292,17 @@ async function main(): Promise<void> {
         sendProgress({ ...progress, active: false, runningIds: [], updatedAccount: null })
       }
     },
-    onState: (state) => mainWindow?.webContents.send(ipcChannels.autoSwitchState, state)
+    onState: (state) => {
+      mainWindow?.webContents.send(ipcChannels.autoSwitchState, state)
+      if (previousAutoSwitchState?.running && !state.running && !isQuitting) {
+        showTrayMessage(
+          state.lastSwitchedAccountId ? '自动切换完成' : '后台检查完成',
+          state.lastMessage
+        )
+      }
+      previousAutoSwitchState = state
+      void rebuildTrayMenu()
+    }
   })
 
   autoUpdater.autoDownload = false
@@ -627,13 +679,98 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.autoSwitchRun, () => autoSwitchScheduler.runNow(true))
 
-  mainWindow = createWindow()
-  mainWindow.on('closed', () => {
-    mainWindow = null
-  })
+  const trayIconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(currentDirectory, '../../build/icon.png')
+  const trayIcon = nativeImage.createFromPath(trayIconPath)
+  if (trayIcon.isEmpty()) throw new Error(`无法加载托盘图标：${trayIconPath}`)
+  tray = new Tray(trayIcon.resize({ width: 16, height: 16 }))
+  tray.setToolTip('Codex Account Switcher')
+  tray.on('click', showMainWindow)
+
+  const formatNextCheck = (value: string | null): string => {
+    if (!value) return '下次检查：未计划'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '下次检查：时间未知'
+    return `下次检查：${date.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })}`
+  }
+
+  rebuildTrayMenu = async () => {
+    if (!tray || tray.isDestroyed()) return
+    const settings = await settingsStore.get()
+    const state = autoSwitchScheduler.getState()
+    tray.setToolTip(
+      state.running
+        ? 'Codex Account Switcher - 正在检查账号'
+        : settings.autoSwitchEnabled
+          ? 'Codex Account Switcher - 定时切换已启用'
+          : 'Codex Account Switcher - 定时切换未启用'
+    )
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: '打开主界面', click: showMainWindow },
+        {
+          label: state.running ? '正在检查账号...' : '立即检查当前账号',
+          enabled: !state.running,
+          click: () => {
+            void autoSwitchScheduler.runNow(true).catch((error) => {
+              showTrayMessage('账号检查失败', error instanceof Error ? error.message : String(error))
+            })
+          }
+        },
+        { type: 'separator' },
+        {
+          label: '定时自动切换',
+          type: 'checkbox',
+          checked: settings.autoSwitchEnabled,
+          enabled: !state.running,
+          click: (menuItem) => {
+            void (async () => {
+              const current = await settingsStore.get()
+              if (menuItem.checked && current.autoSwitchAccountIds.length === 0) {
+                showTrayMessage('无法启用自动切换', '请先在设置中选择至少一个候选账号')
+                await rebuildTrayMenu()
+                return
+              }
+              await settingsStore.update({ autoSwitchEnabled: menuItem.checked })
+              await autoSwitchScheduler.settingsChanged()
+            })().catch((error) => {
+              showTrayMessage('设置更新失败', error instanceof Error ? error.message : String(error))
+              void rebuildTrayMenu()
+            })
+          }
+        },
+        {
+          label: state.running ? '状态：检查中' : formatNextCheck(state.nextCheckAt),
+          enabled: false
+        },
+        { type: 'separator' },
+        {
+          label: '退出',
+          click: () => {
+            isQuitting = true
+            app.quit()
+          }
+        }
+      ])
+    )
+  }
+
+  applicationInitialized = true
+  showMainWindow()
   await initialScan
   await autoSwitchScheduler.start()
-  app.once('before-quit', () => autoSwitchScheduler.stop())
+  await rebuildTrayMenu()
+  app.once('before-quit', () => {
+    isQuitting = true
+    autoSwitchScheduler.stop()
+    tray?.destroy()
+    tray = null
+  })
   if (app.isPackaged && !e2eMode) {
     setTimeout(() => void checkForUpdates().catch(() => undefined), 4_000)
   }
@@ -644,7 +781,7 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', focusMainWindow)
+  app.on('second-instance', showMainWindow)
 
   app.whenReady().then(main).catch((error) => {
     dialog.showErrorBox(
@@ -654,10 +791,9 @@ if (!hasSingleInstanceLock) {
     app.quit()
   })
 
-  app.on('window-all-closed', () => app.quit())
-
-  app.on('activate', () => {
-    if (!mainWindow) mainWindow = createWindow()
-    else focusMainWindow()
+  app.on('window-all-closed', () => {
+    // Keep the tray and main-process scheduler alive after the renderer is released.
   })
+
+  app.on('activate', showMainWindow)
 }
