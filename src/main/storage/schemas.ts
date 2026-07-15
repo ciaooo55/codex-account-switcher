@@ -33,7 +33,21 @@ const usageWindowSchema = z.object({
 const usageSummarySchema = z.object({
   planType: nullableString,
   windows: z.array(usageWindowSchema),
-  checkedAt: z.string()
+  checkedAt: z.string(),
+  credits: z.object({
+    hasCredits: z.boolean(),
+    unlimited: z.boolean(),
+    balance: nullableString
+  }).nullable().optional().default(null),
+  spendLimit: z.object({
+    limit: nullableString,
+    used: nullableString,
+    remaining: nullableString,
+    remainingPercent: z.number().nullable(),
+    resetAt: nullableString
+  }).nullable().optional().default(null),
+  resetCreditsAvailable: z.number().int().nonnegative().nullable().optional().default(null),
+  rateLimitReachedType: nullableString.optional().default(null)
 })
 
 export const testResultSchema = z.object({

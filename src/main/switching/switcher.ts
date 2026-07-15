@@ -282,7 +282,8 @@ export class CredentialSwitcher {
           OPENAI_API_KEY?: unknown
         }
         if (typeof auth.auth_mode === 'string') {
-          return auth.auth_mode.toLowerCase() !== 'chatgpt'
+          const mode = auth.auth_mode.toLowerCase()
+          return mode !== 'chatgpt' && mode !== 'chatgptauthtokens'
         }
         if (typeof auth.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY.trim()) return true
       } catch {

@@ -17,7 +17,7 @@ describe('SettingsStore', () => {
     const store = new SettingsStore(join(dir, 'settings.json'), 'C:\\Users\\lee')
 
     await expect(store.get()).resolves.toMatchObject({
-      accountDirectory: 'C:\\Users\\lee',
+      accountDirectory: 'E:\\home\\lee\\.cli-proxy-api',
       authPath: 'C:\\Users\\lee\\.codex\\auth.json',
       configPath: 'C:\\Users\\lee\\.codex\\config.toml',
       concurrency: 4,

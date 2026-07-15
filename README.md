@@ -21,7 +21,7 @@ Windows 本地 Codex 账号切换器。应用扫描账号文件、检测真实 C
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 关闭窗口或点击最小化会释放主界面并转入系统托盘，只保留主进程定时任务；托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出。
 - 按 Codex++ 行为同步历史 rollout、SQLite 可见性与工作区路径，写入前预览、加锁、备份并支持失败回滚；允许 Codex 运行时修复，锁定文件会跳过并提示，完成后自动复检。
-- 凭据使用 Electron `safeStorage` / Windows DPAPI 加密保存，renderer 与日志不接收 token。
+- 内部凭据库与切换备份使用 Electron `safeStorage` / Windows DPAPI 加密，renderer 与日志不接收 token。按你的本地管理要求，安装目录 `aa` 中的一账号一文件是可移植的明文凭据 JSON，请像保护原始账号文件一样限制该目录访问。
 - 打包版可直接检查 GitHub Release、下载最新安装包并退出覆盖安装。
 - 应用启用 Windows 单实例锁；重复启动会聚焦已有窗口。安装或更新时会检测安装版和便携版进程，提示关闭后再覆盖文件。
 
@@ -46,12 +46,12 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.5.1.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.5.1.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.5.2.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.5.2.exe`：便携版
 
 ## 默认路径
 
-- 导入文件默认目录：上次选择的目录，新安装默认当前用户主目录
+- 导入文件默认目录：上次选择的目录；新安装默认 `E:\home\<当前用户名>\.cli-proxy-api`
 - 应用托管凭证库：安装版为安装目录下的 `aa`，便携版为 EXE 同目录下的 `aa`
 - Codex 凭据：自动查找 `CODEX_HOME` 或当前用户 `.codex\auth.json`
 - Codex 配置：与自动发现的凭据位于同一个 `.codex\config.toml`

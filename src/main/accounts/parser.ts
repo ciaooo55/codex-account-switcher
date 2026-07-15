@@ -702,16 +702,18 @@ function tryStaticJavaScript(text: string): StaticValue[] | undefined {
 }
 
 function extractedValues(text: string, options: CredentialParseOptions): unknown[] {
-  if (options.format === 'paste' || options.format === 'md') return pastedValues(text)
-  const json = tryJson(text)
+  const normalizedText = text.replace(/^\uFEFF/, '')
+  if (options.format === 'paste' || options.format === 'md' || options.format === 'txt') {
+    return pastedValues(normalizedText)
+  }
+  const json = tryJson(normalizedText)
   if (json !== undefined) return [json]
 
-  if (options.format === 'js') return tryStaticJavaScript(text) ?? []
+  if (options.format === 'js') return tryStaticJavaScript(normalizedText) ?? []
 
-  const jsonLines = tryJsonLines(text)
+  const jsonLines = tryJsonLines(normalizedText)
   if (jsonLines !== undefined) return jsonLines
 
-  if (options.format === 'txt') return tryKeyValueBlocks(text) ?? bareTokenValues(text)
   return []
 }
 
@@ -780,14 +782,73 @@ function preferredCredential(
   return candidate
 }
 
+function mergedCredential(
+  current: NormalizedCredential,
+  candidate: NormalizedCredential
+): NormalizedCredential {
+  const preferred = preferredCredential(current, candidate)
+  const fallback = preferred === current ? candidate : current
+  const merged = {
+    ...preferred,
+    email: preferred.email ?? fallback.email,
+    accountId: preferred.accountId ?? fallback.accountId,
+    subject: preferred.subject ?? fallback.subject,
+    refreshToken: preferred.refreshToken ?? fallback.refreshToken,
+    idToken: preferred.idToken ?? fallback.idToken,
+    planType: preferred.planType ?? fallback.planType,
+    idExpiresAt: preferred.idExpiresAt ?? fallback.idExpiresAt
+  }
+  return {
+    ...merged,
+    id: credentialId(merged.subject, merged.email, merged.accountId, merged.accessToken),
+    canRefresh: merged.refreshToken !== null
+  }
+}
+
+function identityKey(credential: NormalizedCredential): string | null {
+  if (credential.subject) return `subject:${credential.subject}`
+  if (credential.email) return `email:${credential.email.toLowerCase()}`
+  return null
+}
+
 export function dedupeCredentials(
   credentials: readonly NormalizedCredential[]
 ): NormalizedCredential[] {
-  const unique = new Map<string, NormalizedCredential>()
+  const exact = new Map<string, NormalizedCredential>()
   for (const credential of credentials) {
     const key = dedupeKey(credential)
-    const current = unique.get(key)
-    unique.set(key, current ? preferredCredential(current, credential) : credential)
+    const current = exact.get(key)
+    exact.set(key, current ? mergedCredential(current, credential) : credential)
   }
-  return [...unique.values()]
+
+  const groups = new Map<string, NormalizedCredential[]>()
+  const ungrouped: NormalizedCredential[] = []
+  for (const credential of exact.values()) {
+    const key = identityKey(credential)
+    if (!key) {
+      ungrouped.push(credential)
+      continue
+    }
+    const group = groups.get(key) ?? []
+    group.push(credential)
+    groups.set(key, group)
+  }
+
+  const result = [...ungrouped]
+  for (const group of groups.values()) {
+    const knownWorkspaces = new Set(
+      group.map((credential) => credential.accountId).filter((value): value is string => Boolean(value))
+    )
+    if (knownWorkspaces.size !== 1) {
+      result.push(...group)
+      continue
+    }
+
+    const workspace = [...knownWorkspaces][0]
+    const known = group.find((credential) => credential.accountId === workspace)!
+    const unknown = group.filter((credential) => !credential.accountId)
+    result.push(unknown.reduce(mergedCredential, known))
+    result.push(...group.filter((credential) => credential.accountId && credential.accountId !== workspace))
+  }
+  return result
 }

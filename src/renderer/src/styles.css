@@ -88,6 +88,8 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .quota-list { display: grid; gap: 7px; }.quota-item { min-width: 0; }.quota-label { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; }.quota-label span { color: #aab4be; }.quota-label strong { color: #dfe7ee; }
 .quota-track { height: 5px; margin-top: 4px; background: #272c2f; overflow: hidden; border-radius: 3px; }.quota-fill { height: 100%; background: #45b96d; transition: width .2s ease; }.quota-fill.warn { background: #d5a138; }.quota-fill.danger { background: #ea6761; }
 .quota-reset { display: block; margin-top: 3px; color: #74808c; font-size: 9px; }
+.quota-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 5px; border-top: 1px solid #2b3135; color: #87939d; font-size: 10px; }
+.quota-meta strong { color: #d9e1e6; font-weight: 650; }
 .testing-inline { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; color: #9fddff; font-size: 11px; }
 .source-path { color: #aeb8c2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .empty-state { height: 160px; text-align: center; vertical-align: middle; color: #74808c; }

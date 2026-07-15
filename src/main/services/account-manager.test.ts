@@ -488,7 +488,10 @@ describe('AccountManager', () => {
     )
   })
 
-  it('auto-switches from an exhausted active account to a valid selected credential', async () => {
+  it.each([
+    { status: 'quota_exhausted_5h' as const, detail: '5 小时额度已耗尽' },
+    { status: 'workspace_deactivated' as const, detail: 'Team/K12 工作区已停用' }
+  ])('auto-switches from an unusable active account with status $status', async ({ status, detail }) => {
     const fixture = await setup()
     const activeDocument = {
       auth_mode: 'chatgpt',
@@ -515,7 +518,7 @@ describe('AccountManager', () => {
     const switchTo = vi.fn().mockResolvedValue({ ok: true, message: 'switched', backupPath: 'backup' })
     const tester = vi.fn(async (credential: NormalizedCredential) =>
       credential.email === 'active@example.com'
-        ? { ...successfulResult(credential.id), status: 'quota_exhausted_5h' as const, detail: '5 小时额度已耗尽' }
+        ? { ...successfulResult(credential.id), status, detail }
         : successfulResult(credential.id)
     )
     const manager = new AccountManager({
@@ -591,6 +594,60 @@ describe('AccountManager', () => {
     ])
     expect(result.accounts.every((item) => item.sourcePath.startsWith(managedImportDirectory))).toBe(true)
     expect(await readFile(externalPath, 'utf8')).toContain('external@example.com')
+  })
+
+  it('treats a clean aa scan as authoritative when a managed file is removed', async () => {
+    const fixture = await setup()
+    const externalPath = join(fixture.root, 'authoritative.json')
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    await writeFile(externalPath, JSON.stringify({
+      access_token: jwt({ sub: 'authoritative-user' }),
+      email: 'authoritative@example.com'
+    }))
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const imported = await manager.importFiles([externalPath], { archiveSources: true })
+    const account = imported.accounts[0]
+    await fixture.statusStore.set(successfulResult(account.id))
+    await unlink(account.sourcePath)
+
+    const scanned = await manager.scanDirectory()
+
+    expect(scanned.accounts).toEqual([])
+    expect(await fixture.vault.list()).toEqual([])
+    expect(await fixture.statusStore.getAll()).toEqual({})
+    expect(await readFile(externalPath, 'utf8')).toContain('authoritative@example.com')
+  })
+
+  it('does not drop vault accounts when a managed aa file is temporarily malformed', async () => {
+    const fixture = await setup()
+    const externalPath = join(fixture.root, 'malformed-managed.json')
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    await writeFile(externalPath, JSON.stringify({
+      access_token: jwt({ sub: 'malformed-managed-user' }),
+      email: 'malformed-managed@example.com'
+    }))
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const imported = await manager.importFiles([externalPath], { archiveSources: true })
+    await truncate(imported.accounts[0].sourcePath, 2)
+
+    const scanned = await manager.scanDirectory()
+
+    expect(scanned.errors).toHaveLength(1)
+    expect(scanned.accounts.map((account) => account.email)).toEqual(['malformed-managed@example.com'])
   })
 
   it('splits multi-account imports and removes exactly the deleted account file', async () => {

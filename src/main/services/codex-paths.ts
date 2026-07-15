@@ -8,6 +8,11 @@ interface CodexPathDiscoveryOptions {
   environment?: NodeJS.ProcessEnv
 }
 
+export interface DiscoveredCodexPaths {
+  authPath: string
+  configPath: string
+}
+
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory()
@@ -24,50 +29,62 @@ async function isFile(path: string): Promise<boolean> {
   }
 }
 
-function uniquePaths(paths: Array<string | null | undefined>): string[] {
-  const unique = new Map<string, string>()
-  for (const path of paths) {
-    if (!path?.trim()) continue
-    const normalized = resolve(path.trim())
-    unique.set(normalized.toLowerCase(), normalized)
+function standardPaths(directory: string): DiscoveredCodexPaths {
+  return {
+    authPath: join(directory, 'auth.json'),
+    configPath: join(directory, 'config.toml')
   }
-  return [...unique.values()]
+}
+
+export async function discoverCodexPaths(
+  options: CodexPathDiscoveryOptions
+): Promise<DiscoveredCodexPaths | null> {
+  const environment = options.environment ?? process.env
+  if (environment.CODEX_HOME?.trim()) {
+    return standardPaths(resolve(environment.CODEX_HOME.trim()))
+  }
+
+  const configured = {
+    authPath: resolve(options.configuredAuthPath),
+    configPath: resolve(options.configuredConfigPath)
+  }
+  const configuredAuthDirectory = dirname(configured.authPath)
+  const configuredConfigDirectory = dirname(configured.configPath)
+  const configuredAuthExists = await isFile(configured.authPath)
+  const configuredConfigExists = await isFile(configured.configPath)
+  const configuredDirectoriesExist =
+    await isDirectory(configuredAuthDirectory) &&
+    await isDirectory(configuredConfigDirectory)
+  if (configuredAuthExists || configuredConfigExists || configuredDirectoriesExist) {
+    return configured
+  }
+
+  const fallbackDirectories = [
+    join(options.homeDirectory, '.codex'),
+    environment.USERPROFILE ? join(environment.USERPROFILE, '.codex') : null,
+    environment.HOME ? join(environment.HOME, '.codex') : null
+  ]
+  const seen = new Set<string>()
+  for (const value of fallbackDirectories) {
+    if (!value) continue
+    const directory = resolve(value)
+    if (seen.has(directory.toLowerCase())) continue
+    seen.add(directory.toLowerCase())
+    if (await isDirectory(directory)) return standardPaths(directory)
+  }
+  return null
 }
 
 export async function discoverCodexDirectory(
   options: CodexPathDiscoveryOptions
 ): Promise<string | null> {
-  const environment = options.environment ?? process.env
-  const configuredAuthDirectory = dirname(options.configuredAuthPath)
-  const configuredConfigDirectory = dirname(options.configuredConfigPath)
-  const candidates = uniquePaths([
-    environment.CODEX_HOME,
-    configuredAuthDirectory,
-    configuredConfigDirectory,
-    join(options.homeDirectory, '.codex'),
-    environment.USERPROFILE ? join(environment.USERPROFILE, '.codex') : null,
-    environment.HOME ? join(environment.HOME, '.codex') : null
-  ])
-
-  const scored: Array<{ directory: string; score: number; order: number }> = []
-  for (const [order, directory] of candidates.entries()) {
-    if (!(await isDirectory(directory))) continue
-    const namedCodex = basename(directory).toLowerCase() === '.codex'
-    const hasAuth = await isFile(join(directory, 'auth.json'))
-    const hasConfig = await isFile(join(directory, 'config.toml'))
-    const explicitEnvironment = Boolean(
-      environment.CODEX_HOME &&
-      resolve(directory).toLowerCase() === resolve(environment.CODEX_HOME).toLowerCase()
-    )
-    if (!namedCodex && !hasAuth && !hasConfig && !explicitEnvironment) continue
-    let score = namedCodex ? 20 : 0
-    if (hasAuth) score += 100
-    if (hasConfig) score += 50
-    if (explicitEnvironment) score += 200
-    scored.push({ directory, score, order })
-  }
-  scored.sort((left, right) => right.score - left.score || left.order - right.order)
-  return scored[0]?.directory ?? null
+  const paths = await discoverCodexPaths(options)
+  if (!paths) return null
+  const authDirectory = dirname(paths.authPath)
+  const configDirectory = dirname(paths.configPath)
+  return authDirectory.toLowerCase() === configDirectory.toLowerCase()
+    ? authDirectory
+    : null
 }
 
 export async function normalizeSelectedCodexDirectory(selectedDirectory: string): Promise<string> {

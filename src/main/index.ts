@@ -19,7 +19,7 @@ import { ipcChannels, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { AutoSwitchScheduler } from './services/auto-switch'
-import { discoverCodexDirectory, normalizeSelectedCodexDirectory } from './services/codex-paths'
+import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { CodexProcessManager } from './services/codex-process'
 import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
@@ -147,32 +147,37 @@ async function main(): Promise<void> {
   const cipher = createCipher()
   const settingsStore = new SettingsStore(join(userData, 'settings.json'), homeDirectory)
   const initialSettings = await settingsStore.get()
-  let codexDirectory = await discoverCodexDirectory({
+  let codexPaths = await discoverCodexPaths({
     homeDirectory,
     configuredAuthPath: initialSettings.authPath,
     configuredConfigPath: initialSettings.configPath
   })
-  if (!codexDirectory) {
+  if (!codexPaths) {
     const selected = await dialog.showOpenDialog({
       title: '未找到 Codex 配置目录，请选择或创建 .codex 文件夹',
       defaultPath: homeDirectory,
       buttonLabel: '使用此目录',
       properties: ['openDirectory', 'createDirectory']
     })
-    codexDirectory = selected.canceled
+    const codexDirectory = selected.canceled
       ? join(homeDirectory, '.codex')
       : await normalizeSelectedCodexDirectory(selected.filePaths[0])
+    codexPaths = {
+      authPath: join(codexDirectory, 'auth.json'),
+      configPath: join(codexDirectory, 'config.toml')
+    }
   }
-  await mkdir(codexDirectory, { recursive: true })
-  const discoveredAuthPath = join(codexDirectory, 'auth.json')
-  const discoveredConfigPath = join(codexDirectory, 'config.toml')
+  await Promise.all([
+    mkdir(dirname(codexPaths.authPath), { recursive: true }),
+    mkdir(dirname(codexPaths.configPath), { recursive: true })
+  ])
   if (
-    resolve(initialSettings.authPath) !== resolve(discoveredAuthPath) ||
-    resolve(initialSettings.configPath) !== resolve(discoveredConfigPath)
+    resolve(initialSettings.authPath) !== resolve(codexPaths.authPath) ||
+    resolve(initialSettings.configPath) !== resolve(codexPaths.configPath)
   ) {
     await settingsStore.update({
-      authPath: discoveredAuthPath,
-      configPath: discoveredConfigPath
+      authPath: codexPaths.authPath,
+      configPath: codexPaths.configPath
     })
   }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
@@ -186,11 +191,13 @@ async function main(): Promise<void> {
   const importDirectory = join(applicationDirectory, 'aa')
   const legacyImportDirectories = [...new Set(e2eMode
     ? [join(userData, 'imports'), join(userData, 'aa')]
-    : [
+    : app.isPackaged
+      ? [
         join(userData, 'imports'),
         join(userData, 'aa'),
         join(app.getPath('appData'), 'Codex Account Switcher', 'aa')
-      ])]
+      ]
+      : [])]
   const processManager = new CodexProcessManager()
   let testApiBase: string | null = null
   if (e2eMode && process.env.CODEX_SWITCHER_TEST_API_BASE_URL) {
@@ -261,6 +268,24 @@ async function main(): Promise<void> {
   })
   const exporter = new CredentialExportService({ vault })
 
+  const pruneAutoSwitchPool = async (): Promise<boolean> => {
+    const settings = await settingsStore.get()
+    const available = new Set(
+      (await manager.listAccounts())
+        .filter((account) => account.switchable)
+        .map((account) => account.id)
+    )
+    const autoSwitchAccountIds = settings.autoSwitchAccountIds.filter((id) => available.has(id))
+    const poolChanged = autoSwitchAccountIds.length !== settings.autoSwitchAccountIds.length
+    const disableEmptyPool = settings.autoSwitchEnabled && autoSwitchAccountIds.length === 0
+    if (!poolChanged && !disableEmptyPool) return false
+    await settingsStore.update({
+      autoSwitchAccountIds,
+      ...(disableEmptyPool ? { autoSwitchEnabled: false } : {})
+    })
+    return true
+  }
+
   const assertAccountLibraryIdle = (): void => {
     if (testController) throw new Error('账号检测进行中，暂时不能修改账号库')
     if (switchOperationActive) throw new Error('账号切换或恢复进行中，暂时不能修改账号库')
@@ -272,15 +297,25 @@ async function main(): Promise<void> {
     assertAccountLibraryIdle()
     accountLibraryOperationActive = true
     try {
-      return await operation()
+      const result = await operation()
+      await pruneAutoSwitchPool()
+      return result
     } finally {
       accountLibraryOperationActive = false
     }
   }
 
   const initialScan = runAccountLibraryMutation(async () => {
-    for (const directory of legacyImportDirectories) {
-      await manager.migrateManagedDirectory(directory)
+    let managedLibraryExists = false
+    try {
+      managedLibraryExists = (await stat(importDirectory)).isDirectory()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (!managedLibraryExists) {
+      for (const directory of legacyImportDirectories) {
+        await manager.migrateManagedDirectory(directory)
+      }
     }
     return manager.scanDirectory()
   })
@@ -470,17 +505,9 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.deleteAccounts, async (_event, input: unknown) => {
     const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
-    return runAccountLibraryMutation(async () => {
-      const result = await manager.deleteAccounts(ids)
-      const settings = await settingsStore.get()
-      const deleted = new Set(ids)
-      const nextPool = settings.autoSwitchAccountIds.filter((id) => !deleted.has(id))
-      if (nextPool.length !== settings.autoSwitchAccountIds.length) {
-        await settingsStore.update({ autoSwitchAccountIds: nextPool })
-        await autoSwitchScheduler.settingsChanged()
-      }
-      return result
-    })
+    const result = await runAccountLibraryMutation(() => manager.deleteAccounts(ids))
+    await autoSwitchScheduler.settingsChanged()
+    return result
   })
   ipcMain.handle(ipcChannels.exportAccounts, async (_event, input: unknown) => {
     const payload = z
@@ -631,7 +658,7 @@ async function main(): Promise<void> {
     if (testController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
       throw new Error('账号任务正在运行，暂时不能修改设置')
     }
-    const patch = z
+    let patch = z
       .object({
         accountDirectory: z.string().max(32_767).optional(),
         authPath: z.string().max(32_767).optional(),
@@ -646,6 +673,20 @@ async function main(): Promise<void> {
         autoSwitchRestartCodex: z.boolean().optional()
       })
       .parse(input) satisfies Partial<AppSettings>
+    if (patch.autoSwitchAccountIds || patch.autoSwitchEnabled === true) {
+      const current = await settingsStore.get()
+      const switchableIds = new Set(
+        (await manager.listAccounts())
+          .filter((account) => account.switchable)
+          .map((account) => account.id)
+      )
+      const requestedIds = patch.autoSwitchAccountIds ?? current.autoSwitchAccountIds
+      const autoSwitchAccountIds = requestedIds.filter((id) => switchableIds.has(id))
+      if ((patch.autoSwitchEnabled ?? current.autoSwitchEnabled) && autoSwitchAccountIds.length === 0) {
+        throw new Error('启用自动切换前至少选择一个仍在 aa 中且可切换的账号')
+      }
+      patch = { ...patch, autoSwitchAccountIds }
+    }
     const updated = await settingsStore.update(patch)
     await autoSwitchScheduler.settingsChanged()
     return updated

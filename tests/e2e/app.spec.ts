@@ -59,6 +59,24 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       'utf8'
     )
     await writeFile(
+      join(userData, 'aa', 'team-account.json'),
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({
+          sub: 'user-team-e2e',
+          exp: 1_910_000_000,
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: 'workspace-team-e2e',
+            chatgpt_plan_type: 'k12'
+          },
+          'https://api.openai.com/profile': { email: 'team-e2e@example.com' }
+        }),
+        account_id: 'workspace-team-e2e',
+        plan_type: 'k12'
+      }),
+      'utf8'
+    )
+    await writeFile(
       join(importSourceDirectory, 'folder-accounts.md'),
       `# Imported account\n\n\`\`\`json\n${JSON.stringify({
         type: 'codex',
@@ -124,7 +142,13 @@ test.describe('Codex Account Switcher Electron workflow', () => {
                 limit_window_seconds: 604_800,
                 reset_after_seconds: 86_400
               }
-            }
+            },
+            credits: { has_credits: true, unlimited: false, balance: '9.99' },
+            spend_control: {
+              reached: false,
+              individual_limit: { remaining_percent: 68, reset_after_seconds: 86_400 }
+            },
+            rate_limit_reset_credits: { available_count: 3 }
           })
         )
         return
@@ -180,11 +204,14 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(await readdir(join(userData, 'aa'))).not.toContain('folder-e2e@example.com_unknown.json')
 
     await page.getByRole('button', { name: '测试全部' }).click()
-    await expect(page.getByText('检测中')).toBeVisible()
-    await expect(page.getByText('77%')).toBeVisible()
-    await expect(page.getByText('Codex 周额度')).toBeVisible()
-    const accountRow = page.getByRole('row', { name: /e2e@example\.com/ })
+    await expect(page.getByText('检测中').first()).toBeVisible()
+    await expect(page.getByText('77%').first()).toBeVisible()
+    await expect(page.getByText('Codex 周额度').first()).toBeVisible()
+    const accountRow = page.getByRole('row', { name: /选择 e2e@example\.com/ })
     await expect(accountRow).toHaveClass(/status-row-valid/)
+    await expect(accountRow).toContainText('额外余额9.99')
+    await expect(accountRow).toContainText('支出限额68%')
+    await expect(accountRow).toContainText('重置券3')
     await accountRow.hover()
     const cellGeometry = await accountRow.locator('td').evaluateAll((cells) =>
       cells.map((cell) => {
@@ -207,7 +234,25 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(viewport.width - 8)
     expect(menuBounds!.y + menuBounds!.height).toBeLessThanOrEqual(viewport.height - 8)
     await page.keyboard.press('Escape')
-    expect(requests.slice(0, 2)).toEqual(['/usage', '/compact'])
+    expect(requests.slice(0, 4).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
+
+    const teamRow = page.getByRole('row', { name: /选择 team-e2e@example\.com/ })
+    await expect(teamRow).toContainText('外部凭据，需重启')
+    await teamRow.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: '切换到此账号' }).click()
+    await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
+    expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
+      auth_mode: 'chatgptAuthTokens',
+      tokens: {
+        refresh_token: '',
+        account_id: 'workspace-team-e2e'
+      }
+    })
+
+    await accountRow.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: '切换到此账号' }).click()
+    await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
+    expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe('chatgpt')
 
     await page.getByLabel('选择 e2e@example.com').check()
     await page.getByRole('button', { name: '导出账号' }).click()
@@ -294,6 +339,23 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       path: join(process.cwd(), 'test-results', 'automation-ui.png'),
       fullPage: true
     })
+    await page.getByLabel('自动切换候选 team-e2e@example.com').check()
+    await page.getByLabel('启用定时自动切换').check({ force: true })
+    await page.getByRole('button', { name: '保存设置' }).click()
+    await expect(page.getByText('自动切换设置已保存')).toBeVisible()
+
+    const teamManagedFile = (await readdir(join(userData, 'aa'))).find((name) =>
+      name.startsWith('team-e2e@example.com_')
+    )
+    expect(teamManagedFile).toBeTruthy()
+    await unlink(join(userData, 'aa', teamManagedFile!))
+    await page.getByRole('button', { name: '账号库' }).click()
+    await page.getByRole('button', { name: '重新扫描' }).click()
+    await expect(page.getByText('team-e2e@example.com')).toHaveCount(0)
+    await page.getByRole('button', { name: '定时切换' }).click()
+    await expect(page.getByLabel('启用定时自动切换')).not.toBeChecked()
+    await expect(page.getByText('候选 0 / 1')).toBeVisible()
+
     await electronApp.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]
       if (!window) throw new Error('主窗口不存在')

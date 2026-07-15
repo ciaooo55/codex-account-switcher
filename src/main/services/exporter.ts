@@ -65,7 +65,18 @@ export function serializeCpaCredential(
     access_token: credential.accessToken,
     ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
     ...(credential.idToken ? { id_token: credential.idToken } : {}),
-    ...(credential.accountId ? { account_id: credential.accountId } : {}),
+    ...(credential.accountId
+      ? {
+          account_id: credential.accountId,
+          chatgpt_account_id: credential.accountId
+        }
+      : {}),
+    ...(credential.planType
+      ? {
+          plan_type: credential.planType,
+          chatgpt_plan_type: credential.planType
+        }
+      : {}),
     ...(credential.lastRefresh ? { last_refresh: credential.lastRefresh } : {}),
     ...(credential.accessExpiresAt ? { expired: credential.accessExpiresAt } : {})
   }
@@ -102,7 +113,12 @@ function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
       ...(credential.accountId ? { chatgpt_account_id: credential.accountId } : {}),
       ...(credential.subject ? { chatgpt_user_id: credential.subject } : {}),
       ...(credential.email ? { email: credential.email } : {}),
-      ...(credential.planType ? { plan_type: credential.planType } : {}),
+      ...(credential.planType
+        ? {
+            plan_type: credential.planType,
+            chatgpt_plan_type: credential.planType
+          }
+        : {}),
       ...(expiry !== null ? { expires_at: expiry } : {})
     },
     extra: {

@@ -45,6 +45,7 @@ interface AccountManagerOptions {
 interface ImportFilesOptions {
   archiveSources?: boolean
   restoreDeleted?: boolean
+  authoritative?: boolean
 }
 
 interface ManagerTestProgress {
@@ -113,7 +114,8 @@ export class AccountManager {
     const paths = await collectSupportedFiles(directory)
     const result = await this.importFiles(paths, {
       archiveSources: false,
-      restoreDeleted: false
+      restoreDeleted: false,
+      authoritative: Boolean(this.managedLibrary)
     })
     return { ...result, accounts: await this.listAccounts() }
   }
@@ -158,9 +160,15 @@ export class AccountManager {
     const existingIds = new Set(existing.map((credential) => credential.id))
     const imported = deduped.filter((credential) => !existingIds.has(credential.id)).length
     skipped += deduped.length - imported
-    const merged = dedupeCredentials([...existing, ...deduped])
+    const authoritative = options.authoritative === true && errors.length === 0
+    const merged = authoritative ? deduped : dedupeCredentials([...existing, ...deduped])
+    const mergedIds = new Set(merged.map((credential) => credential.id))
+    const removedIds = existing
+      .filter((credential) => !mergedIds.has(credential.id))
+      .map((credential) => credential.id)
     const stored = await this.persistManagedLibrary(merged, existing)
     await this.options.vault.replace(stored)
+    if (removedIds.length > 0) await this.options.statusStore.removeMany(removedIds)
     return {
       imported,
       skipped,
@@ -260,6 +268,11 @@ export class AccountManager {
           switchable: Boolean(
             (credential.idToken && credential.refreshToken) || credential.accountId
           ),
+          switchMode: credential.idToken && credential.refreshToken
+            ? 'oauth'
+            : credential.accountId
+              ? 'external'
+              : 'test-only',
           accessExpiresAt: credential.accessExpiresAt,
           lastRefresh: credential.lastRefresh,
           status: status?.status ?? 'untested',
@@ -384,6 +397,7 @@ export class AccountManager {
       'quota_exhausted',
       'quota_exhausted_5h',
       'quota_exhausted_weekly',
+      'workspace_deactivated',
       'no_permission',
       'invalid',
       'non_refreshable'

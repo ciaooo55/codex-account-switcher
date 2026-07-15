@@ -60,6 +60,25 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+function scalarStringOrNull(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return stringOrNull(value)
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+function percentageFromScalars(remaining: string | null, limit: string | null): number | null {
+  if (remaining === null || limit === null) return null
+  const remainingValue = Number(remaining)
+  const limitValue = Number(limit)
+  if (!Number.isFinite(remainingValue) || !Number.isFinite(limitValue) || limitValue <= 0) {
+    return null
+  }
+  return Math.max(0, Math.min(100, (remainingValue / limitValue) * 100))
+}
+
 function timestampOrNull(value: unknown): string | null {
   if (typeof value === 'string' && value.trim()) {
     const timestamp = Date.parse(value)
@@ -190,10 +209,62 @@ export function parseUsageResponse(data: unknown, checkedAt = new Date().toISOSt
       )
     })
   }
+  const creditRecord = asRecord(root.credits)
+  const spendControl = asRecord(root.spend_control ?? root.spendControl)
+  const individualLimit = asRecord(
+    spendControl?.individual_limit ?? spendControl?.individualLimit
+  )
+  const resetCredits = asRecord(
+    root.rate_limit_reset_credits ?? root.rateLimitResetCredits
+  )
+  const reachedTypeValue = root.rate_limit_reached_type ?? root.rateLimitReachedType
+  const reachedType = asRecord(reachedTypeValue)
+  const resetCreditsAvailable = numberOrNull(
+    resetCredits?.available_count ?? resetCredits?.availableCount
+  )
+  const spendResetAfter = numberOrNull(
+    individualLimit?.reset_after_seconds ?? individualLimit?.resetAfterSeconds
+  )
+  const spendResetAt = timestampOrNull(
+    individualLimit?.reset_at ?? individualLimit?.resetAt
+  ) ?? (
+    spendResetAfter !== null && Number.isFinite(Date.parse(checkedAt))
+      ? new Date(Date.parse(checkedAt) + spendResetAfter * 1_000).toISOString()
+      : null
+  )
+  const spendLimitValue = scalarStringOrNull(individualLimit?.limit)
+  const spendRemainingValue = scalarStringOrNull(individualLimit?.remaining)
+  const explicitRemainingPercent = numberOrNull(
+    individualLimit?.remaining_percent ?? individualLimit?.remainingPercent
+  )
   return {
     planType: stringOrNull(root.plan_type ?? root.planType),
     windows,
-    checkedAt
+    checkedAt,
+    credits: creditRecord
+      ? {
+          hasCredits: booleanOrNull(creditRecord.has_credits ?? creditRecord.hasCredits) ?? false,
+          unlimited: booleanOrNull(creditRecord.unlimited) ?? false,
+          balance: scalarStringOrNull(creditRecord.balance)
+        }
+      : null,
+    spendLimit: individualLimit
+      ? {
+          limit: spendLimitValue,
+          used: scalarStringOrNull(individualLimit.used),
+          remaining: spendRemainingValue,
+          remainingPercent: explicitRemainingPercent ?? percentageFromScalars(
+            spendRemainingValue,
+            spendLimitValue
+          ),
+          resetAt: spendResetAt
+        }
+      : null,
+    resetCreditsAvailable: resetCreditsAvailable === null
+      ? null
+      : Math.max(0, Math.floor(resetCreditsAvailable)),
+    rateLimitReachedType: stringOrNull(reachedTypeValue) ??
+      stringOrNull(reachedType?.type ?? reachedType?.kind)
   }
 }
 
@@ -202,10 +273,16 @@ function responseDetail(value: unknown): string {
   if (text) return text
   const root = asRecord(value)
   const error = asRecord(root?.error)
+  const detail = asRecord(root?.detail)
   return (
     stringOrNull(error?.message) ??
     stringOrNull(error?.code) ??
     stringOrNull(error?.type) ??
+    stringOrNull(detail?.message) ??
+    stringOrNull(detail?.code) ??
+    stringOrNull(detail?.type) ??
+    stringOrNull(root?.error_description) ??
+    stringOrNull(root?.error) ??
     stringOrNull(root?.detail) ??
     stringOrNull(root?.message) ??
     '未知错误'
@@ -294,6 +371,30 @@ function isDeactivatedWorkspace(payload: unknown): boolean {
   return code?.toLowerCase() === 'deactivated_workspace'
 }
 
+function isRefreshCredentialError(payload: unknown): boolean {
+  const root = asRecord(payload)
+  const error = asRecord(root?.error)
+  const text = [
+    stringOrNull(root?.error),
+    stringOrNull(root?.code),
+    stringOrNull(root?.error_description),
+    stringOrNull(root?.message),
+    stringOrNull(error?.code),
+    stringOrNull(error?.type),
+    stringOrNull(error?.message)
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' ')
+    .toLowerCase()
+  return [
+    'invalid_grant',
+    'refresh_token_reused',
+    'refresh token is invalid',
+    'refresh token expired',
+    'invalid refresh token'
+  ].some((marker) => text.includes(marker))
+}
+
 function sanitizedDetail(detail: string, credential: NormalizedCredential): string {
   let result = detail
   for (const token of [credential.accessToken, credential.refreshToken, credential.idToken]) {
@@ -304,16 +405,26 @@ function sanitizedDetail(detail: string, credential: NormalizedCredential): stri
   return result.slice(0, 280)
 }
 
-function headersFor(credential: NormalizedCredential): HeadersInit {
+function headersFor(
+  credential: NormalizedCredential,
+  sessionId = randomUUID(),
+  compact = false
+): HeadersInit {
   return {
     Accept: 'application/json',
     Authorization: `Bearer ${credential.accessToken}`,
     'Content-Type': 'application/json',
     Originator: 'codex-tui',
-    Session_id: randomUUID(),
+    Session_id: sessionId,
     'User-Agent': CODEX_USER_AGENT,
     Version: CODEX_VERSION,
-    ...(credential.accountId ? { 'Chatgpt-Account-Id': credential.accountId } : {})
+    ...(credential.accountId ? { 'Chatgpt-Account-Id': credential.accountId } : {}),
+    ...(compact
+      ? {
+          Conversation_ID: sessionId,
+          'OpenAI-Beta': 'responses=experimental'
+        }
+      : {})
   }
 }
 
@@ -385,10 +496,11 @@ export class CredentialTester {
     let usage: UsageSummary | null = null
     let usageNotice: string | null = null
     let usageQuota: { detail: string; httpStatus: number } | null = null
+    const sessionId = randomUUID()
 
     const usageResponse = await this.request(
       this.usageUrl,
-      { method: 'GET', headers: headersFor(credential) },
+      { method: 'GET', headers: headersFor(credential, sessionId) },
       signal,
       credential
     )
@@ -416,17 +528,16 @@ export class CredentialTester {
       this.compactUrl,
       {
         method: 'POST',
-        headers: headersFor(credential),
+        headers: headersFor(credential, sessionId, true),
         body: JSON.stringify({
-          instructions: '',
+          instructions: 'You are a helpful coding assistant.',
           model: this.deepTestModel,
           input: [
             {
               type: 'message',
               role: 'user',
-              content: 'ping'
-            },
-            { type: 'compaction_trigger' }
+              content: 'Respond with OK.'
+            }
           ]
         })
       },
@@ -485,14 +596,7 @@ export class CredentialTester {
       )
     }
     if (usageQuota) {
-      const quota = exhaustedCodexQuota(usage)
-      return this.stage(
-        quota?.status ?? 'quota_exhausted',
-        quota?.detail ?? usageQuota.detail,
-        usageQuota.httpStatus,
-        'usage',
-        usage
-      )
+      usageNotice = `额度查询返回 HTTP ${usageQuota.httpStatus}: ${usageQuota.detail}`
     }
     const exhaustedQuota = exhaustedCodexQuota(usage)
     if (exhaustedQuota) {
@@ -560,9 +664,13 @@ export class CredentialTester {
     }
     const payload = await responsePayload(response)
     if (!response.ok) {
+      const invalidCredential =
+        response.status === 401 ||
+        response.status === 403 ||
+        (response.status === 400 && isRefreshCredentialError(payload))
       return this.result(
         credential,
-        response.status === 401 || response.status === 403 ? 'invalid' : 'endpoint_incompatible',
+        invalidCredential ? 'invalid' : 'endpoint_incompatible',
         responseDetail(payload),
         'refresh',
         checkedAt,

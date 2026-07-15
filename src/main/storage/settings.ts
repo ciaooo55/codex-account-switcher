@@ -18,8 +18,9 @@ const storedSettingsSchema = z.object({
 })
 
 function defaults(homeDirectory: string): AppSettings {
+  const accountName = win32.basename(win32.normalize(homeDirectory)) || 'user'
   return {
-    accountDirectory: homeDirectory,
+    accountDirectory: win32.join('E:\\home', accountName, '.cli-proxy-api'),
     authPath: join(homeDirectory, '.codex', 'auth.json'),
     configPath: join(homeDirectory, '.codex', 'config.toml'),
     concurrency: 4,

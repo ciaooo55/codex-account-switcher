@@ -70,10 +70,28 @@ export interface UsageWindow {
   windowSeconds: number | null
 }
 
+export interface UsageCredits {
+  hasCredits: boolean
+  unlimited: boolean
+  balance: string | null
+}
+
+export interface UsageSpendLimit {
+  limit: string | null
+  used: string | null
+  remaining: string | null
+  remainingPercent: number | null
+  resetAt: string | null
+}
+
 export interface UsageSummary {
   planType: string | null
   windows: UsageWindow[]
   checkedAt: string
+  credits?: UsageCredits | null
+  spendLimit?: UsageSpendLimit | null
+  resetCreditsAvailable?: number | null
+  rateLimitReachedType?: string | null
 }
 
 export interface TestResult {
@@ -97,6 +115,7 @@ export interface AccountSummary {
   sourceDialect: CredentialDialect
   canRefresh: boolean
   switchable: boolean
+  switchMode?: 'oauth' | 'external' | 'test-only'
   accessExpiresAt: string | null
   lastRefresh: string | null
   status: AccountStatus

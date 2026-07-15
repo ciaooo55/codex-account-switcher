@@ -46,6 +46,9 @@ describe('credential serializers', () => {
       refresh_token: 'refresh-secret-a',
       id_token: 'id-secret-a',
       account_id: 'workspace-a',
+      chatgpt_account_id: 'workspace-a',
+      plan_type: 'plus',
+      chatgpt_plan_type: 'plus',
       last_refresh: '2026-07-15T00:00:00Z',
       expired: '2026-10-14T12:00:00Z'
     })
@@ -75,7 +78,8 @@ describe('credential serializers', () => {
         chatgpt_account_id: 'workspace-a',
         chatgpt_user_id: 'user-a',
         email: 'person@example.com',
-        plan_type: 'plus'
+        plan_type: 'plus',
+        chatgpt_plan_type: 'plus'
       },
       extra: {
         email: 'person@example.com',

@@ -114,6 +114,51 @@ describe('parseUsageResponse', () => {
     )
   })
 
+  it('parses credits, spend controls and reset-credit counts from current Codex usage', () => {
+    const usage = parseUsageResponse({
+      plan_type: 'pro',
+      rate_limit: {},
+      credits: { has_credits: true, unlimited: false, balance: '9.99' },
+      spend_control: {
+        reached: false,
+        individual_limit: {
+          limit: '25000',
+          used: '8000',
+          remaining: '17000',
+          remaining_percent: 68,
+          reset_at: 1_784_735_851
+        }
+      },
+      rate_limit_reset_credits: { available_count: 3 },
+      rate_limit_reached_type: { type: 'workspace_member_usage_limit_reached' }
+    })
+
+    expect(usage).toMatchObject({
+      credits: { hasCredits: true, unlimited: false, balance: '9.99' },
+      spendLimit: {
+        limit: '25000',
+        used: '8000',
+        remaining: '17000',
+        remainingPercent: 68,
+        resetAt: '2026-07-22T15:57:31.000Z'
+      },
+      resetCreditsAvailable: 3,
+      rateLimitReachedType: 'workspace_member_usage_limit_reached'
+    })
+  })
+
+  it('derives spend percentage and accepts a scalar reached type', () => {
+    const usage = parseUsageResponse({
+      spendControl: {
+        individualLimit: { limit: '200', used: '150', remaining: '50' }
+      },
+      rateLimitReachedType: 'workspace_member_usage_limit_reached'
+    })
+
+    expect(usage.spendLimit?.remainingPercent).toBe(25)
+    expect(usage.rateLimitReachedType).toBe('workspace_member_usage_limit_reached')
+  })
+
   it('keeps CPA five-hour and weekly windows distinct regardless of slot names', () => {
     const usage = parseUsageResponse(
       {
@@ -189,10 +234,19 @@ describe('CredentialTester', () => {
         })
       })
     )
-    expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
+    expect(fetchImpl.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Conversation_ID: expect.any(String),
+          'OpenAI-Beta': 'responses=experimental'
+        })
+      })
+    )
+    expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toEqual({
+      model: 'gpt-5.4',
+      instructions: 'You are a helpful coding assistant.',
       input: [
-        { type: 'message', role: 'user', content: 'ping' },
-        { type: 'compaction_trigger' }
+        { type: 'message', role: 'user', content: 'Respond with OK.' }
       ]
     })
   })
@@ -226,6 +280,27 @@ describe('CredentialTester', () => {
       expect.objectContaining({ accessToken: refreshedAccess, refreshToken: 'refresh-b' })
     )
     expect(fetchImpl).toHaveBeenCalledTimes(4)
+  })
+
+  it('marks a reused refresh token as invalid instead of an incompatible endpoint', async () => {
+    const tester = new CredentialTester({
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(401, { error: { message: 'expired' } }))
+        .mockResolvedValueOnce(
+          jsonResponse(400, {
+            error: 'invalid_grant',
+            code: 'refresh_token_reused',
+            error_description: 'Refresh token has already been used'
+          })
+        )
+    })
+
+    await expect(tester.test(credential())).resolves.toMatchObject({
+      status: 'invalid',
+      stage: 'refresh',
+      httpStatus: 400
+    })
   })
 
   it('distinguishes exhausted quota and missing permission', async () => {
@@ -350,6 +425,24 @@ describe('CredentialTester', () => {
       stage: 'deep-test',
       usage: null,
       detail: expect.stringContaining('额度接口 HTTP 404')
+    })
+  })
+
+  it('keeps a compact-verified account valid when the usage endpoint alone returns 402', async () => {
+    const tester = new CredentialTester({
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          jsonResponse(402, { error: { code: 'payment_required', message: 'usage unavailable' } })
+        )
+        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
+    })
+
+    await expect(tester.test(credential())).resolves.toMatchObject({
+      status: 'valid',
+      stage: 'deep-test',
+      usage: null,
+      detail: expect.stringContaining('额度查询返回 HTTP 402')
     })
   })
 

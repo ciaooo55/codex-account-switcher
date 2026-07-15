@@ -186,4 +186,28 @@ describe('CredentialSwitcher', () => {
     })
     expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
   })
+
+  it('skips external Team credentials when restoring the original API mode', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
+    await switcher.switchTo(credential())
+    await switcher.switchTo(credential({
+      id: 'account-team',
+      accessToken: 'access-team',
+      idToken: null,
+      refreshToken: null,
+      canRefresh: false,
+      planType: 'k12'
+    }))
+    await switcher.switchTo(credential({ id: 'account-b', accessToken: 'access-b' }))
+
+    const restored = await switcher.restoreApiMode()
+
+    expect(restored.ok).toBe(true)
+    expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toMatchObject({
+      auth_mode: 'apikey',
+      OPENAI_API_KEY: 'api-secret'
+    })
+    expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
+  })
 })

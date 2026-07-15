@@ -320,6 +320,26 @@ describe('parseCredentialText', () => {
     })
   })
 
+  it('cleans noisy TXT content and accepts UTF-8 BOM JSON files', () => {
+    const noisy = parseCredentialText(
+      `账号一：\n${JSON.stringify({
+        access_token: jwt({ sub: 'noisy-txt' }),
+        email: 'noisy@example.com'
+      })}\n以上是账号。`,
+      { sourcePath: 'noisy.txt', format: 'txt' }
+    )
+    const bom = parseCredentialText(
+      `\uFEFF${JSON.stringify({
+        access_token: jwt({ sub: 'bom-json' }),
+        email: 'bom@example.com'
+      })}`,
+      { sourcePath: 'bom.json', format: 'json' }
+    )
+
+    expect(noisy.credentials.map((credential) => credential.email)).toEqual(['noisy@example.com'])
+    expect(bom.credentials.map((credential) => credential.email)).toEqual(['bom@example.com'])
+  })
+
   it('parses bare access tokens from text, paste and JSON arrays', () => {
     const first = jwt({ sub: 'bare-one' })
     const second = jwt({ sub: 'bare-two' })
@@ -513,5 +533,49 @@ describe('dedupeCredentials', () => {
     const deduped = dedupeCredentials([cpa, sub2api])
     expect(deduped).toHaveLength(1)
     expect(deduped[0].sourceDialect).toBe('sub2api')
+  })
+
+  it('merges an incomplete identity after exactly one workspace is known', () => {
+    const withoutWorkspace = parseCredentialText(
+      JSON.stringify({
+        access_token: jwt({ sub: 'enriched-user' }),
+        email: 'enriched@example.com'
+      }),
+      { sourcePath: 'incomplete.json', format: 'json' }
+    ).credentials[0]
+    const withWorkspace = parseCredentialText(
+      JSON.stringify({
+        access_token: jwt({ sub: 'enriched-user' }),
+        refresh_token: 'refresh-enriched',
+        email: 'enriched@example.com',
+        account_id: 'enriched-workspace'
+      }),
+      { sourcePath: 'complete.json', format: 'json' }
+    ).credentials[0]
+
+    const deduped = dedupeCredentials([withoutWorkspace, withWorkspace])
+
+    expect(deduped).toHaveLength(1)
+    expect(deduped[0]).toMatchObject({
+      accountId: 'enriched-workspace',
+      refreshToken: 'refresh-enriched',
+      canRefresh: true
+    })
+    expect(deduped[0].id).toBe(withWorkspace.id)
+  })
+
+  it('keeps an incomplete identity separate when multiple workspaces are possible', () => {
+    const records = [null, 'workspace-a', 'workspace-b'].map((accountId, index) =>
+      parseCredentialText(
+        JSON.stringify({
+          access_token: jwt({ sub: 'multi-workspace-user', nonce: index }),
+          email: 'multi@example.com',
+          account_id: accountId
+        }),
+        { sourcePath: `${index}.json`, format: 'json' }
+      ).credentials[0]
+    )
+
+    expect(dedupeCredentials(records)).toHaveLength(3)
   })
 })

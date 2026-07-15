@@ -17,6 +17,7 @@ const snapshot: AppSnapshot = {
       sourceDialect: 'cpa',
       canRefresh: true,
       switchable: true,
+      switchMode: 'oauth',
       accessExpiresAt: '2026-10-14T12:00:00Z',
       lastRefresh: '2026-07-14T12:00:00Z',
       status: 'valid',
@@ -48,7 +49,8 @@ const snapshot: AppSnapshot = {
       sourceFormat: 'json',
       sourceDialect: 'sub2api',
       canRefresh: false,
-      switchable: false,
+      switchable: true,
+      switchMode: 'external',
       accessExpiresAt: null,
       lastRefresh: null,
       status: 'untested',
@@ -308,7 +310,7 @@ describe('App', () => {
     fireEvent.click(screen.getByLabelText('启用定时自动切换'))
     fireEvent.change(screen.getByLabelText('自动切换检查间隔'), { target: { value: '45' } })
     fireEvent.click(screen.getByLabelText('自动切换候选 person@example.com'))
-    expect(screen.getByLabelText('自动切换候选 second@example.com')).toBeDisabled()
+    expect(screen.getByLabelText('自动切换候选 second@example.com')).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
 
     await waitFor(() =>
@@ -356,15 +358,15 @@ describe('App', () => {
     confirm.mockRestore()
   })
 
-  it('keeps access-only accounts testable but disables official Codex switching', async () => {
+  it('allows workspace-bound access-only accounts to use external Codex switching', async () => {
     render(<App />)
     const row = await screen.findByRole('row', { name: /second@example\.com/ })
 
-    expect(row).toHaveTextContent('仅用于检测')
+    expect(row).toHaveTextContent('可切换 · 外部凭据，需重启')
     fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
     expect(screen.getByRole('menuitem', { name: '检测此账号' })).toBeEnabled()
-    expect(screen.getByRole('menuitem', { name: '切换到此账号' })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: '切换并重启' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: '切换到此账号' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: '切换并重启' })).toBeEnabled()
   })
 
   it('reports a restart failure without claiming the completed account switch was rolled back', async () => {
