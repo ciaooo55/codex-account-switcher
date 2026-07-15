@@ -48,6 +48,8 @@ export type AccountStatus =
   | 'untested'
   | 'valid'
   | 'quota_exhausted'
+  | 'quota_exhausted_5h'
+  | 'quota_exhausted_weekly'
   | 'no_permission'
   | 'invalid'
   | 'needs_refresh'
@@ -111,6 +113,27 @@ export interface AppSettings {
   timeoutMs: number
   backupRetention: number
   deepTestModel: string
+  autoSwitchEnabled: boolean
+  autoSwitchIntervalSeconds: number
+  autoSwitchAccountIds: string[]
+  autoSwitchRestartCodex: boolean
+}
+
+export interface AutoSwitchState {
+  enabled: boolean
+  running: boolean
+  nextCheckAt: string | null
+  lastCheckAt: string | null
+  lastMessage: string
+  lastSwitchedAccountId: string | null
+}
+
+export interface AutoSwitchRunResult {
+  ok: boolean
+  switched: boolean
+  message: string
+  checkedAccountIds: string[]
+  switchedAccountId: string | null
 }
 
 export interface ScanResult {

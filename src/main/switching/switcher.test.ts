@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -90,6 +90,8 @@ describe('CredentialSwitcher', () => {
 
     expect(result).toMatchObject({ ok: false })
     expect(result.message).toContain('官方 Codex auth.json')
+    expect(result.backupPath).toBeNull()
+    await expect(readdir(paths.backupDir)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(JSON.parse(await readFile(paths.authPath, 'utf8')).auth_mode).toBe('apikey')
     expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
   })

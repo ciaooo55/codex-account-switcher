@@ -46,5 +46,23 @@ describe('managed Codex config patching', () => {
     expect(restored).toContain('goals = false')
     expect(restored).toContain('new_feature = true')
   })
-})
 
+  it('does not treat assignments inside TOML array tables as top-level keys', () => {
+    const config = `model_provider = "custom"
+
+[[profiles]]
+name = "first"
+model = "profile-model"
+model_reasoning_effort = "high"
+`
+
+    const applied = applyChatGptConfig(config)
+    const restored = restoreManagedConfig(applied.text, applied.snapshot)
+
+    expect(applied.text).toContain('model_provider = "openai"')
+    expect(applied.text).toContain('model = "profile-model"')
+    expect(applied.text).toContain('model_reasoning_effort = "high"')
+    expect(restored).toContain('model_provider = "custom"')
+    expect(restored).toContain('[[profiles]]')
+  })
+})

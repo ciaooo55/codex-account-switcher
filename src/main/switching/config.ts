@@ -18,7 +18,7 @@ function assignmentPattern(key: ManagedConfigKey): RegExp {
 }
 
 function firstSectionIndex(lines: string[]): number {
-  const index = lines.findIndex((line) => /^\s*\[[^[]/.test(line))
+  const index = lines.findIndex((line) => /^\s*\[/.test(line))
   return index === -1 ? lines.length : index
 }
 

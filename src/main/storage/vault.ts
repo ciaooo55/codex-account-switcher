@@ -1,7 +1,6 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import type { NormalizedCredential, SecretCipher } from '../../shared/types'
+import { atomicWriteFile, readUtf8File } from './atomic-file'
+import { normalizedCredentialSchema } from './schemas'
 
 interface VaultFile {
   version: 1
@@ -10,40 +9,30 @@ interface VaultFile {
 
 const EMPTY_VAULT: VaultFile = { version: 1, entries: [] }
 
-async function atomicWrite(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  const temporaryPath = `${path}.${randomUUID()}.tmp`
-  await writeFile(temporaryPath, text, { encoding: 'utf8', mode: 0o600 })
-  try {
-    await rename(temporaryPath, path)
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'EEXIST' && code !== 'EPERM') throw error
-    await rm(path, { force: true })
-    await rename(temporaryPath, path)
-  } finally {
-    await rm(temporaryPath, { force: true })
-  }
-}
-
 export class CredentialVault {
+  private writeQueue: Promise<void> = Promise.resolve()
+
   constructor(
     private readonly path: string,
     private readonly cipher: SecretCipher
   ) {}
 
   async list(): Promise<NormalizedCredential[]> {
+    await this.writeQueue
+    return this.listUnlocked()
+  }
+
+  private async listUnlocked(): Promise<NormalizedCredential[]> {
     const file = await this.readVault()
     const credentials: NormalizedCredential[] = []
     for (const entry of file.entries) {
       try {
-        const credential = JSON.parse(
-          this.cipher.decrypt(entry.encrypted)
-        ) as NormalizedCredential & { sourceDialect?: NormalizedCredential['sourceDialect'] }
-        credentials.push({
-          ...credential,
-          sourceDialect: credential.sourceDialect ?? 'generic'
+        const raw = JSON.parse(this.cipher.decrypt(entry.encrypted)) as Record<string, unknown>
+        const parsed = normalizedCredentialSchema.safeParse({
+          ...raw,
+          sourceDialect: raw.sourceDialect ?? 'generic'
         })
+        if (parsed.success && parsed.data.id === entry.id) credentials.push(parsed.data)
       } catch {
         // A corrupt entry must not prevent access to the rest of the local vault.
       }
@@ -57,19 +46,30 @@ export class CredentialVault {
 
   async upsertMany(credentials: NormalizedCredential[]): Promise<void> {
     if (credentials.length === 0) return
-    const existing = new Map((await this.list()).map((credential) => [credential.id, credential]))
-    for (const credential of credentials) existing.set(credential.id, credential)
-    const file: VaultFile = {
-      version: 1,
-      entries: [...existing.values()].map((credential) => ({
-        id: credential.id,
-        encrypted: this.cipher.encrypt(JSON.stringify(credential))
-      }))
-    }
-    await atomicWrite(this.path, `${JSON.stringify(file, null, 2)}\n`)
+    await this.enqueueWrite(async () => {
+      const existing = new Map(
+        (await this.listUnlocked()).map((credential) => [credential.id, credential])
+      )
+      for (const credential of credentials) existing.set(credential.id, credential)
+      await this.writeCredentials([...existing.values()])
+    })
   }
 
   async replace(credentials: NormalizedCredential[]): Promise<void> {
+    await this.enqueueWrite(() => this.writeCredentials(credentials))
+  }
+
+  async removeMany(ids: string[]): Promise<void> {
+    if (ids.length === 0) return
+    await this.enqueueWrite(async () => {
+      const removeIds = new Set(ids)
+      await this.writeCredentials(
+        (await this.listUnlocked()).filter((credential) => !removeIds.has(credential.id))
+      )
+    })
+  }
+
+  private async writeCredentials(credentials: readonly NormalizedCredential[]): Promise<void> {
     const file: VaultFile = {
       version: 1,
       entries: credentials.map((credential) => ({
@@ -77,18 +77,18 @@ export class CredentialVault {
         encrypted: this.cipher.encrypt(JSON.stringify(credential))
       }))
     }
-    await atomicWrite(this.path, `${JSON.stringify(file, null, 2)}\n`)
+    await atomicWriteFile(this.path, `${JSON.stringify(file, null, 2)}\n`)
   }
 
-  async removeMany(ids: string[]): Promise<void> {
-    if (ids.length === 0) return
-    const removeIds = new Set(ids)
-    await this.replace((await this.list()).filter((credential) => !removeIds.has(credential.id)))
+  private async enqueueWrite(operation: () => Promise<void>): Promise<void> {
+    const queued = this.writeQueue.then(operation)
+    this.writeQueue = queued.catch(() => undefined)
+    await queued
   }
 
   private async readVault(): Promise<VaultFile> {
     try {
-      const parsed = JSON.parse(await readFile(this.path, 'utf8')) as VaultFile
+      const parsed = JSON.parse(await readUtf8File(this.path)) as VaultFile
       if (parsed.version !== 1 || !Array.isArray(parsed.entries)) return EMPTY_VAULT
       return parsed
     } catch (error) {

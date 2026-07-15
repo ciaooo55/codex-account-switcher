@@ -83,8 +83,7 @@ describe('SessionRepairService', () => {
     )
     const service = new SessionRepairService({
       codexHome: home,
-      backupRetention: 3,
-      isCodexRunning: async () => false
+      backupRetention: 3
     })
 
     const preview = await service.preview('custom')
@@ -126,7 +125,7 @@ describe('SessionRepairService', () => {
       `${JSON.stringify({ type: 'session_meta', payload: { id: 'old', model_provider: 'openai' } })}\n${JSON.stringify({ encrypted_content: 'opaque' })}\n`,
       'utf8'
     )
-    const service = new SessionRepairService({ codexHome: home, isCodexRunning: async () => false })
+    const service = new SessionRepairService({ codexHome: home })
 
     const preview = await service.preview('custom')
 
@@ -143,7 +142,7 @@ describe('SessionRepairService', () => {
       `${JSON.stringify({ type: 'session_meta', payload: { id: 'old', model_provider: 'openai' } })}\n${JSON.stringify({ encrypted_content: 'opaque' })}\n`,
       'utf8'
     )
-    const service = new SessionRepairService({ codexHome: home, isCodexRunning: async () => false })
+    const service = new SessionRepairService({ codexHome: home })
 
     const preview = await service.preview('openai')
 
@@ -154,7 +153,7 @@ describe('SessionRepairService', () => {
   it('aborts when Codex data changes after preview', async () => {
     const home = await createHome('custom')
     const rollout = await writeRollout(home, 'rollout-changing.jsonl', 'openai')
-    const service = new SessionRepairService({ codexHome: home, isCodexRunning: async () => false })
+    const service = new SessionRepairService({ codexHome: home })
     const preview = await service.preview('custom')
     await writeFile(rollout, `${await readFile(rollout, 'utf8')}\n`, 'utf8')
 
@@ -165,15 +164,15 @@ describe('SessionRepairService', () => {
     expect((await readFile(rollout, 'utf8')).includes('"model_provider":"openai"')).toBe(true)
   })
 
-  it('refuses to write while the official Codex app is running', async () => {
+  it('repairs without requiring Codex process state', async () => {
     const home = await createHome('custom')
     await writeRollout(home, 'rollout-running.jsonl', 'openai')
-    const service = new SessionRepairService({ codexHome: home, isCodexRunning: async () => true })
+    const service = new SessionRepairService({ codexHome: home })
     const preview = await service.preview('custom')
 
     await expect(service.apply(preview.snapshotId, 'custom')).resolves.toMatchObject({
-      ok: false,
-      message: expect.stringContaining('仍在运行')
+      ok: true,
+      message: expect.stringContaining('复检通过')
     })
   })
 
@@ -184,7 +183,6 @@ describe('SessionRepairService', () => {
     const dbPath = createStateDb(home, 'openai')
     const service = new SessionRepairService({
       codexHome: home,
-      isCodexRunning: async () => false,
       faultInjector: (stage) => {
         if (stage === 'after-sqlite') throw new Error('forced failure')
       }

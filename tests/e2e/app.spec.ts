@@ -33,6 +33,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await mkdir(accountDirectory, { recursive: true })
     await mkdir(join(codexHome, 'sessions', '2026'), { recursive: true })
     await mkdir(userData, { recursive: true })
+    await mkdir(join(userData, 'aa'), { recursive: true })
     await mkdir(importSourceDirectory, { recursive: true })
     await mkdir(exportDirectory, { recursive: true })
 
@@ -48,7 +49,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       email: 'e2e@example.com'
     })
     await writeFile(
-      join(accountDirectory, 'account.json'),
+      join(userData, 'aa', 'account.json'),
       JSON.stringify({
         access_token: accessToken,
         id_token: idToken,
@@ -101,7 +102,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         concurrency: 4,
         timeoutMs: 5_000,
         backupRetention: 5,
-        deepTestModel: 'gpt-5.4'
+        deepTestModel: 'gpt-5.4',
+        autoSwitchEnabled: false,
+        autoSwitchIntervalSeconds: 300,
+        autoSwitchAccountIds: [],
+        autoSwitchRestartCodex: true
       }),
       'utf8'
     )
@@ -164,9 +169,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByRole('button', { name: '导入文件夹' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
-    expect(await readdir(join(userData, 'imports'))).toContain('folder-accounts.md')
+    expect(await readdir(join(userData, 'aa'))).toContain('folder-accounts.md')
     await unlink(join(importSourceDirectory, 'folder-accounts.md'))
-    await page.getByRole('button', { name: '扫描目录' }).click()
+    await page.getByRole('button', { name: '同步 aa' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
 
     await page.getByLabel('选择 folder-e2e@example.com').check()
@@ -258,5 +263,29 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(await readFile(join(codexHome, 'config.toml'), 'utf8')).toContain(
       'model_provider = "custom"'
     )
+
+    await page.setViewportSize({ width: 980, height: 640 })
+    await page.getByRole('button', { name: '设置' }).click()
+    const settingsPanel = page.getByRole('dialog', { name: '设置' })
+    await expect(settingsPanel).toBeVisible()
+    await expect(page.getByLabel('启用定时自动切换')).toBeVisible()
+    await expect(page.getByLabel('自动切换候选 e2e@example.com')).toBeEnabled()
+    await expect(page.getByLabel('自动切换候选 pasted-e2e@example.com')).toBeDisabled()
+    const panelBounds = await settingsPanel.boundingBox()
+    expect(panelBounds).not.toBeNull()
+    expect(panelBounds!.x).toBeGreaterThanOrEqual(0)
+    expect(panelBounds!.x + panelBounds!.width).toBeLessThanOrEqual(980)
+    expect(panelBounds!.height).toBeLessThanOrEqual(640)
+    await page.screenshot({
+      path: join(process.cwd(), 'test-results', 'settings-ui.png'),
+      fullPage: true
+    })
+    await settingsPanel.evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
+    await page.screenshot({
+      path: join(process.cwd(), 'test-results', 'settings-ui-bottom.png'),
+      fullPage: true
+    })
   })
 })

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { strToU8, zipSync } from 'fflate'
@@ -41,7 +41,11 @@ async function setup() {
     concurrency: 2,
     timeoutMs: 1_000,
     backupRetention: 20,
-    deepTestModel: 'gpt-5.4'
+    deepTestModel: 'gpt-5.4',
+    autoSwitchEnabled: false,
+    autoSwitchIntervalSeconds: 300,
+    autoSwitchAccountIds: [],
+    autoSwitchRestartCodex: true
   }
   const vault = new CredentialVault(join(root, 'app', 'vault.json'), cipher)
   const statusStore = new StatusStore(join(root, 'app', 'status.json'))
@@ -96,6 +100,25 @@ describe('AccountManager', () => {
     expect(result.accounts[0].email).toBe('person@example.com')
     expect(JSON.stringify(result.accounts)).not.toContain('header.')
     expect(await readFile(sourcePath, 'utf8')).toBe(source)
+  })
+
+  it('rejects oversized text credentials before reading them into memory', async () => {
+    const fixture = await setup()
+    const oversized = join(fixture.accountDirectory, 'oversized.json')
+    await writeFile(oversized, '')
+    await truncate(oversized, 100 * 1024 * 1024 + 1)
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.scanDirectory()
+
+    expect(result.imported).toBe(0)
+    expect(result.errors).toEqual([expect.stringContaining('100MB')])
   })
 
   it('recursively scans supported account files in nested folders', async () => {
@@ -452,6 +475,53 @@ describe('AccountManager', () => {
     )
   })
 
+  it('auto-switches from an exhausted active account to a valid selected credential', async () => {
+    const fixture = await setup()
+    const activeDocument = {
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: jwt({ sub: 'active-user', email: 'active@example.com' }),
+        access_token: jwt({ sub: 'active-user', email: 'active@example.com' }),
+        refresh_token: 'refresh-active',
+        account_id: 'workspace-active'
+      }
+    }
+    const candidateDocument = {
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: jwt({ sub: 'candidate-user', email: 'candidate@example.com' }),
+        access_token: jwt({ sub: 'candidate-user', email: 'candidate@example.com' }),
+        refresh_token: 'refresh-candidate',
+        account_id: 'workspace-candidate'
+      }
+    }
+    await mkdir(join(fixture.root, 'codex'), { recursive: true })
+    await writeFile(fixture.settings.authPath, JSON.stringify(activeDocument))
+    await writeFile(join(fixture.accountDirectory, 'active.json'), JSON.stringify(activeDocument))
+    await writeFile(join(fixture.accountDirectory, 'candidate.json'), JSON.stringify(candidateDocument))
+    const switchTo = vi.fn().mockResolvedValue({ ok: true, message: 'switched', backupPath: 'backup' })
+    const tester = vi.fn(async (credential: NormalizedCredential) =>
+      credential.email === 'active@example.com'
+        ? { ...successfulResult(credential.id), status: 'quota_exhausted_5h' as const, detail: '5 小时额度已耗尽' }
+        : successfulResult(credential.id)
+    )
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: tester },
+      switcher: { switchTo, restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const scan = await manager.scanDirectory()
+    const candidate = scan.accounts.find((account) => account.email === 'candidate@example.com')!
+
+    const result = await manager.autoSwitch([candidate.id])
+
+    expect(result).toMatchObject({ ok: true, switched: true, switchedAccountId: candidate.id })
+    expect(switchTo).toHaveBeenCalledWith(expect.objectContaining({ email: 'candidate@example.com' }))
+    expect(tester).toHaveBeenCalledTimes(2)
+  })
+
   it('resolves an imported account source by opaque account id', async () => {
     const fixture = await setup()
     const sourcePath = join(fixture.accountDirectory, 'person.json')
@@ -496,7 +566,7 @@ describe('AccountManager', () => {
       tester: { test: vi.fn() },
       switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
     })
-    await manager.scanDirectory()
+    await manager.importFiles([scannedPath], { archiveSources: true })
     await manager.importFiles([externalPath], { archiveSources: true })
     await unlink(scannedPath)
 
@@ -508,6 +578,66 @@ describe('AccountManager', () => {
     ])
     expect(result.accounts.every((item) => item.sourcePath.startsWith(managedImportDirectory))).toBe(true)
     expect(await readFile(externalPath, 'utf8')).toContain('external@example.com')
+  })
+
+  it('rewrites a managed multi-account file on partial deletion and removes it when empty', async () => {
+    const fixture = await setup()
+    const externalPath = join(fixture.root, 'multi.json')
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    const deletedStore = new DeletedCredentialStore(join(fixture.root, 'app', 'deleted.json'))
+    const source = JSON.stringify([
+      { access_token: jwt({ sub: 'managed-a' }), email: 'managed-a@example.com' },
+      { access_token: jwt({ sub: 'managed-b' }), email: 'managed-b@example.com' }
+    ])
+    await writeFile(externalPath, source)
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      deletedStore,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const imported = await manager.importFiles([externalPath], { archiveSources: true })
+    const managedPath = imported.accounts[0].sourcePath
+
+    await manager.deleteAccounts([imported.accounts[0].id])
+
+    const remaining = await manager.scanDirectory()
+    expect(remaining.accounts.map((account) => account.email)).toEqual(['managed-b@example.com'])
+    expect(await readFile(externalPath, 'utf8')).toBe(source)
+    expect(await readFile(managedPath, 'utf8')).not.toContain('managed-a@example.com')
+    expect(await readFile(managedPath, 'utf8')).toContain('managed-b@example.com')
+
+    await manager.deleteAccounts([remaining.accounts[0].id])
+    await expect(stat(managedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('migrates the legacy imports directory into aa', async () => {
+    const fixture = await setup()
+    const legacy = join(fixture.root, 'app', 'imports')
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    await mkdir(legacy, { recursive: true })
+    await writeFile(
+      join(legacy, 'legacy.json'),
+      JSON.stringify({ access_token: jwt({ sub: 'legacy-user' }), email: 'legacy@example.com' })
+    )
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    await manager.migrateManagedDirectory(legacy)
+
+    const accounts = await manager.listAccounts()
+    expect(accounts).toHaveLength(1)
+    expect(accounts[0].sourcePath).toBe(join(managedImportDirectory, 'legacy.json'))
+    await expect(stat(legacy)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('persists account deletion across automatic scans and restores it on manual import', async () => {

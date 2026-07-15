@@ -15,6 +15,7 @@ import { z } from 'zod'
 import { ipcChannels, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
+import { AutoSwitchScheduler } from './services/auto-switch'
 import { CodexProcessManager } from './services/codex-process'
 import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
@@ -33,6 +34,8 @@ if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
 }
 let mainWindow: BrowserWindow | null = null
 let switchOperationActive = false
+let accountLibraryOperationActive = false
+let autoSwitchOperationActive = false
 let testController: AbortController | null = null
 let progress: TestProgress = {
   active: false,
@@ -104,7 +107,10 @@ async function main(): Promise<void> {
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
-  const importDirectory = join(userData, 'imports')
+  const importDirectory = e2eMode
+    ? join(userData, 'aa')
+    : join(app.getPath('appData'), 'Codex Account Switcher', 'aa')
+  const legacyImportDirectories = [join(userData, 'imports'), join(userData, 'aa')]
   const processManager = new CodexProcessManager()
   let testApiBase: string | null = null
   if (e2eMode && process.env.CODEX_SWITCHER_TEST_API_BASE_URL) {
@@ -175,12 +181,35 @@ async function main(): Promise<void> {
   })
   const exporter = new CredentialExportService({ vault })
 
+  const assertAccountLibraryIdle = (): void => {
+    if (testController) throw new Error('账号检测进行中，暂时不能修改账号库')
+    if (switchOperationActive) throw new Error('账号切换或恢复进行中，暂时不能修改账号库')
+    if (accountLibraryOperationActive) throw new Error('已有账号导入、扫描或删除操作正在执行')
+    if (autoSwitchOperationActive) throw new Error('自动检测或切换正在执行，暂时不能修改账号库')
+  }
+
+  const runAccountLibraryMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    assertAccountLibraryIdle()
+    accountLibraryOperationActive = true
+    try {
+      return await operation()
+    } finally {
+      accountLibraryOperationActive = false
+    }
+  }
+
+  const initialScan = runAccountLibraryMutation(async () => {
+    for (const directory of legacyImportDirectories) {
+      await manager.migrateManagedDirectory(directory)
+    }
+    return manager.scanDirectory()
+  }).catch(() => undefined)
+
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()
     return new SessionRepairService({
       codexHome: dirname(settings.configPath),
-      backupRetention: settings.backupRetention,
-      isCodexRunning: e2eMode ? async () => false : () => processManager.isOfficialRunning()
+      backupRetention: settings.backupRetention
     })
   }
 
@@ -193,6 +222,36 @@ async function main(): Promise<void> {
     updateState = next
     mainWindow?.webContents.send(ipcChannels.updateState, updateState)
   }
+
+  const autoSwitchScheduler = new AutoSwitchScheduler({
+    getSettings: () => settingsStore.get(),
+    execute: async () => {
+      if (testController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
+        throw new Error('其他账号任务正在运行，本次自动检查已跳过')
+      }
+      autoSwitchOperationActive = true
+      const settings = await settingsStore.get()
+      sendProgress({ active: true, done: 0, total: settings.autoSwitchAccountIds.length + 1, runningIds: [], updatedAccount: null })
+      try {
+        const result = await manager.autoSwitch(settings.autoSwitchAccountIds, ({ done, total, runningIds, updatedAccount }) => {
+          sendProgress({ active: true, done, total, runningIds, updatedAccount: updatedAccount ?? null })
+        })
+        if (result.switched && settings.autoSwitchRestartCodex) {
+          const restarted = await processManager.restart()
+          return {
+            ...result,
+            ok: result.ok && restarted.ok,
+            message: `${result.message}；${restarted.message}`
+          }
+        }
+        return result
+      } finally {
+        autoSwitchOperationActive = false
+        sendProgress({ ...progress, active: false, runningIds: [], updatedAccount: null })
+      }
+    },
+    onState: (state) => mainWindow?.webContents.send(ipcChannels.autoSwitchState, state)
+  })
 
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
@@ -248,60 +307,88 @@ async function main(): Promise<void> {
     })
   })
 
-  const checkForUpdates = async (): Promise<UpdateState> => {
-    if (!app.isPackaged || e2eMode) {
-      sendUpdateState({
-        status: 'not_available',
-        currentVersion: app.getVersion(),
-        availableVersion: null,
-        percent: null,
-        message: '开发环境不执行自动更新'
-      })
+  let updateCheckPromise: Promise<UpdateState> | null = null
+  let updateDownloadPromise: Promise<void> | null = null
+  const checkForUpdates = (): Promise<UpdateState> => {
+    if (updateCheckPromise) return updateCheckPromise
+    updateCheckPromise = (async () => {
+      if (!app.isPackaged || e2eMode) {
+        sendUpdateState({
+          status: 'not_available',
+          currentVersion: app.getVersion(),
+          availableVersion: null,
+          percent: null,
+          message: '开发环境不执行自动更新'
+        })
+        return updateState
+      }
+      await autoUpdater.checkForUpdates()
       return updateState
-    }
-    await autoUpdater.checkForUpdates()
-    return updateState
+    })().finally(() => {
+      updateCheckPromise = null
+    })
+    return updateCheckPromise
   }
 
-  ipcMain.handle(ipcChannels.snapshot, async () => ({
-    accounts: await manager.listAccounts(),
-    settings: await settingsStore.get(),
-    importDirectory,
-    testing: progress
-  }))
-  ipcMain.handle(ipcChannels.scan, () => manager.scanDirectory())
+  ipcMain.handle(ipcChannels.snapshot, async () => {
+    await initialScan
+    return {
+      accounts: await manager.listAccounts(),
+      settings: await settingsStore.get(),
+      importDirectory,
+      testing: progress,
+      autoSwitch: autoSwitchScheduler.getState()
+    }
+  })
+  ipcMain.handle(ipcChannels.scan, () => {
+    return runAccountLibraryMutation(() => manager.scanDirectory())
+  })
   ipcMain.handle(ipcChannels.import, async () => {
-    const result = await dialog.showOpenDialog({
-      title: '导入 Codex 账号文件',
-      properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
+    return runAccountLibraryMutation(async () => {
+      const result = await dialog.showOpenDialog({
+        title: '导入 Codex 账号文件',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
+      })
+      return result.canceled
+        ? null
+        : manager.importFiles(result.filePaths, { archiveSources: true })
     })
-    return result.canceled
-      ? null
-      : manager.importFiles(result.filePaths, { archiveSources: true })
   })
   ipcMain.handle(ipcChannels.importDirectory, async () => {
-    let directory: string | null = null
-    if (e2eMode && process.env.CODEX_SWITCHER_E2E_IMPORT_DIR) {
-      directory = resolve(process.env.CODEX_SWITCHER_E2E_IMPORT_DIR)
-    } else {
-      const settings = await settingsStore.get()
-      const result = await dialog.showOpenDialog({
-        title: '导入文件夹内的全部账号文件',
-        defaultPath: settings.accountDirectory,
-        properties: ['openDirectory']
-      })
-      if (!result.canceled) directory = result.filePaths[0]
-    }
-    return directory ? manager.importDirectory(directory) : null
+    return runAccountLibraryMutation(async () => {
+      let directory: string | null = null
+      if (e2eMode && process.env.CODEX_SWITCHER_E2E_IMPORT_DIR) {
+        directory = resolve(process.env.CODEX_SWITCHER_E2E_IMPORT_DIR)
+      } else {
+        const settings = await settingsStore.get()
+        const result = await dialog.showOpenDialog({
+          title: '导入文件夹内的全部账号文件',
+          defaultPath: settings.accountDirectory,
+          properties: ['openDirectory']
+        })
+        if (!result.canceled) directory = result.filePaths[0]
+      }
+      return directory ? manager.importDirectory(directory) : null
+    })
   })
-  ipcMain.handle(ipcChannels.importPasted, (_event, input: unknown) =>
-    manager.importPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input))
-  )
+  ipcMain.handle(ipcChannels.importPasted, (_event, input: unknown) => {
+    const text = z.string().min(1).max(100 * 1024 * 1024).parse(input)
+    return runAccountLibraryMutation(() => manager.importPasted(text))
+  })
   ipcMain.handle(ipcChannels.deleteAccounts, async (_event, input: unknown) => {
-    if (testController) throw new Error('账号检测进行中，暂时不能删除账号')
     const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
-    return manager.deleteAccounts(ids)
+    return runAccountLibraryMutation(async () => {
+      const result = await manager.deleteAccounts(ids)
+      const settings = await settingsStore.get()
+      const deleted = new Set(ids)
+      const nextPool = settings.autoSwitchAccountIds.filter((id) => !deleted.has(id))
+      if (nextPool.length !== settings.autoSwitchAccountIds.length) {
+        await settingsStore.update({ autoSwitchAccountIds: nextPool })
+        await autoSwitchScheduler.settingsChanged()
+      }
+      return result
+    })
   })
   ipcMain.handle(ipcChannels.exportAccounts, async (_event, input: unknown) => {
     const payload = z
@@ -337,6 +424,9 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.test, async (_event, input: unknown) => {
     if (testController) throw new Error('已有检测任务正在运行')
+    if (switchOperationActive) throw new Error('账号切换或恢复进行中，暂时不能检测账号')
+    if (accountLibraryOperationActive) throw new Error('账号库正在导入、扫描或删除，暂时不能检测账号')
+    if (autoSwitchOperationActive) throw new Error('自动检测或切换正在运行')
     const ids = z.array(z.string().min(1)).optional().parse(input)
     testController = new AbortController()
     sendProgress({
@@ -367,8 +457,17 @@ async function main(): Promise<void> {
     testController?.abort()
   })
   ipcMain.handle(ipcChannels.switchAccount, async (_event, input: unknown) => {
+    if (testController) {
+      return { ok: false, message: '账号检测进行中，暂时不能切换账号', backupPath: null }
+    }
     if (switchOperationActive) {
       return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
+    }
+    if (accountLibraryOperationActive) {
+      return { ok: false, message: '账号库正在导入、扫描或删除，暂时不能切换账号', backupPath: null }
+    }
+    if (autoSwitchOperationActive) {
+      return { ok: false, message: '自动检测或切换正在运行', backupPath: null }
     }
     const payload = z.object({ id: z.string().min(1), restart: z.boolean() }).parse(input)
     switchOperationActive = true
@@ -390,8 +489,14 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.restore, async (_event, input: unknown) => {
+    if (testController) {
+      return { ok: false, message: '账号检测进行中，暂时不能恢复配置', backupPath: null }
+    }
     if (switchOperationActive) {
       return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
+    }
+    if (autoSwitchOperationActive) {
+      return { ok: false, message: '自动检测或切换正在运行', backupPath: null }
     }
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
@@ -407,8 +512,14 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.restoreApiMode, async (_event, input: unknown) => {
+    if (testController) {
+      return { ok: false, message: '账号检测进行中，暂时不能恢复 API 模式', backupPath: null }
+    }
     if (switchOperationActive) {
       return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
+    }
+    if (autoSwitchOperationActive) {
+      return { ok: false, message: '自动检测或切换正在运行', backupPath: null }
     }
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
@@ -425,18 +536,27 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.restart, () => processManager.restart())
   ipcMain.handle(ipcChannels.settingsUpdate, async (_event, input: unknown) => {
+    if (testController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
+      throw new Error('账号任务正在运行，暂时不能修改设置')
+    }
     const patch = z
       .object({
-        accountDirectory: z.string().optional(),
-        authPath: z.string().optional(),
-        configPath: z.string().optional(),
+        accountDirectory: z.string().max(32_767).optional(),
+        authPath: z.string().max(32_767).optional(),
+        configPath: z.string().max(32_767).optional(),
         concurrency: z.number().optional(),
         timeoutMs: z.number().optional(),
         backupRetention: z.number().optional(),
-        deepTestModel: z.string().optional()
+        deepTestModel: z.string().max(128).optional(),
+        autoSwitchEnabled: z.boolean().optional(),
+        autoSwitchIntervalSeconds: z.number().optional(),
+        autoSwitchAccountIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(20_000).optional(),
+        autoSwitchRestartCodex: z.boolean().optional()
       })
       .parse(input) satisfies Partial<AppSettings>
-    return settingsStore.update(patch)
+    const updated = await settingsStore.update(patch)
+    await autoSwitchScheduler.settingsChanged()
+    return updated
   })
   ipcMain.handle(ipcChannels.settingsChooseDirectory, async () => {
     const current = await settingsStore.get()
@@ -477,24 +597,43 @@ async function main(): Promise<void> {
         targetProvider: z.string().regex(/^[A-Za-z0-9_.-]+$/)
       })
       .parse(input)
+    if (testController || switchOperationActive || autoSwitchOperationActive) {
+      return {
+        ok: false,
+        message: '账号检测、切换或恢复进行中，暂时不能修复会话',
+        targetProvider: payload.targetProvider,
+        changedSessionFiles: 0,
+        sqliteRowsUpdated: 0,
+        globalStateKeysUpdated: 0,
+        backupPath: null
+      }
+    }
     return (await sessionRepairService()).apply(payload.snapshotId, payload.targetProvider)
   })
   ipcMain.handle(ipcChannels.updateGetState, () => updateState)
   ipcMain.handle(ipcChannels.updateCheck, () => checkForUpdates())
   ipcMain.handle(ipcChannels.updateDownload, async () => {
+    if (updateDownloadPromise) return updateDownloadPromise
     if (updateState.status !== 'available') throw new Error('当前没有可下载的新版本')
-    await autoUpdater.downloadUpdate()
+    sendUpdateState({ ...updateState, status: 'downloading', percent: 0, message: '正在准备下载更新' })
+    updateDownloadPromise = autoUpdater.downloadUpdate().then(() => undefined).finally(() => {
+      updateDownloadPromise = null
+    })
+    return updateDownloadPromise
   })
   ipcMain.handle(ipcChannels.updateInstall, () => {
     if (updateState.status !== 'downloaded') throw new Error('安装包尚未下载完成')
     autoUpdater.quitAndInstall(false, true)
   })
+  ipcMain.handle(ipcChannels.autoSwitchRun, () => autoSwitchScheduler.runNow(true))
 
   mainWindow = createWindow()
   mainWindow.on('closed', () => {
     mainWindow = null
   })
-  void manager.scanDirectory().catch(() => undefined)
+  await initialScan
+  await autoSwitchScheduler.start()
+  app.once('before-quit', () => autoSwitchScheduler.stop())
   if (app.isPackaged && !e2eMode) {
     setTimeout(() => void checkForUpdates().catch(() => undefined), 4_000)
   }

@@ -61,7 +61,7 @@ const defaultRunner: ScriptRunner = (script) =>
     execFile(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-      { windowsHide: true },
+      { windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) reject(new Error(stderr.trim() || error.message))
         else resolve(stdout)

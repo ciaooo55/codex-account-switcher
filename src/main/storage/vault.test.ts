@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -83,5 +83,42 @@ describe('CredentialVault', () => {
 
     expect((await vault.list()).map((item) => item.id)).toEqual(['account-b'])
     expect(await readFile(path, 'utf8')).not.toContain('second-secret')
+  })
+
+  it('serializes concurrent refresh writes without losing any account', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-vault-'))
+    tempDirs.push(dir)
+    const vault = new CredentialVault(join(dir, 'vault.json'), cipher)
+    const credentials = Array.from({ length: 24 }, (_, index) =>
+      credential({
+        id: `account-${index}`,
+        email: `person-${index}@example.com`,
+        accessToken: `rotated-access-${index}`
+      })
+    )
+
+    await Promise.all(credentials.map((item) => vault.upsertMany([item])))
+
+    expect((await vault.list()).map((item) => item.id).sort()).toEqual(
+      credentials.map((item) => item.id).sort()
+    )
+  })
+
+  it('skips a structurally invalid encrypted entry without hiding valid accounts', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-vault-'))
+    tempDirs.push(dir)
+    const path = join(dir, 'vault.json')
+    const vault = new CredentialVault(path, cipher)
+    await vault.upsertMany([credential()])
+    const file = JSON.parse(await readFile(path, 'utf8')) as {
+      entries: Array<{ id: string; encrypted: string }>
+    }
+    file.entries.push({
+      id: 'broken',
+      encrypted: cipher.encrypt(JSON.stringify({ id: 'broken', accessToken: 'only-one-field' }))
+    })
+    await writeFile(path, JSON.stringify({ version: 1, entries: file.entries }), 'utf8')
+
+    expect((await vault.list()).map((item) => item.id)).toEqual(['account-a'])
   })
 })

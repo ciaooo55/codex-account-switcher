@@ -60,11 +60,14 @@ async function writeAtomic(path: string, text: string): Promise<void> {
     const code = (error as NodeJS.ErrnoException).code
     if (code !== 'EEXIST' && code !== 'EPERM') throw error
     const previousPath = `${path}.${randomUUID()}.previous`
+    let replacementInstalled = false
     try {
       await rename(path, previousPath)
       await rename(temporaryPath, path)
+      replacementInstalled = true
       await rm(previousPath, { force: true })
     } catch (replacementError) {
+      if (replacementInstalled) await rm(path, { force: true })
       if (await exists(previousPath)) await rename(previousPath, path)
       throw replacementError
     }
@@ -142,6 +145,16 @@ export class CredentialSwitcher {
   }
 
   async switchTo(credential: NormalizedCredential): Promise<SwitchResult> {
+    let nextAuth: AuthDocument
+    try {
+      nextAuth = authDocument(credential)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '账号凭据不兼容官方 Codex',
+        backupPath: null
+      }
+    }
     let previousAuth: string | null = null
     let previousConfig = ''
     let backupPath: string | null = null
@@ -155,8 +168,7 @@ export class CredentialSwitcher {
         configSnapshot: appliedConfig.snapshot
       })
 
-      const auth = authDocument(credential)
-      await writeAtomic(this.options.authPath, auth.text)
+      await writeAtomic(this.options.authPath, nextAuth.text)
       await writeAtomic(this.options.configPath, appliedConfig.text)
       const valid = await this.validate({
         authPath: this.options.authPath,
@@ -228,12 +240,32 @@ export class CredentialSwitcher {
     payload: BackupPayload,
     message: string
   ): Promise<SwitchResult> {
+    const currentAuth = await readOptional(this.options.authPath)
     const currentConfig = (await readOptional(this.options.configPath)) ?? ''
     const restoredConfig = restoreManagedConfig(currentConfig, payload.configSnapshot)
-    if (payload.authText === null) await rm(this.options.authPath, { force: true })
-    else await writeAtomic(this.options.authPath, payload.authText)
-    await writeAtomic(this.options.configPath, restoredConfig)
-    return { ok: true, message, backupPath }
+    try {
+      if (payload.authText === null) await rm(this.options.authPath, { force: true })
+      else await writeAtomic(this.options.authPath, payload.authText)
+      await writeAtomic(this.options.configPath, restoredConfig)
+      return { ok: true, message, backupPath }
+    } catch (error) {
+      try {
+        if (currentAuth === null) await rm(this.options.authPath, { force: true })
+        else await writeAtomic(this.options.authPath, currentAuth)
+        await writeAtomic(this.options.configPath, currentConfig)
+      } catch {
+        return {
+          ok: false,
+          message: '恢复失败，且自动回滚未能完整完成，请从加密备份手动恢复',
+          backupPath
+        }
+      }
+      return {
+        ok: false,
+        message: error instanceof Error ? `恢复失败，已回滚：${error.message}` : '恢复失败，已回滚',
+        backupPath
+      }
+    }
   }
 
   private isApiModeBackup(payload: BackupPayload): boolean {

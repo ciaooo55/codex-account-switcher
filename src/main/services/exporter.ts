@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { link, mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { copyFile, link, mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { strToU8, zipSync } from 'fflate'
 import type {
@@ -67,6 +68,22 @@ export function serializeCpaCredential(
     ...(credential.accountId ? { account_id: credential.accountId } : {}),
     ...(credential.lastRefresh ? { last_refresh: credential.lastRefresh } : {}),
     ...(credential.accessExpiresAt ? { expired: credential.accessExpiresAt } : {})
+  }
+}
+
+export function serializeCodexCredential(
+  credential: NormalizedCredential
+): Record<string, unknown> {
+  return {
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: credential.idToken,
+      access_token: credential.accessToken,
+      refresh_token: credential.refreshToken,
+      account_id: credential.accountId
+    },
+    ...(credential.lastRefresh ? { last_refresh: credential.lastRefresh } : {})
   }
 }
 
@@ -161,7 +178,13 @@ async function atomicCreate(path: string, data: Uint8Array): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`
   await writeFile(temporaryPath, data, { mode: 0o600, flag: 'wx' })
   try {
-    await link(temporaryPath, path)
+    try {
+      await link(temporaryPath, path)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (!['EPERM', 'EACCES', 'ENOTSUP', 'EXDEV', 'UNKNOWN'].includes(code ?? '')) throw error
+      await copyFile(temporaryPath, path, constants.COPYFILE_EXCL)
+    }
   } finally {
     await rm(temporaryPath, { force: true })
   }

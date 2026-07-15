@@ -23,7 +23,6 @@ type FaultStage = 'after-rollouts' | 'after-sqlite' | 'after-global-state'
 interface SessionRepairOptions {
   codexHome: string
   backupRetention?: number
-  isCodexRunning?: () => boolean | Promise<boolean>
   now?: () => Date
   faultInjector?: (stage: FaultStage) => void
 }
@@ -488,9 +487,6 @@ export class SessionRepairService {
 
   async apply(snapshot: string, explicitTarget: string): Promise<SessionRepairResult> {
     if (!validProvider(explicitTarget)) return this.failure('供应商 ID 无效', explicitTarget)
-    if (await this.options.isCodexRunning?.()) {
-      return this.failure('Codex App / ChatGPT 仍在运行，请完全退出后再修复', explicitTarget)
-    }
     const lockPath = join(this.options.codexHome, 'tmp', 'account-switcher-provider-sync.lock')
     try {
       await mkdir(dirname(lockPath), { recursive: true })
@@ -559,10 +555,25 @@ export class SessionRepairService {
         await writeFile(`${plan.globalState.path}.bak`, plan.globalState.nextText, 'utf8')
       }
       this.options.faultInjector?.('after-global-state')
+      const verification = await this.buildPlan(explicitTarget)
+      const pendingRows =
+        verification.preview.sqliteProviderRows +
+        verification.preview.sqliteUserEventRows +
+        verification.preview.sqliteCwdRows
+      if (
+        verification.preview.changedSessionFiles > 0 ||
+        pendingRows > 0 ||
+        verification.preview.globalStateKeys > 0
+      ) {
+        throw new Error(
+          `修复后复检未通过：仍有 ${verification.preview.changedSessionFiles} 个会话文件和 ${pendingRows} 条状态记录待修复`
+        )
+      }
       await this.pruneBackups()
+      const skipped = verification.preview.skippedLockedFiles.length
       return {
         ok: true,
-        message: '历史会话修复完成',
+        message: `历史会话修复完成并复检通过：文件 ${plan.preview.changedSessionFiles}，状态 ${updated.provider + updated.userEvent + updated.cwd}，全局配置 ${plan.globalState.changedKeys}${skipped > 0 ? `；${skipped} 个锁定文件未处理` : ''}`,
         targetProvider: explicitTarget,
         changedSessionFiles: plan.preview.changedSessionFiles,
         sqliteRowsUpdated: updated.provider + updated.userEvent + updated.cwd,

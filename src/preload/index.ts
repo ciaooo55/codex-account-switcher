@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { CodexSwitcherApi, TestProgress, UpdateState } from '../shared/ipc'
+import type { AutoSwitchState } from '../shared/types'
 import { ipcChannels } from '../shared/ipc'
 
 const api: CodexSwitcherApi = {
@@ -28,6 +29,7 @@ const api: CodexSwitcherApi = {
   checkForUpdates: () => ipcRenderer.invoke(ipcChannels.updateCheck),
   downloadUpdate: () => ipcRenderer.invoke(ipcChannels.updateDownload),
   installUpdate: () => ipcRenderer.invoke(ipcChannels.updateInstall),
+  runAutoSwitchNow: () => ipcRenderer.invoke(ipcChannels.autoSwitchRun),
   onTestProgress: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: TestProgress): void => listener(progress)
     ipcRenderer.on(ipcChannels.testProgress, wrapped)
@@ -37,6 +39,11 @@ const api: CodexSwitcherApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, state: UpdateState): void => listener(state)
     ipcRenderer.on(ipcChannels.updateState, wrapped)
     return () => ipcRenderer.removeListener(ipcChannels.updateState, wrapped)
+  },
+  onAutoSwitchState: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: AutoSwitchState): void => listener(state)
+    ipcRenderer.on(ipcChannels.autoSwitchState, wrapped)
+    return () => ipcRenderer.removeListener(ipcChannels.autoSwitchState, wrapped)
   }
 }
 

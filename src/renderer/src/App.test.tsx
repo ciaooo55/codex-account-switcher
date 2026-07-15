@@ -58,7 +58,7 @@ const snapshot: AppSnapshot = {
       active: false
     }
   ],
-  importDirectory: 'C:\\Users\\lee\\AppData\\Roaming\\codex-account-switcher\\imports',
+  importDirectory: 'C:\\Users\\lee\\AppData\\Roaming\\Codex Account Switcher\\aa',
   settings: {
     accountDirectory: 'E:\\home\\lee\\.cli-proxy-api',
     authPath: 'C:\\Users\\lee\\.codex\\auth.json',
@@ -66,9 +66,21 @@ const snapshot: AppSnapshot = {
     concurrency: 4,
     timeoutMs: 30_000,
     backupRetention: 20,
-    deepTestModel: 'gpt-5.4'
+    deepTestModel: 'gpt-5.4',
+    autoSwitchEnabled: false,
+    autoSwitchIntervalSeconds: 300,
+    autoSwitchAccountIds: [],
+    autoSwitchRestartCodex: true
   },
-  testing: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null }
+  testing: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
+  autoSwitch: {
+    enabled: false,
+    running: false,
+    nextCheckAt: null,
+    lastCheckAt: null,
+    lastMessage: '自动切换未启用',
+    lastSwitchedAccountId: null
+  }
 }
 
 let progressListener: ((progress: TestProgress) => void) | null = null
@@ -156,7 +168,15 @@ function api(): CodexSwitcherApi {
     }),
     downloadUpdate: vi.fn().mockResolvedValue(undefined),
     installUpdate: vi.fn().mockResolvedValue(undefined),
+    runAutoSwitchNow: vi.fn().mockResolvedValue({
+      ok: true,
+      switched: false,
+      message: '当前账号无需切换',
+      checkedAccountIds: [],
+      switchedAccountId: null
+    }),
     onUpdateState: vi.fn().mockImplementation(() => () => undefined),
+    onAutoSwitchState: vi.fn().mockImplementation(() => () => undefined),
     onTestProgress: vi.fn().mockImplementation((listener) => {
       progressListener = listener
       return () => {
@@ -192,6 +212,33 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
 
     await waitFor(() => expect(window.codexSwitcher.importDirectory).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('文件夹导入完成：导入 2，跳过 0')).toBeInTheDocument()
+  })
+
+  it('does not report success when the file picker is cancelled', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入文件' }))
+
+    expect(await screen.findByText('已取消操作')).toBeInTheDocument()
+    expect(screen.queryByText(/文件导入完成/)).not.toBeInTheDocument()
+  })
+
+  it('reports partial scan failures instead of hiding them behind a success message', async () => {
+    window.codexSwitcher.scanDirectory = vi.fn().mockResolvedValue({
+      imported: 3,
+      skipped: 2,
+      errors: ['broken.json: invalid'],
+      accounts: snapshot.accounts
+    })
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '同步 aa' }))
+
+    const warning = await screen.findByText('aa 凭证库同步完成：导入 3，跳过 2，失败 1')
+    expect(warning.closest('.message')).toHaveClass('warn')
   })
 
   it('filters by persistent status and searches workspace text', async () => {
@@ -221,7 +268,7 @@ describe('App', () => {
     await waitFor(() =>
       expect(window.codexSwitcher.deleteAccounts).toHaveBeenCalledWith(['account-a'])
     )
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('原始导入文件不会被删除'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('外部原始文件不受影响'))
     confirm.mockRestore()
   })
 
@@ -249,6 +296,28 @@ describe('App', () => {
     await waitFor(() =>
       expect(window.codexSwitcher.updateSettings).toHaveBeenCalledWith(
         expect.objectContaining({ concurrency: 6 })
+      )
+    )
+  })
+
+  it('configures a timed auto-switch pool in seconds', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '设置' }))
+    fireEvent.click(screen.getByLabelText('启用定时自动切换'))
+    fireEvent.change(screen.getByLabelText('自动切换检查间隔'), { target: { value: '45' } })
+    fireEvent.click(screen.getByLabelText('自动切换候选 person@example.com'))
+    expect(screen.getByLabelText('自动切换候选 second@example.com')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoSwitchEnabled: true,
+          autoSwitchIntervalSeconds: 45,
+          autoSwitchAccountIds: ['account-a']
+        })
       )
     )
   })

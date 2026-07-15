@@ -1,6 +1,8 @@
 import type {
   AccountSummary,
   AppSettings,
+  AutoSwitchRunResult,
+  AutoSwitchState,
   BatchTestResult,
   CredentialExportRequest,
   CredentialExportResult,
@@ -41,6 +43,7 @@ export interface AppSnapshot {
   settings: AppSettings
   importDirectory: string
   testing: TestProgress
+  autoSwitch: AutoSwitchState
 }
 
 export interface RestartResult {
@@ -71,8 +74,10 @@ export interface CodexSwitcherApi {
   checkForUpdates(): Promise<UpdateState>
   downloadUpdate(): Promise<void>
   installUpdate(): Promise<void>
+  runAutoSwitchNow(): Promise<AutoSwitchRunResult>
   onTestProgress(listener: (progress: TestProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
+  onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
 }
 
 export const ipcChannels = {
@@ -99,5 +104,7 @@ export const ipcChannels = {
   updateGetState: 'updates:get-state',
   updateCheck: 'updates:check',
   updateDownload: 'updates:download',
-  updateInstall: 'updates:install'
+  updateInstall: 'updates:install',
+  autoSwitchRun: 'auto-switch:run',
+  autoSwitchState: 'auto-switch:state'
 } as const

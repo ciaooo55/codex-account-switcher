@@ -181,9 +181,11 @@ describe('CredentialTester', () => {
     expect(fetchImpl.mock.calls[0][1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({
-          Originator: 'codex_cli_rs',
+          Originator: 'codex-tui',
           'Chatgpt-Account-Id': 'workspace-a',
-          Session_id: expect.any(String)
+          Session_id: expect.any(String),
+          Version: '0.135.0',
+          'User-Agent': expect.stringContaining('codex-tui/0.135.0')
         })
       })
     )
@@ -274,6 +276,58 @@ describe('CredentialTester', () => {
       status: 'network_error',
       httpStatus: 429,
       stage: 'deep-test'
+    })
+  })
+
+  it('reports model capacity 429 separately from account rate limits', async () => {
+    const tester = new CredentialTester({
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'plus', rate_limit: {} }))
+        .mockResolvedValueOnce(
+          jsonResponse(429, { error: { message: 'The selected model is currently experiencing high demand' } })
+        )
+    })
+
+    await expect(tester.test(credential())).resolves.toMatchObject({
+      status: 'model_unavailable',
+      httpStatus: 429
+    })
+  })
+
+  it('distinguishes five-hour exhaustion from weekly exhaustion using window duration', async () => {
+    const fiveHourTester = new CredentialTester({
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, {
+          plan_type: 'plus',
+          rate_limit: {
+            primary_window: { used_percent: 100, limit_window_seconds: 18_000 },
+            secondary_window: { used_percent: 20, limit_window_seconds: 604_800 }
+          }
+        }))
+        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
+    })
+    const weeklyTester = new CredentialTester({
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, {
+          plan_type: 'plus',
+          rate_limit: {
+            primary_window: { used_percent: 20, limit_window_seconds: 18_000 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 604_800 }
+          }
+        }))
+        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
+    })
+
+    await expect(fiveHourTester.test(credential())).resolves.toMatchObject({
+      status: 'quota_exhausted_5h',
+      detail: '5 小时额度已耗尽'
+    })
+    await expect(weeklyTester.test(credential())).resolves.toMatchObject({
+      status: 'quota_exhausted_weekly',
+      detail: '周额度已耗尽'
     })
   })
 

@@ -12,8 +12,8 @@ const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const COMPACT_URL = 'https://chatgpt.com/backend-api/codex/responses/compact'
 const REFRESH_URL = 'https://auth.openai.com/oauth/token'
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-const CODEX_VERSION = '0.144.2'
-const CODEX_USER_AGENT = `codex_cli_rs/${CODEX_VERSION} (Windows 10.0.22621; x86_64)`
+const CODEX_VERSION = '0.135.0'
+const CODEX_USER_AGENT = `codex-tui/${CODEX_VERSION} (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; ${CODEX_VERSION})`
 
 type FetchImplementation = typeof fetch
 
@@ -234,8 +234,32 @@ function isModelError(detail: string, payload: unknown): boolean {
       (text.includes('unavailable') ||
         text.includes('unsupported') ||
         text.includes('does not exist') ||
-        text.includes('not found')))
+        text.includes('not found') ||
+        text.includes('high demand') ||
+        text.includes('capacity') ||
+        text.includes('overloaded')))
   )
+}
+
+export function exhaustedCodexQuota(
+  usage: UsageSummary | null
+): { status: 'quota_exhausted_5h' | 'quota_exhausted_weekly'; detail: string } | null {
+  if (!usage) return null
+  const exhausted = usage.windows.filter(
+    (window) => window.id.startsWith('codex-') && window.remainingPercent !== null && window.remainingPercent <= 0
+  )
+  if (exhausted.length === 0) return null
+  const fiveHour = exhausted.some(
+    (window) => window.windowSeconds === 18_000 || window.label.includes('5 小时')
+  )
+  const weekly = exhausted.some(
+    (window) => window.windowSeconds === 604_800 || window.label.includes('周额度')
+  )
+  if (fiveHour && weekly) {
+    return { status: 'quota_exhausted_weekly', detail: '5 小时额度和周额度均已耗尽' }
+  }
+  if (weekly) return { status: 'quota_exhausted_weekly', detail: '周额度已耗尽' }
+  return { status: 'quota_exhausted_5h', detail: '5 小时额度已耗尽' }
 }
 
 function isQuotaError(status: number, detail: string, payload: unknown): boolean {
@@ -277,7 +301,7 @@ function headersFor(credential: NormalizedCredential): HeadersInit {
     Accept: 'application/json',
     Authorization: `Bearer ${credential.accessToken}`,
     'Content-Type': 'application/json',
-    Originator: 'codex_cli_rs',
+    Originator: 'codex-tui',
     Session_id: randomUUID(),
     'User-Agent': CODEX_USER_AGENT,
     Version: CODEX_VERSION,
@@ -409,8 +433,18 @@ export class CredentialTester {
       return this.stage('no_permission', compactDetail, 403, 'deep-test', usage)
     }
     if (isQuotaError(compactResponse.status, compactDetail, compactPayload)) {
+      const quota = exhaustedCodexQuota(usage)
       return this.stage(
-        'quota_exhausted',
+        quota?.status ?? 'quota_exhausted',
+        quota?.detail ?? compactDetail,
+        compactResponse.status,
+        'deep-test',
+        usage
+      )
+    }
+    if (isModelError(compactDetail, compactPayload)) {
+      return this.stage(
+        'model_unavailable',
         compactDetail,
         compactResponse.status,
         'deep-test',
@@ -426,15 +460,6 @@ export class CredentialTester {
         usage
       )
     }
-    if (isModelError(compactDetail, compactPayload)) {
-      return this.stage(
-        'model_unavailable',
-        compactDetail,
-        compactResponse.status,
-        'deep-test',
-        usage
-      )
-    }
     if (!compactResponse.ok) {
       return this.stage(
         'endpoint_incompatible',
@@ -445,10 +470,21 @@ export class CredentialTester {
       )
     }
     if (usageQuota) {
+      const quota = exhaustedCodexQuota(usage)
       return this.stage(
-        'quota_exhausted',
-        usageQuota.detail,
+        quota?.status ?? 'quota_exhausted',
+        quota?.detail ?? usageQuota.detail,
         usageQuota.httpStatus,
+        'usage',
+        usage
+      )
+    }
+    const exhaustedQuota = exhaustedCodexQuota(usage)
+    if (exhaustedQuota) {
+      return this.stage(
+        exhaustedQuota.status,
+        exhaustedQuota.detail,
+        200,
         'usage',
         usage
       )
