@@ -17,7 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "package:win": "npm run build && electron-builder --win nsis portable",
+    "package:win": "npm run build && electron-builder --win nsis portable --publish never",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
