@@ -1,0 +1,79 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+env:
+  CODEX_NODE_VERSION: '22'
+  CODEX_RELEASE_DIR: release
+  CODEX_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  CODEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.CODEX_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify unit tests and build
+        run: npm run verify
+
+      - name: Verify Electron workflow
+        run: npm run test:e2e
+
+      - name: Build installer and portable executable
+        run: npm run package:win
+
+      - name: Create SHA256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            "${{ env.CODEX_RELEASE_DIR }}/Codex Account Switcher Setup 0.1.0.exe",
+            "${{ env.CODEX_RELEASE_DIR }}/Codex Account Switcher 0.1.0.exe"
+          )
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($file))"
+          }
+          $lines | Set-Content -Encoding ascii "${{ env.CODEX_RELEASE_DIR }}/SHA256SUMS.txt"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-account-switcher-windows
+          path: |
+            ${{ env.CODEX_RELEASE_DIR }}/Codex Account Switcher Setup 0.1.0.exe
+            ${{ env.CODEX_RELEASE_DIR }}/Codex Account Switcher 0.1.0.exe
+            ${{ env.CODEX_RELEASE_DIR }}/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ env.CODEX_GITHUB_TOKEN }}
+          tag_name: ${{ env.CODEX_RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            ${{ env.CODEX_RELEASE_DIR }}/Codex Account Switcher Setup 0.1.0.exe
+            ${{ env.CODEX_RELEASE_DIR }}/Codex Account Switcher 0.1.0.exe
+            ${{ env.CODEX_RELEASE_DIR }}/SHA256SUMS.txt

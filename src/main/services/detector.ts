@@ -1,0 +1,627 @@
+import { randomUUID } from 'node:crypto'
+import type {
+  AccountStatus,
+  NormalizedCredential,
+  TestResult,
+  UsageSummary,
+  UsageWindow
+} from '../../shared/types'
+import { parseCredentialText } from '../accounts/parser'
+
+const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const COMPACT_URL = 'https://chatgpt.com/backend-api/codex/responses/compact'
+const REFRESH_URL = 'https://auth.openai.com/oauth/token'
+const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const CODEX_VERSION = '0.144.2'
+const CODEX_USER_AGENT = `codex_cli_rs/${CODEX_VERSION} (Windows 10.0.22621; x86_64)`
+
+type FetchImplementation = typeof fetch
+
+interface CredentialTesterOptions {
+  fetchImpl?: FetchImplementation
+  now?: () => Date
+  timeoutMs?: number
+  deepTestModel?: string
+  onCredentialUpdated?: (credential: NormalizedCredential) => void | Promise<void>
+  usageUrl?: string
+  compactUrl?: string
+  refreshUrl?: string
+}
+
+interface StageResult {
+  status: AccountStatus
+  detail: string
+  httpStatus: number | null
+  stage: TestResult['stage']
+  usage: UsageSummary | null
+  authFailure: boolean
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | null {
+  for (const value of values) {
+    const record = asRecord(value)
+    if (record) return record
+  }
+  return null
+}
+
+function numberOrNull(value: unknown): number | null {
+  const number = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function timestampOrNull(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) {
+    const timestamp = Date.parse(value)
+    return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+  }
+  const timestamp = numberOrNull(value)
+  if (timestamp === null || timestamp <= 0) return null
+  const milliseconds = timestamp > 10_000_000_000 ? timestamp : timestamp * 1_000
+  const date = new Date(milliseconds)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function windowLabel(baseLabel: string, slot: 'primary' | 'secondary', seconds: number | null): string {
+  if (seconds === 7 * 24 * 60 * 60) return `${baseLabel} 周额度`
+  if (seconds !== null && seconds > 0) {
+    if (seconds % 86_400 === 0) return `${baseLabel} ${seconds / 86_400} 天`
+    if (seconds % 3_600 === 0) return `${baseLabel} ${seconds / 3_600} 小时`
+    if (seconds % 60 === 0) return `${baseLabel} ${seconds / 60} 分钟`
+    return `${baseLabel} ${seconds} 秒`
+  }
+  return `${baseLabel} ${slot === 'primary' ? '主窗口' : '次窗口'}`
+}
+
+function usageWindow(
+  id: string,
+  baseLabel: string,
+  slot: 'primary' | 'secondary',
+  value: unknown,
+  checkedAt: string,
+  limitReached?: unknown,
+  allowed?: unknown
+): UsageWindow | null {
+  const record = asRecord(value)
+  if (!record) return null
+  let usedPercent = numberOrNull(record.used_percent ?? record.usedPercent)
+  if (usedPercent === null && (limitReached === true || allowed === false)) usedPercent = 100
+  if (usedPercent !== null) usedPercent = Math.max(0, Math.min(100, usedPercent))
+  const windowSeconds = numberOrNull(record.limit_window_seconds ?? record.limitWindowSeconds)
+  const resetInSeconds = numberOrNull(
+    record.reset_after_seconds ??
+      record.resetAfterSeconds ??
+      record.resets_in_seconds ??
+      record.resetsInSeconds
+  )
+  const explicitResetAt = timestampOrNull(
+    record.reset_at ?? record.resetAt ?? record.resets_at ?? record.resetsAt
+  )
+  const checkedTimestamp = Date.parse(checkedAt)
+  const resetAt =
+    explicitResetAt ??
+    (resetInSeconds !== null && Number.isFinite(checkedTimestamp)
+      ? new Date(checkedTimestamp + resetInSeconds * 1_000).toISOString()
+      : null)
+  return {
+    id,
+    label: windowLabel(baseLabel, slot, windowSeconds),
+    usedPercent,
+    remainingPercent: usedPercent === null ? null : 100 - usedPercent,
+    resetAt,
+    resetInSeconds,
+    windowSeconds
+  }
+}
+
+function appendRateWindows(
+  rows: UsageWindow[],
+  rateValue: unknown,
+  idPrefix: string,
+  baseLabel: string,
+  checkedAt: string
+): void {
+  const rate = asRecord(rateValue)
+  if (!rate) return
+  const primary = usageWindow(
+    `${idPrefix}-primary`,
+    baseLabel,
+    'primary',
+    rate.primary_window ?? rate.primaryWindow,
+    checkedAt,
+    rate.limit_reached ?? rate.limitReached,
+    rate.allowed
+  )
+  const secondary = usageWindow(
+    `${idPrefix}-secondary`,
+    baseLabel,
+    'secondary',
+    rate.secondary_window ?? rate.secondaryWindow,
+    checkedAt,
+    rate.limit_reached ?? rate.limitReached,
+    rate.allowed
+  )
+  if (primary) rows.push(primary)
+  if (secondary) rows.push(secondary)
+}
+
+export function parseUsageResponse(data: unknown, checkedAt = new Date().toISOString()): UsageSummary {
+  const root = asRecord(data) ?? {}
+  const windows: UsageWindow[] = []
+  appendRateWindows(
+    windows,
+    root.rate_limit ?? root.rateLimit,
+    'codex',
+    'Codex',
+    checkedAt
+  )
+  appendRateWindows(
+    windows,
+    root.code_review_rate_limit ?? root.codeReviewRateLimit,
+    'review',
+    '代码审查',
+    checkedAt
+  )
+  const additional = root.additional_rate_limits ?? root.additionalRateLimits
+  if (Array.isArray(additional)) {
+    additional.forEach((item, index) => {
+      const entry = asRecord(item)
+      if (!entry) return
+      const label =
+        stringOrNull(
+          entry.limit_name ?? entry.limitName ?? entry.metered_feature ?? entry.meteredFeature
+        ) ?? `额外限额 ${index + 1}`
+      appendRateWindows(
+        windows,
+        entry.rate_limit ?? entry.rateLimit,
+        `additional-${index + 1}`,
+        label,
+        checkedAt
+      )
+    })
+  }
+  return {
+    planType: stringOrNull(root.plan_type ?? root.planType),
+    windows,
+    checkedAt
+  }
+}
+
+function responseDetail(value: unknown): string {
+  const text = stringOrNull(value)
+  if (text) return text
+  const root = asRecord(value)
+  const error = asRecord(root?.error)
+  return (
+    stringOrNull(error?.message) ??
+    stringOrNull(error?.code) ??
+    stringOrNull(error?.type) ??
+    stringOrNull(root?.detail) ??
+    stringOrNull(root?.message) ??
+    '未知错误'
+  )
+}
+
+async function responsePayload(response: Response): Promise<unknown> {
+  try {
+    const text = await response.text()
+    if (!text.trim()) return null
+    try {
+      return JSON.parse(text) as unknown
+    } catch {
+      return text
+    }
+  } catch {
+    return null
+  }
+}
+
+function isModelError(detail: string, payload: unknown): boolean {
+  const text = `${detail} ${JSON.stringify(payload)}`.toLowerCase()
+  return (
+    text.includes('model_not_found') ||
+    (text.includes('model') &&
+      (text.includes('unavailable') ||
+        text.includes('unsupported') ||
+        text.includes('does not exist') ||
+        text.includes('not found')))
+  )
+}
+
+function isQuotaError(status: number, detail: string, payload: unknown): boolean {
+  if (status === 402) return true
+  const root = asRecord(payload)
+  const error = asRecord(root?.error)
+  const code = `${stringOrNull(error?.type) ?? ''} ${stringOrNull(error?.code) ?? ''}`
+    .trim()
+    .toLowerCase()
+  if (
+    code.includes('usage_limit_reached') ||
+    code.includes('insufficient_quota') ||
+    code.includes('payment_required')
+  ) {
+    return true
+  }
+  const text = detail.toLowerCase()
+  return (
+    text.includes('usage limit reached') ||
+    text.includes('insufficient quota') ||
+    text.includes('insufficient credits') ||
+    text.includes('payment required') ||
+    text.includes('billing quota')
+  )
+}
+
+function sanitizedDetail(detail: string, credential: NormalizedCredential): string {
+  let result = detail
+  for (const token of [credential.accessToken, credential.refreshToken, credential.idToken]) {
+    if (token && token.length >= 4) result = result.split(token).join('[redacted]')
+  }
+  result = result.replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+  result = result.replace(/rt\.[A-Za-z0-9._-]+/g, 'rt.[redacted]')
+  return result.slice(0, 280)
+}
+
+function headersFor(credential: NormalizedCredential): HeadersInit {
+  return {
+    Accept: 'application/json',
+    Authorization: `Bearer ${credential.accessToken}`,
+    'Content-Type': 'application/json',
+    Originator: 'codex_cli_rs',
+    Session_id: randomUUID(),
+    'User-Agent': CODEX_USER_AGENT,
+    Version: CODEX_VERSION,
+    ...(credential.accountId ? { 'Chatgpt-Account-Id': credential.accountId } : {})
+  }
+}
+
+export class CredentialTester {
+  private readonly fetchImpl: FetchImplementation
+  private readonly now: () => Date
+  private readonly timeoutMs: number
+  private readonly deepTestModel: string
+  private readonly usageUrl: string
+  private readonly compactUrl: string
+  private readonly refreshUrl: string
+
+  constructor(private readonly options: CredentialTesterOptions = {}) {
+    this.fetchImpl = options.fetchImpl ?? fetch
+    this.now = options.now ?? (() => new Date())
+    this.timeoutMs = options.timeoutMs ?? 30_000
+    this.deepTestModel = options.deepTestModel ?? 'gpt-5.4'
+    this.usageUrl = options.usageUrl ?? USAGE_URL
+    this.compactUrl = options.compactUrl ?? COMPACT_URL
+    this.refreshUrl = options.refreshUrl ?? REFRESH_URL
+  }
+
+  async test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult> {
+    const checkedAt = this.now().toISOString()
+    let activeCredential = credential
+    let refreshed = false
+
+    if (this.isExpired(activeCredential.accessExpiresAt)) {
+      if (!activeCredential.refreshToken) {
+        return this.result(
+          activeCredential,
+          'non_refreshable',
+          'access token 已过期且缺少 refresh token',
+          'local',
+          checkedAt
+        )
+      }
+      const refreshResult = await this.refresh(activeCredential, signal)
+      if ('status' in refreshResult) return { ...refreshResult, checkedAt }
+      activeCredential = refreshResult.credential
+      refreshed = true
+    }
+
+    let stageResult = await this.runStages(activeCredential, signal)
+    if (stageResult.authFailure && !refreshed && activeCredential.refreshToken) {
+      const refreshResult = await this.refresh(activeCredential, signal)
+      if ('status' in refreshResult) return { ...refreshResult, checkedAt }
+      activeCredential = refreshResult.credential
+      refreshed = true
+      stageResult = await this.runStages(activeCredential, signal)
+    }
+
+    return {
+      accountId: credential.id,
+      status: stageResult.status,
+      detail: sanitizedDetail(stageResult.detail, activeCredential),
+      checkedAt,
+      httpStatus: stageResult.httpStatus,
+      stage: stageResult.stage,
+      refreshed,
+      usage: stageResult.usage
+    }
+  }
+
+  private async runStages(
+    credential: NormalizedCredential,
+    signal?: AbortSignal
+  ): Promise<StageResult> {
+    const compactResponse = await this.request(
+      this.compactUrl,
+      {
+        method: 'POST',
+        headers: headersFor(credential),
+        body: JSON.stringify({
+          instructions: '',
+          model: this.deepTestModel,
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: 'ping' }]
+            }
+          ]
+        })
+      },
+      signal,
+      credential
+    )
+    if ('networkError' in compactResponse) return compactResponse.networkError
+    const compactPayload = await responsePayload(compactResponse)
+    const compactDetail = responseDetail(compactPayload)
+    if (compactResponse.status === 401) {
+      return this.stage('invalid', compactDetail, 401, 'deep-test', null, true)
+    }
+    if (compactResponse.status === 403) {
+      return this.stage('no_permission', compactDetail, 403, 'deep-test')
+    }
+    if (isQuotaError(compactResponse.status, compactDetail, compactPayload)) {
+      return this.stage(
+        'quota_exhausted',
+        compactDetail,
+        compactResponse.status,
+        'deep-test'
+      )
+    }
+    if (compactResponse.status === 429) {
+      return this.stage(
+        'network_error',
+        `临时限流: ${compactDetail}`,
+        429,
+        'deep-test'
+      )
+    }
+    if (isModelError(compactDetail, compactPayload)) {
+      return this.stage(
+        'model_unavailable',
+        compactDetail,
+        compactResponse.status,
+        'deep-test'
+      )
+    }
+    if (!compactResponse.ok) {
+      return this.stage(
+        'endpoint_incompatible',
+        `深度检测 HTTP ${compactResponse.status}: ${compactDetail}`,
+        compactResponse.status,
+        'deep-test'
+      )
+    }
+
+    const usageResponse = await this.request(
+      this.usageUrl,
+      { method: 'GET', headers: headersFor(credential) },
+      signal,
+      credential
+    )
+    if ('networkError' in usageResponse) {
+      return this.stage(
+        'valid',
+        `账号可用；额度查询失败: ${usageResponse.networkError.detail}`,
+        null,
+        'usage'
+      )
+    }
+    const usagePayload = await responsePayload(usageResponse)
+    const usageDetail = responseDetail(usagePayload)
+    if (usageResponse.status === 401) {
+      return this.stage('invalid', usageDetail, 401, 'usage', null, true)
+    }
+    if (isQuotaError(usageResponse.status, usageDetail, usagePayload)) {
+      return this.stage('quota_exhausted', usageDetail, usageResponse.status, 'usage')
+    }
+    if (!usageResponse.ok) {
+      return this.stage(
+        'valid',
+        `账号可用；额度接口 HTTP ${usageResponse.status}: ${usageDetail}`,
+        usageResponse.status,
+        'usage'
+      )
+    }
+    const usage = parseUsageResponse(usagePayload, this.now().toISOString())
+    return this.stage('valid', '正常可用', 200, 'usage', usage)
+  }
+
+  private async refresh(
+    credential: NormalizedCredential,
+    signal?: AbortSignal
+  ): Promise<{ credential: NormalizedCredential } | TestResult> {
+    const checkedAt = this.now().toISOString()
+    if (!credential.refreshToken) {
+      return this.result(
+        credential,
+        'non_refreshable',
+        '缺少 refresh token',
+        'refresh',
+        checkedAt
+      )
+    }
+    const response = await this.request(
+      this.refreshUrl,
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          client_id: CODEX_CLIENT_ID,
+          grant_type: 'refresh_token',
+          refresh_token: credential.refreshToken,
+          scope: 'openid profile email'
+        })
+      },
+      signal,
+      credential
+    )
+    if ('networkError' in response) {
+      const error = response.networkError
+      return {
+        accountId: credential.id,
+        status: error.status,
+        detail: error.detail,
+        checkedAt,
+        httpStatus: error.httpStatus,
+        stage: 'refresh',
+        refreshed: false,
+        usage: null
+      }
+    }
+    const payload = await responsePayload(response)
+    if (!response.ok) {
+      return this.result(
+        credential,
+        response.status === 401 || response.status === 403 ? 'invalid' : 'endpoint_incompatible',
+        responseDetail(payload),
+        'refresh',
+        checkedAt,
+        response.status
+      )
+    }
+    const root = asRecord(payload)
+    const accessToken = stringOrNull(root?.access_token)
+    if (!accessToken) {
+      return this.result(
+        credential,
+        'invalid',
+        '刷新响应缺少 access_token',
+        'refresh',
+        checkedAt,
+        response.status
+      )
+    }
+    const normalized = parseCredentialText(
+      JSON.stringify({
+        access_token: accessToken,
+        refresh_token: stringOrNull(root?.refresh_token) ?? credential.refreshToken,
+        id_token: stringOrNull(root?.id_token) ?? credential.idToken,
+        account_id: stringOrNull(root?.account_id) ?? credential.accountId,
+        email: credential.email,
+        plan_type: credential.planType,
+        last_refresh: checkedAt
+      }),
+      { sourcePath: credential.sourcePath, format: credential.sourceFormat }
+    ).credentials[0]
+    if (!normalized) {
+      return this.result(
+        credential,
+        'invalid',
+        '刷新响应无法转换为 Codex 凭据',
+        'refresh',
+        checkedAt,
+        response.status
+      )
+    }
+    const updated: NormalizedCredential = {
+      ...credential,
+      ...normalized,
+      id: credential.id,
+      sourcePath: credential.sourcePath,
+      sourceFormat: credential.sourceFormat
+    }
+    await this.options.onCredentialUpdated?.(updated)
+    return { credential: updated }
+  }
+
+  private async request(
+    url: string,
+    init: RequestInit,
+    externalSignal: AbortSignal | undefined,
+    credential: NormalizedCredential
+  ): Promise<Response | { networkError: StageResult }> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
+    const abort = () => controller.abort()
+    externalSignal?.addEventListener('abort', abort, { once: true })
+    try {
+      return await this.fetchImpl(url, { ...init, signal: controller.signal })
+    } catch (error) {
+      const detail =
+        controller.signal.aborted && !externalSignal?.aborted
+          ? `请求超时（${this.timeoutMs}ms）`
+          : externalSignal?.aborted
+            ? '检测已取消'
+            : error instanceof Error
+              ? error.message
+              : '网络请求失败'
+      return {
+        networkError: this.stage(
+          'network_error',
+          sanitizedDetail(detail, credential),
+          null,
+          'usage'
+        )
+      }
+    } finally {
+      clearTimeout(timeout)
+      externalSignal?.removeEventListener('abort', abort)
+    }
+  }
+
+  private isExpired(value: string | null): boolean {
+    if (!value) return false
+    const timestamp = Date.parse(value)
+    return Number.isFinite(timestamp) && timestamp <= this.now().getTime()
+  }
+
+  private stage(
+    status: AccountStatus,
+    detail: string,
+    httpStatus: number | null,
+    stage: TestResult['stage'],
+    usage: UsageSummary | null = null,
+    authFailure = false
+  ): StageResult {
+    return { status, detail, httpStatus, stage, usage, authFailure }
+  }
+
+  private result(
+    credential: NormalizedCredential,
+    status: AccountStatus,
+    detail: string,
+    stage: TestResult['stage'],
+    checkedAt: string,
+    httpStatus: number | null = null
+  ): TestResult {
+    return {
+      accountId: credential.id,
+      status,
+      detail: sanitizedDetail(detail, credential),
+      checkedAt,
+      httpStatus,
+      stage,
+      refreshed: false,
+      usage: null
+    }
+  }
+}
+
+export const detectorEndpoints = {
+  usage: USAGE_URL,
+  compact: COMPACT_URL,
+  refresh: REFRESH_URL
+} as const
