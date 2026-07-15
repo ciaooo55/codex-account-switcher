@@ -38,6 +38,10 @@ export interface SwitchResult {
   ok: boolean
   message: string
   backupPath: string | null
+  restartResult?: {
+    ok: boolean
+    message: string
+  }
 }
 
 export type AccountStatus =

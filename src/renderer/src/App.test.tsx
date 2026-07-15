@@ -264,6 +264,46 @@ describe('App', () => {
     )
   })
 
+  it('switches and restarts the exact account chosen from the context menu', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    window.codexSwitcher.switchAccount = vi.fn().mockResolvedValue({
+      ok: true,
+      message: '账号切换完成；Codex 已重启',
+      backupPath: null,
+      restartResult: { ok: true, message: 'Codex 已重启' }
+    })
+    render(<App />)
+    const row = await screen.findByRole('row', { name: /second@example\.com/ })
+
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: '切换并重启' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.switchAccount).toHaveBeenCalledWith('account-b', true)
+    )
+    expect(await screen.findByText('账号切换完成；Codex 已重启')).toBeInTheDocument()
+    confirm.mockRestore()
+  })
+
+  it('reports a restart failure without claiming the completed account switch was rolled back', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    window.codexSwitcher.switchAccount = vi.fn().mockResolvedValue({
+      ok: true,
+      message: '账号切换完成，但 Codex 自动重启失败。账号已完成切换，可手动重启 Codex',
+      backupPath: null,
+      restartResult: { ok: false, message: 'Codex 自动重启失败' }
+    })
+    render(<App />)
+    const row = await screen.findByRole('row', { name: /person@example\.com/ })
+
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: '切换并重启' }))
+
+    const warning = await screen.findByText(/账号已完成切换，可手动重启 Codex/)
+    expect(warning.closest('.message')).toHaveClass('warn')
+    confirm.mockRestore()
+  })
+
   it('opens the source file location from the account context menu', async () => {
     render(<App />)
     const row = await screen.findByRole('row', { name: /person@example\.com/ })

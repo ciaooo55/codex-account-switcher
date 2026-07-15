@@ -46,6 +46,39 @@ jobs:
       - name: Build installer and portable executable
         run: npm run package:win
 
+      - name: Smoke test single instance and installer replacement
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/win-unpacked/Codex Account Switcher.exe").Path
+          $setup = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/Codex-Account-Switcher-Setup-*.exe").Path
+
+          function Get-PackagedSwitcherProcess {
+            @(Get-Process | Where-Object { $_.Path -eq $exe })
+          }
+
+          try {
+            Start-Process -FilePath $exe
+            Start-Sleep -Seconds 6
+            Start-Process -FilePath $exe
+            Start-Sleep -Seconds 4
+
+            $windows = @(Get-PackagedSwitcherProcess | Where-Object { $_.MainWindowHandle -ne 0 })
+            if ($windows.Count -ne 1) {
+              throw "Expected one primary application window after two launches, found $($windows.Count)."
+            }
+
+            $installer = Start-Process -FilePath $setup -ArgumentList "/S" -Wait -PassThru
+            if ($installer.ExitCode -ne 0) {
+              throw "Silent installer exited with code $($installer.ExitCode)."
+            }
+            Start-Sleep -Seconds 2
+            if ((Get-PackagedSwitcherProcess).Count -ne 0) {
+              throw "Installer did not close the running packaged application."
+            }
+          } finally {
+            Get-PackagedSwitcherProcess | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Create SHA256 checksums
         shell: pwsh
         run: |

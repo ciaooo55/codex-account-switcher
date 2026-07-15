@@ -34,7 +34,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(57, 139, 253
 .task-progress > div { height: 100%; background: #204f7d; transition: width .18s ease; }
 .task-progress span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; }
 .message { display: flex; align-items: center; gap: 8px; padding: 9px 16px; font-size: 12px; border-bottom: 1px solid; }
-.message.ok { color: #8ee99a; background: #14261b; border-color: #285c35; }.message.error { color: #ffaca5; background: #2a181a; border-color: #633033; }
+.message.ok { color: #8ee99a; background: #14261b; border-color: #285c35; }.message.warn { color: #ffe0a3; background: #332918; border-color: #70562b; }.message.error { color: #ffaca5; background: #2a181a; border-color: #633033; }
 .filter-row { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #14181d; border-bottom: 1px solid #2b323a; }
 .search-field { display: flex; align-items: center; gap: 8px; min-width: 280px; flex: 1; color: #7f8b97; background: #171c22; border: 1px solid #343c45; border-radius: 5px; padding-left: 10px; }
 .search-field input { flex: 1; border: 0; background: transparent; padding-left: 0; }

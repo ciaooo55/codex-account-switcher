@@ -32,6 +32,7 @@ if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
   app.setPath('userData', resolve(process.env.CODEX_SWITCHER_USER_DATA))
 }
 let mainWindow: BrowserWindow | null = null
+let switchOperationActive = false
 let testController: AbortController | null = null
 let progress: TestProgress = {
   active: false,
@@ -87,6 +88,13 @@ function createWindow(): BrowserWindow {
     void window.loadFile(join(currentDirectory, '../renderer/index.html'))
   }
   return window
+}
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
 }
 
 async function main(): Promise<void> {
@@ -359,31 +367,61 @@ async function main(): Promise<void> {
     testController?.abort()
   })
   ipcMain.handle(ipcChannels.switchAccount, async (_event, input: unknown) => {
-    const payload = z.object({ id: z.string().min(1), restart: z.boolean() }).parse(input)
-    const result = await manager.switchAccount(payload.id)
-    if (result.ok && payload.restart) {
-      const restart = await processManager.restart()
-      if (!restart.ok) return { ...result, ok: false, message: restart.message }
+    if (switchOperationActive) {
+      return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
     }
-    return result
+    const payload = z.object({ id: z.string().min(1), restart: z.boolean() }).parse(input)
+    switchOperationActive = true
+    try {
+      const result = await manager.switchAccount(payload.id)
+      if (result.ok && payload.restart) {
+        const restartResult = await processManager.restart()
+        return {
+          ...result,
+          message: restartResult.ok
+            ? `${result.message}；${restartResult.message}`
+            : `${result.message}，但${restartResult.message}。账号已完成切换，可手动重启 Codex`,
+          restartResult
+        }
+      }
+      return result
+    } finally {
+      switchOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.restore, async (_event, input: unknown) => {
-    const payload = z.object({ restart: z.boolean() }).parse(input)
-    const result = await manager.restoreLatest()
-    if (result.ok && payload.restart) {
-      const restart = await processManager.restart()
-      if (!restart.ok) return { ...result, ok: false, message: restart.message }
+    if (switchOperationActive) {
+      return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
     }
-    return result
+    const payload = z.object({ restart: z.boolean() }).parse(input)
+    switchOperationActive = true
+    try {
+      const result = await manager.restoreLatest()
+      if (result.ok && payload.restart) {
+        const restartResult = await processManager.restart()
+        return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
+      }
+      return result
+    } finally {
+      switchOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.restoreApiMode, async (_event, input: unknown) => {
-    const payload = z.object({ restart: z.boolean() }).parse(input)
-    const result = await manager.restoreApiMode()
-    if (result.ok && payload.restart) {
-      const restart = await processManager.restart()
-      if (!restart.ok) return { ...result, ok: false, message: restart.message }
+    if (switchOperationActive) {
+      return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
     }
-    return result
+    const payload = z.object({ restart: z.boolean() }).parse(input)
+    switchOperationActive = true
+    try {
+      const result = await manager.restoreApiMode()
+      if (result.ok && payload.restart) {
+        const restartResult = await processManager.restart()
+        return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
+      }
+      return result
+    } finally {
+      switchOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.restart, () => processManager.restart())
   ipcMain.handle(ipcChannels.settingsUpdate, async (_event, input: unknown) => {
@@ -462,16 +500,25 @@ async function main(): Promise<void> {
   }
 }
 
-app.whenReady().then(main).catch((error) => {
-  dialog.showErrorBox(
-    'Codex Account Switcher 启动失败',
-    error instanceof Error ? error.message : String(error)
-  )
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
   app.quit()
-})
+} else {
+  app.on('second-instance', focusMainWindow)
 
-app.on('window-all-closed', () => app.quit())
+  app.whenReady().then(main).catch((error) => {
+    dialog.showErrorBox(
+      'Codex Account Switcher 启动失败',
+      error instanceof Error ? error.message : String(error)
+    )
+    app.quit()
+  })
 
-app.on('activate', () => {
-  if (!mainWindow) mainWindow = createWindow()
-})
+  app.on('window-all-closed', () => app.quit())
+
+  app.on('activate', () => {
+    if (!mainWindow) mainWindow = createWindow()
+    else focusMainWindow()
+  })
+}

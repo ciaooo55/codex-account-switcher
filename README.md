@@ -21,6 +21,7 @@ Windows 本地 Codex 账号切换器。应用扫描账号文件、检测真实 C
 - 按 Codex++ 行为同步历史 rollout、SQLite 可见性与工作区路径，写入前预览、加锁、备份并支持失败回滚。
 - 凭据使用 Electron `safeStorage` / Windows DPAPI 加密保存，renderer 与日志不接收 token。
 - 打包版可直接检查 GitHub Release、下载最新安装包并退出覆盖安装。
+- 应用启用 Windows 单实例锁；重复启动会聚焦已有窗口。安装或更新时会检测安装版和便携版进程，提示关闭后再覆盖文件。
 
 ## CPA 与 SubAPI 导入导出
 
@@ -43,8 +44,8 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.3.0.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.3.0.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.3.1.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.3.1.exe`：便携版
 
 ## 默认路径
 

@@ -1,6 +1,6 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Windows desktop account switcher for Codex file-based credentials",
   "repository": {
@@ -71,6 +71,7 @@
     ],
     "nsis": {
       "artifactName": "Codex-Account-Switcher-Setup-${version}.${ext}",
+      "include": "build/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

@@ -107,7 +107,7 @@ export function App(): React.JSX.Element {
   const [statusFilter, setStatusFilter] = useState<AccountStatus | ''>('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null)
-  const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
   const [pasteOpen, setPasteOpen] = useState(false)
@@ -272,10 +272,21 @@ export function App(): React.JSX.Element {
 
   const switchAccount = async (id: string, restart: boolean): Promise<void> => {
     if (restart && !window.confirm('切换并重启会中断正在运行的 Codex 任务，继续吗？')) return
-    await run(async () => {
+    setBusy(true)
+    setMessage(null)
+    try {
       const result = await window.codexSwitcher.switchAccount(id, restart)
       if (!result.ok) throw new Error(result.message)
-    }, restart ? '账号已切换，Codex 正在重启' : '账号已切换，请重启 Codex 使所有会话生效')
+      await reload()
+      setMessage({
+        kind: result.restartResult && !result.restartResult.ok ? 'warn' : 'ok',
+        text: restart ? result.message : '账号已切换，请重启 Codex 使所有会话生效'
+      })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const switchSelected = async (restart: boolean): Promise<void> => {
