@@ -21,6 +21,7 @@ import { CredentialExportService } from './services/exporter'
 import { SessionRepairService } from './services/session-repair'
 import { SettingsStore } from './storage/settings'
 import { StatusStore } from './storage/status-store'
+import { DeletedCredentialStore } from './storage/deleted-credentials'
 import { CredentialVault } from './storage/vault'
 import { CredentialSwitcher } from './switching/switcher'
 
@@ -94,6 +95,8 @@ async function main(): Promise<void> {
   const settingsStore = new SettingsStore(join(userData, 'settings.json'), homedir())
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
+  const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
+  const importDirectory = join(userData, 'imports')
   const processManager = new CodexProcessManager()
   let testApiBase: string | null = null
   if (e2eMode && process.env.CODEX_SWITCHER_TEST_API_BASE_URL) {
@@ -159,7 +162,8 @@ async function main(): Promise<void> {
     statusStore,
     tester,
     switcher,
-    managedImportDirectory: join(userData, 'imports')
+    managedImportDirectory: importDirectory,
+    deletedStore
   })
   const exporter = new CredentialExportService({ vault })
 
@@ -254,6 +258,7 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.snapshot, async () => ({
     accounts: await manager.listAccounts(),
     settings: await settingsStore.get(),
+    importDirectory,
     testing: progress
   }))
   ipcMain.handle(ipcChannels.scan, () => manager.scanDirectory())
@@ -261,15 +266,35 @@ async function main(): Promise<void> {
     const result = await dialog.showOpenDialog({
       title: '导入 Codex 账号文件',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'js', 'mjs', 'cjs', 'zip'] }]
+      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
     })
     return result.canceled
       ? null
       : manager.importFiles(result.filePaths, { archiveSources: true })
   })
+  ipcMain.handle(ipcChannels.importDirectory, async () => {
+    let directory: string | null = null
+    if (e2eMode && process.env.CODEX_SWITCHER_E2E_IMPORT_DIR) {
+      directory = resolve(process.env.CODEX_SWITCHER_E2E_IMPORT_DIR)
+    } else {
+      const settings = await settingsStore.get()
+      const result = await dialog.showOpenDialog({
+        title: '导入文件夹内的全部账号文件',
+        defaultPath: settings.accountDirectory,
+        properties: ['openDirectory']
+      })
+      if (!result.canceled) directory = result.filePaths[0]
+    }
+    return directory ? manager.importDirectory(directory) : null
+  })
   ipcMain.handle(ipcChannels.importPasted, (_event, input: unknown) =>
     manager.importPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input))
   )
+  ipcMain.handle(ipcChannels.deleteAccounts, async (_event, input: unknown) => {
+    if (testController) throw new Error('账号检测进行中，暂时不能删除账号')
+    const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
+    return manager.deleteAccounts(ids)
+  })
   ipcMain.handle(ipcChannels.exportAccounts, async (_event, input: unknown) => {
     const payload = z
       .object({
@@ -388,7 +413,7 @@ async function main(): Promise<void> {
     const id = z.string().min(1).parse(input)
     const sourcePath = await manager.getSourcePath(id)
     if (!sourcePath) return { ok: false, message: '账号来源不存在' }
-    if (!['.json', '.jsonl', '.txt', '.js', '.mjs', '.cjs', '.zip'].includes(extname(sourcePath).toLowerCase())) {
+    if (!['.json', '.jsonl', '.txt', '.md', '.js', '.mjs', '.cjs', '.zip'].includes(extname(sourcePath).toLowerCase())) {
       return { ok: false, message: '账号来源文件类型不受支持' }
     }
     try {

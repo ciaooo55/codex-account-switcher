@@ -4,6 +4,7 @@ import {
   ClipboardPaste,
   Copy,
   Download,
+  FolderInput,
   FolderOpen,
   Import,
   KeyRound,
@@ -16,6 +17,7 @@ import {
   Settings,
   Square,
   TestTube2,
+  Trash2,
   Wrench,
   X
 } from 'lucide-react'
@@ -178,7 +180,9 @@ export function App(): React.JSX.Element {
     return snapshot.accounts.filter((account) => {
       if (statusFilter && account.status !== statusFilter) return false
       if (!query) return true
-      return `${account.email ?? ''} ${account.sourcePath} ${account.detail}`.toLowerCase().includes(query)
+      return `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.sourceDialect} ${account.sourcePath} ${account.detail}`
+        .toLowerCase()
+        .includes(query)
     })
   }, [keyword, snapshot, statusFilter])
 
@@ -283,13 +287,33 @@ export function App(): React.JSX.Element {
     await switchAccount(id, restart)
   }
 
+  const deleteAccounts = async (ids?: string[]): Promise<void> => {
+    const accountIds = ids ?? [...selected]
+    if (accountIds.length === 0) {
+      setMessage({ kind: 'error', text: '请选择要删除的账号' })
+      return
+    }
+    if (!window.confirm(`确定从本地账号库删除 ${accountIds.length} 个账号吗？原始导入文件不会被删除。`)) {
+      return
+    }
+    await run(async () => {
+      const result = await window.codexSwitcher.deleteAccounts(accountIds)
+      if (result.deleted === 0) throw new Error('没有删除任何账号')
+      setSelected((current) => {
+        const next = new Set(current)
+        for (const id of accountIds) next.delete(id)
+        return next
+      })
+    }, `已从账号库删除 ${accountIds.length} 个账号`)
+  }
+
   const openContextMenu = (event: React.MouseEvent, account: AccountSummary): void => {
     event.preventDefault()
     setSelected(new Set([account.id]))
     setContextMenu({
       account,
       x: Math.min(event.clientX, Math.max(8, window.innerWidth - 238)),
-      y: Math.min(event.clientY, Math.max(8, window.innerHeight - 270))
+      y: Math.min(event.clientY, Math.max(8, window.innerHeight - 310))
     })
   }
 
@@ -370,11 +394,17 @@ export function App(): React.JSX.Element {
         <button onClick={() => void run(() => window.codexSwitcher.importFiles(), '文件导入完成')} disabled={busy}>
           <Import size={16} />导入文件
         </button>
+        <button onClick={() => void run(() => window.codexSwitcher.importDirectory(), '文件夹导入完成')} disabled={busy}>
+          <FolderInput size={16} />导入文件夹
+        </button>
         <button onClick={() => setPasteOpen(true)} disabled={busy}>
           <ClipboardPaste size={16} />粘贴导入
         </button>
         <button onClick={() => openExport()} disabled={busy || snapshot.accounts.length === 0}>
           <Download size={16} />导出账号
+        </button>
+        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || selected.size === 0 || snapshot.testing.active}>
+          <Trash2 size={16} />删除选中
         </button>
         <span className="toolbar-divider" />
         <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成')} disabled={busy || snapshot.testing.active}>
@@ -583,6 +613,9 @@ export function App(): React.JSX.Element {
           })}>
             <Copy size={15} />复制邮箱
           </button>
+          <button className="context-danger" role="menuitem" disabled={busy || snapshot.testing.active} onClick={() => contextAction(() => deleteAccounts([contextMenu.account.id]))}>
+            <Trash2 size={15} />删除此账号
+          </button>
         </div>
       )}
 
@@ -667,6 +700,7 @@ export function App(): React.JSX.Element {
         <div className="modal-backdrop" role="presentation">
           <section className="settings-panel" role="dialog" aria-modal="true" aria-label="设置">
             <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" onClick={() => setSettingsOpen(false)}><X size={18} /></button></div>
+            <label>应用凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
             <label>账号目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
             <label>auth.json 路径<input value={settingsDraft.authPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, authPath: event.target.value })} /></label>
             <label>config.toml 路径<input value={settingsDraft.configPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, configPath: event.target.value })} /></label>

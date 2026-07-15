@@ -1,4 +1,4 @@
-export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'zip' | 'paste'
+export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'md' | 'zip' | 'paste'
 export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'generic'
 
 export interface NormalizedCredential {
@@ -113,6 +113,11 @@ export interface ScanResult {
   skipped: number
   errors: string[]
   accounts: AccountSummary[]
+}
+
+export interface DeleteAccountsResult {
+  deleted: number
+  message: string
 }
 
 export interface BatchTestResult {

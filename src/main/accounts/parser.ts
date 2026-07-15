@@ -645,7 +645,7 @@ function tryStaticJavaScript(text: string): StaticValue[] | undefined {
 }
 
 function extractedValues(text: string, options: CredentialParseOptions): unknown[] {
-  if (options.format === 'paste') return pastedValues(text)
+  if (options.format === 'paste' || options.format === 'md') return pastedValues(text)
   const json = tryJson(text)
   if (json !== undefined) return [json]
 

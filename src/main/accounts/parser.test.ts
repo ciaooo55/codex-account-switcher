@@ -312,6 +312,28 @@ describe('parseCredentialText', () => {
     expect(result.errors[0]).toContain('too-deep.js')
   })
 
+  it('extracts one or many accounts from Markdown code blocks', () => {
+    const result = parseCredentialText(
+      `# Accounts\n\n\`\`\`json\n${JSON.stringify([
+        {
+          access_token: jwt({ sub: 'markdown-one' }),
+          email: 'markdown-one@example.com'
+        },
+        {
+          access_token: jwt({ sub: 'markdown-two' }),
+          email: 'markdown-two@example.com'
+        }
+      ])}\n\`\`\``,
+      { sourcePath: 'accounts.md', format: 'md' }
+    )
+
+    expect(result.credentials.map((credential) => credential.email)).toEqual([
+      'markdown-one@example.com',
+      'markdown-two@example.com'
+    ])
+    expect(result.credentials.every((credential) => credential.sourceFormat === 'md')).toBe(true)
+  })
+
   it('rejects static JavaScript literals that exceed the AST node limit', () => {
     const credential = JSON.stringify({
       access_token: jwt({ sub: 'large-js' }),

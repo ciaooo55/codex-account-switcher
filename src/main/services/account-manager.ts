@@ -1,12 +1,13 @@
 import { constants } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { strFromU8, unzipSync } from 'fflate'
 import type {
   AccountSummary,
   AppSettings,
   BatchTestResult,
   CredentialSourceFormat,
+  DeleteAccountsResult,
   NormalizedCredential,
   ScanResult,
   SwitchResult,
@@ -34,10 +35,16 @@ interface AccountManagerOptions {
   tester: TesterLike
   switcher: SwitcherLike
   managedImportDirectory?: string
+  deletedStore?: {
+    list(): Promise<Set<string>>
+    addMany(ids: string[]): Promise<void>
+    removeMany(ids: string[]): Promise<void>
+  }
 }
 
 interface ImportFilesOptions {
   archiveSources?: boolean
+  restoreDeleted?: boolean
 }
 
 interface ManagerTestProgress {
@@ -59,6 +66,7 @@ const FORMAT_BY_EXTENSION: Record<string, CredentialSourceFormat | undefined> = 
   '.js': 'js',
   '.mjs': 'js',
   '.cjs': 'js',
+  '.md': 'md',
   '.zip': 'zip'
 }
 
@@ -95,9 +103,20 @@ export class AccountManager {
     const settings = await this.options.settings()
     await mkdir(settings.accountDirectory, { recursive: true })
     const paths = await collectSupportedFiles(settings.accountDirectory)
-    const result = await this.importFiles(paths)
-    await this.reconcileScannedDirectory(settings.accountDirectory, paths)
+    const result = await this.importFiles(paths, {
+      archiveSources: Boolean(this.options.managedImportDirectory),
+      restoreDeleted: false
+    })
     return { ...result, accounts: await this.listAccounts() }
+  }
+
+  async importDirectory(directory: string): Promise<ScanResult> {
+    const info = await stat(directory)
+    if (!info.isDirectory()) throw new Error('选择的路径不是文件夹')
+    return this.importFiles(await collectSupportedFiles(directory), {
+      archiveSources: true,
+      restoreDeleted: true
+    })
   }
 
   async importFiles(paths: string[], options: ImportFilesOptions = {}): Promise<ScanResult> {
@@ -124,7 +143,15 @@ export class AccountManager {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
       }
     }
-    const deduped = dedupeCredentials(credentials)
+    let deduped = dedupeCredentials(credentials)
+    if (this.options.deletedStore) {
+      if (options.restoreDeleted === false) {
+        const deleted = await this.options.deletedStore.list()
+        deduped = deduped.filter((credential) => !deleted.has(credential.id))
+      } else {
+        await this.options.deletedStore.removeMany(deduped.map((credential) => credential.id))
+      }
+    }
     const merged = dedupeCredentials([...(await this.options.vault.list()), ...deduped])
     await this.options.vault.replace(merged)
     return {
@@ -152,6 +179,7 @@ export class AccountManager {
     }
     const sourcePath = await this.archivePastedCredentials(credentials)
     const stored = credentials.map((credential) => ({ ...credential, sourcePath }))
+    await this.options.deletedStore?.removeMany(stored.map((credential) => credential.id))
     const merged = dedupeCredentials([...(await this.options.vault.list()), ...stored])
     await this.options.vault.replace(merged)
     return {
@@ -159,6 +187,20 @@ export class AccountManager {
       skipped: 0,
       errors: [],
       accounts: await this.listAccounts()
+    }
+  }
+
+  async deleteAccounts(ids: string[]): Promise<DeleteAccountsResult> {
+    const requested = new Set(ids)
+    const existingIds = (await this.options.vault.list())
+      .filter((credential) => requested.has(credential.id))
+      .map((credential) => credential.id)
+    await this.options.deletedStore?.addMany(existingIds)
+    await this.options.vault.removeMany(existingIds)
+    await this.options.statusStore.removeMany(existingIds)
+    return {
+      deleted: existingIds.length,
+      message: `已从账号库删除 ${existingIds.length} 个账号，原始文件未修改`
     }
   }
 
@@ -332,9 +374,25 @@ export class AccountManager {
     const directory = this.options.managedImportDirectory
     if (!directory) return sourcePath
     await mkdir(directory, { recursive: true })
-    const targetPath = await this.availableManagedPath(basename(sourcePath))
-    await copyFile(sourcePath, targetPath, constants.COPYFILE_EXCL)
-    return targetPath
+    const filename = basename(sourcePath)
+    const extension = extname(filename)
+    const stem = extension ? filename.slice(0, -extension.length) : filename
+    const source = await readFile(sourcePath)
+    for (let suffix = 1; suffix < 10_000; suffix += 1) {
+      const candidate = join(
+        directory,
+        suffix === 1 ? filename : `${stem}-${suffix}${extension}`
+      )
+      try {
+        const existing = await readFile(candidate)
+        if (existing.equals(source)) return candidate
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        await copyFile(sourcePath, candidate, constants.COPYFILE_EXCL)
+        return candidate
+      }
+    }
+    throw new Error('托管导入目录无法生成可用文件名')
   }
 
   private async archivePastedCredentials(
@@ -371,25 +429,6 @@ export class AccountManager {
       }
     }
     throw new Error('托管导入目录无法生成可用文件名')
-  }
-
-  private async reconcileScannedDirectory(directory: string, currentPaths: string[]): Promise<void> {
-    const directoryPath = resolve(directory)
-    const current = new Set(currentPaths.map((path) => resolve(path).toLowerCase()))
-    const staleIds = (await this.options.vault.list())
-      .filter((credential) => {
-        const sourcePath = resolve(credential.sourcePath)
-        const childPath = relative(directoryPath, sourcePath)
-        const isChild =
-          childPath !== '' &&
-          childPath !== '..' &&
-          !childPath.startsWith(`..${sep}`) &&
-          !isAbsolute(childPath)
-        return isChild && !current.has(sourcePath.toLowerCase())
-      })
-      .map((credential) => credential.id)
-    await this.options.vault.removeMany(staleIds)
-    await this.options.statusStore.removeMany(staleIds)
   }
 
   private async activeCredentialId(authPath: string): Promise<string | null> {

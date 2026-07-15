@@ -83,6 +83,8 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .context-account { padding: 7px 9px 9px; color: #8e9aa7; border-bottom: 1px solid #303840; margin-bottom: 4px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .account-context-menu button { width: 100%; min-height: 32px; justify-content: flex-start; padding: 0 9px; color: #dce4ec; background: transparent; border: 0; }
 .account-context-menu button:hover:not(:disabled) { background: #29313a; }
+.account-context-menu .context-danger { color: #ff9b9b; border-top: 1px solid #343b45; margin-top: 4px; padding-top: 10px; }
+.settings-panel input[readonly] { color: #aab3bf; background: #171b20; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: flex-end; background: rgba(5, 7, 9, .62); }
 .repair-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px; background: rgba(5, 7, 9, .72); }
 .repair-dialog { width: min(620px, 96vw); max-height: min(760px, 94vh); overflow: auto; padding: 20px; background: #171b20; border: 1px solid #414b56; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,.48); }

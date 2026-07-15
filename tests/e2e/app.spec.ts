@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -13,6 +13,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
   let root: string
   let accountDirectory: string
   let codexHome: string
+  let userData: string
+  let importSourceDirectory: string
   let exportDirectory: string
   let electronApp: ElectronApplication
   let server: Server
@@ -24,11 +26,13 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     root = await mkdtemp(join(tmpdir(), 'codex-switcher-e2e-'))
     accountDirectory = join(root, 'accounts')
     codexHome = join(root, '.codex')
-    const userData = join(root, 'user-data')
+    userData = join(root, 'user-data')
+    importSourceDirectory = join(root, 'folder-import')
     exportDirectory = join(root, 'exports')
     await mkdir(accountDirectory, { recursive: true })
     await mkdir(join(codexHome, 'sessions', '2026'), { recursive: true })
     await mkdir(userData, { recursive: true })
+    await mkdir(importSourceDirectory, { recursive: true })
     await mkdir(exportDirectory, { recursive: true })
 
     accessToken = jwt({
@@ -45,6 +49,15 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await writeFile(
       join(accountDirectory, 'account.json'),
       JSON.stringify({ access_token: accessToken, id_token: idToken, account_id: 'workspace-e2e' }),
+      'utf8'
+    )
+    await writeFile(
+      join(importSourceDirectory, 'folder-accounts.md'),
+      `# Imported account\n\n\`\`\`json\n${JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'folder-e2e', exp: 1_910_000_000 }),
+        email: 'folder-e2e@example.com'
+      })}\n\`\`\``,
       'utf8'
     )
     await writeFile(
@@ -127,7 +140,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         CODEX_SWITCHER_E2E: '1',
         CODEX_SWITCHER_USER_DATA: userData,
         CODEX_SWITCHER_TEST_API_BASE_URL: baseUrl,
-        CODEX_SWITCHER_E2E_EXPORT_DIR: exportDirectory
+        CODEX_SWITCHER_E2E_EXPORT_DIR: exportDirectory,
+        CODEX_SWITCHER_E2E_IMPORT_DIR: importSourceDirectory
       }
     })
   })
@@ -141,6 +155,18 @@ test.describe('Codex Account Switcher Electron workflow', () => {
   test('scans, tests, switches, repairs sessions and restores API mode', async () => {
     const page = await electronApp.firstWindow()
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
+
+    await page.getByRole('button', { name: '导入文件夹' }).click()
+    await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
+    expect(await readdir(join(userData, 'imports'))).toContain('folder-accounts.md')
+    await unlink(join(importSourceDirectory, 'folder-accounts.md'))
+    await page.getByRole('button', { name: '扫描目录' }).click()
+    await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
+
+    await page.getByLabel('选择 folder-e2e@example.com').check()
+    page.once('dialog', (dialog) => dialog.accept())
+    await page.getByRole('button', { name: '删除选中' }).click()
+    await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toHaveCount(0)
 
     await page.getByRole('button', { name: '测试全部' }).click()
     await expect(page.getByText('检测中')).toBeVisible()

@@ -56,6 +56,7 @@ const snapshot: AppSnapshot = {
       active: false
     }
   ],
+  importDirectory: 'C:\\Users\\lee\\AppData\\Roaming\\codex-account-switcher\\imports',
   settings: {
     accountDirectory: 'E:\\home\\lee\\.cli-proxy-api',
     authPath: 'C:\\Users\\lee\\.codex\\auth.json',
@@ -80,11 +81,21 @@ function api(): CodexSwitcherApi {
       accounts: snapshot.accounts
     }),
     importFiles: vi.fn().mockResolvedValue(null),
+    importDirectory: vi.fn().mockResolvedValue({
+      imported: 2,
+      skipped: 0,
+      errors: [],
+      accounts: snapshot.accounts
+    }),
     importPasted: vi.fn().mockResolvedValue({
       imported: 1,
       skipped: 0,
       errors: [],
       accounts: snapshot.accounts
+    }),
+    deleteAccounts: vi.fn().mockResolvedValue({
+      deleted: 1,
+      message: '已从账号库删除 1 个账号，原始文件未修改'
     }),
     exportAccounts: vi.fn().mockResolvedValue({
       ok: true,
@@ -169,6 +180,47 @@ describe('App', () => {
     expect(screen.getByText('80%')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '测试全部' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导入文件' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导入文件夹' })).toBeInTheDocument()
+  })
+
+  it('imports every supported file from a selected folder', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
+
+    await waitFor(() => expect(window.codexSwitcher.importDirectory).toHaveBeenCalledTimes(1))
+  })
+
+  it('filters by persistent status and searches workspace text', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'valid' } })
+    expect(screen.getByRole('row', { name: /person@example\.com/ })).toBeInTheDocument()
+    expect(screen.queryByRole('row', { name: /second@example\.com/ })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索邮箱、文件或错误'), {
+      target: { value: 'workspace-b' }
+    })
+    expect(screen.getByRole('row', { name: /second@example\.com/ })).toBeInTheDocument()
+    expect(screen.queryByRole('row', { name: /person@example\.com/ })).not.toBeInTheDocument()
+  })
+
+  it('deletes selected accounts only after confirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByLabelText('选择 person@example.com'))
+    fireEvent.click(screen.getByRole('button', { name: '删除选中' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.deleteAccounts).toHaveBeenCalledWith(['account-a'])
+    )
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('原始导入文件不会被删除'))
+    confirm.mockRestore()
   })
 
   it('tests only selected accounts', async () => {

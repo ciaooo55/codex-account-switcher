@@ -4,6 +4,7 @@ import type {
   BatchTestResult,
   CredentialExportRequest,
   CredentialExportResult,
+  DeleteAccountsResult,
   ScanResult,
   SessionRepairPreview,
   SessionRepairResult,
@@ -38,6 +39,7 @@ export interface UpdateState {
 export interface AppSnapshot {
   accounts: AccountSummary[]
   settings: AppSettings
+  importDirectory: string
   testing: TestProgress
 }
 
@@ -50,7 +52,9 @@ export interface CodexSwitcherApi {
   getSnapshot(): Promise<AppSnapshot>
   scanDirectory(): Promise<ScanResult>
   importFiles(): Promise<ScanResult | null>
+  importDirectory(): Promise<ScanResult | null>
   importPasted(text: string): Promise<ScanResult>
+  deleteAccounts(ids: string[]): Promise<DeleteAccountsResult>
   exportAccounts(request: CredentialExportRequest): Promise<CredentialExportResult>
   testAccounts(ids?: string[]): Promise<BatchTestResult>
   cancelTests(): Promise<void>
@@ -75,7 +79,9 @@ export const ipcChannels = {
   snapshot: 'app:snapshot',
   scan: 'accounts:scan',
   import: 'accounts:import',
+  importDirectory: 'accounts:import-directory',
   importPasted: 'accounts:import-pasted',
+  deleteAccounts: 'accounts:delete',
   exportAccounts: 'accounts:export',
   test: 'accounts:test',
   cancelTest: 'accounts:test-cancel',
