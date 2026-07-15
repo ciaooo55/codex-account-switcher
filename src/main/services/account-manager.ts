@@ -1,5 +1,7 @@
-import { mkdir, readFile, readdir } from 'node:fs/promises'
-import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { constants } from 'node:fs'
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { strFromU8, unzipSync } from 'fflate'
 import type {
   AccountSummary,
   AppSettings,
@@ -11,6 +13,7 @@ import type {
   TestResult
 } from '../../shared/types'
 import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
+import { serializeSub2ApiBundle } from './exporter'
 import type { CredentialVault } from '../storage/vault'
 import type { StatusStore } from '../storage/status-store'
 
@@ -30,17 +33,59 @@ interface AccountManagerOptions {
   statusStore: StatusStore
   tester: TesterLike
   switcher: SwitcherLike
+  managedImportDirectory?: string
+}
+
+interface ImportFilesOptions {
+  archiveSources?: boolean
+}
+
+interface ManagerTestProgress {
+  done: number
+  total: number
+  runningIds: string[]
+  updatedAccount?: AccountSummary
 }
 
 interface TestAccountsOptions {
   signal?: AbortSignal
-  onProgress?: (progress: { done: number; total: number }) => void
+  onProgress?: (progress: ManagerTestProgress) => void
 }
 
 const FORMAT_BY_EXTENSION: Record<string, CredentialSourceFormat | undefined> = {
   '.json': 'json',
+  '.jsonl': 'jsonl',
   '.txt': 'txt',
-  '.js': 'js'
+  '.js': 'js',
+  '.mjs': 'js',
+  '.cjs': 'js',
+  '.zip': 'zip'
+}
+
+const MAX_SCAN_DEPTH = 32
+const MAX_SCAN_FILES = 20_000
+const MAX_ZIP_BYTES = 25 * 1024 * 1024
+const MAX_ZIP_ENTRIES = 2_000
+const MAX_ZIP_ENTRY_BYTES = 20 * 1024 * 1024
+const MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
+
+async function collectSupportedFiles(directory: string): Promise<string[]> {
+  const files: string[] = []
+  const stack = [{ directory, depth: 0 }]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (current.depth > MAX_SCAN_DEPTH) continue
+    const entries = await readdir(current.directory, { withFileTypes: true })
+    for (const entry of entries) {
+      const path = join(current.directory, entry.name)
+      if (entry.isDirectory()) stack.push({ directory: path, depth: current.depth + 1 })
+      else if (entry.isFile() && FORMAT_BY_EXTENSION[extname(entry.name).toLowerCase()]) {
+        files.push(path)
+        if (files.length > MAX_SCAN_FILES) throw new Error('账号目录文件数量超过安全限制')
+      }
+    }
+  }
+  return files.sort((left, right) => left.localeCompare(right))
 }
 
 export class AccountManager {
@@ -49,16 +94,13 @@ export class AccountManager {
   async scanDirectory(): Promise<ScanResult> {
     const settings = await this.options.settings()
     await mkdir(settings.accountDirectory, { recursive: true })
-    const entries = await readdir(settings.accountDirectory, { withFileTypes: true })
-    const paths = entries
-      .filter((entry) => entry.isFile() && FORMAT_BY_EXTENSION[extname(entry.name).toLowerCase()])
-      .map((entry) => join(settings.accountDirectory, entry.name))
+    const paths = await collectSupportedFiles(settings.accountDirectory)
     const result = await this.importFiles(paths)
     await this.reconcileScannedDirectory(settings.accountDirectory, paths)
     return { ...result, accounts: await this.listAccounts() }
   }
 
-  async importFiles(paths: string[]): Promise<ScanResult> {
+  async importFiles(paths: string[], options: ImportFilesOptions = {}): Promise<ScanResult> {
     const credentials: NormalizedCredential[] = []
     const errors: string[] = []
     let skipped = 0
@@ -69,22 +111,53 @@ export class AccountManager {
         continue
       }
       try {
-        const parsed = parseCredentialText(await readFile(path, 'utf8'), {
-          sourcePath: path,
-          format
-        })
-        credentials.push(...parsed.credentials)
+        const parsed = await this.parseCredentialFile(path, format)
+        let sourcePath = path
+        if (options.archiveSources && parsed.credentials.length > 0) {
+          sourcePath = await this.archiveSourceFile(path)
+        }
+        credentials.push(
+          ...parsed.credentials.map((credential) => ({ ...credential, sourcePath }))
+        )
         errors.push(...parsed.errors)
       } catch (error) {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
       }
     }
     const deduped = dedupeCredentials(credentials)
-    await this.options.vault.upsertMany(deduped)
+    const merged = dedupeCredentials([...(await this.options.vault.list()), ...deduped])
+    await this.options.vault.replace(merged)
     return {
       imported: deduped.length,
       skipped,
       errors,
+      accounts: await this.listAccounts()
+    }
+  }
+
+  async importPasted(text: string): Promise<ScanResult> {
+    if (text.length > MAX_ZIP_TOTAL_BYTES) throw new Error('粘贴内容超过安全限制')
+    const parsed = parseCredentialText(text, {
+      sourcePath: 'pasted-credential.json',
+      format: 'paste'
+    })
+    const credentials = dedupeCredentials(parsed.credentials)
+    if (credentials.length === 0) {
+      return {
+        imported: 0,
+        skipped: 0,
+        errors: parsed.errors,
+        accounts: await this.listAccounts()
+      }
+    }
+    const sourcePath = await this.archivePastedCredentials(credentials)
+    const stored = credentials.map((credential) => ({ ...credential, sourcePath }))
+    const merged = dedupeCredentials([...(await this.options.vault.list()), ...stored])
+    await this.options.vault.replace(merged)
+    return {
+      imported: stored.length,
+      skipped: 0,
+      errors: [],
       accounts: await this.listAccounts()
     }
   }
@@ -104,6 +177,7 @@ export class AccountManager {
           planType: status?.usage?.planType ?? credential.planType,
           sourcePath: credential.sourcePath,
           sourceFormat: credential.sourceFormat,
+          sourceDialect: credential.sourceDialect,
           canRefresh: credential.canRefresh,
           accessExpiresAt: credential.accessExpiresAt,
           lastRefresh: credential.lastRefresh,
@@ -133,7 +207,8 @@ export class AccountManager {
     let cursor = 0
     let done = 0
     const total = credentials.length
-    options.onProgress?.({ done, total })
+    const runningIds = new Set<string>()
+    options.onProgress?.({ done, total, runningIds: [] })
 
     const worker = async (): Promise<void> => {
       while (!options.signal?.aborted) {
@@ -141,6 +216,8 @@ export class AccountManager {
         cursor += 1
         const credential = credentials[index]
         if (!credential) return
+        runningIds.add(credential.id)
+        options.onProgress?.({ done, total, runningIds: [...runningIds] })
         let result: TestResult
         try {
           result = await this.options.tester.test(credential, options.signal)
@@ -158,8 +235,17 @@ export class AccountManager {
         }
         results.push(result)
         await this.options.statusStore.set(result)
+        runningIds.delete(credential.id)
         done += 1
-        options.onProgress?.({ done, total })
+        const updatedAccount = (await this.listAccounts()).find(
+          (account) => account.id === credential.id
+        )
+        options.onProgress?.({
+          done,
+          total,
+          runningIds: [...runningIds],
+          ...(updatedAccount ? { updatedAccount } : {})
+        })
       }
     }
     const concurrency = Math.max(1, Math.min(12, settings.concurrency))
@@ -175,7 +261,8 @@ export class AccountManager {
     if (!['valid', 'quota_exhausted', 'model_unavailable'].includes(result.status)) {
       return { ok: false, message: `账号不可切换：${result.detail}`, backupPath: null }
     }
-    return this.options.switcher.switchTo(credential)
+    const latestCredential = (await this.options.vault.get(id)) ?? credential
+    return this.options.switcher.switchTo(latestCredential)
   }
 
   async restoreLatest(): Promise<SwitchResult> {
@@ -188,6 +275,102 @@ export class AccountManager {
 
   async getSourcePath(id: string): Promise<string | null> {
     return (await this.options.vault.get(id))?.sourcePath ?? null
+  }
+
+  private async parseCredentialFile(
+    path: string,
+    format: CredentialSourceFormat
+  ): Promise<{ credentials: NormalizedCredential[]; errors: string[] }> {
+    if (format !== 'zip') {
+      return parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
+    }
+
+    const archive = await readFile(path)
+    if (archive.byteLength > MAX_ZIP_BYTES) throw new Error('ZIP 文件超过安全限制')
+    let entriesSeen = 0
+    let totalBytes = 0
+    const entries = unzipSync(new Uint8Array(archive), {
+      filter: (entry) => {
+        entriesSeen += 1
+        if (entriesSeen > MAX_ZIP_ENTRIES) throw new Error('ZIP 条目数量超过安全限制')
+        if (entry.originalSize > MAX_ZIP_ENTRY_BYTES) throw new Error('ZIP 单个条目超过安全限制')
+        totalBytes += entry.originalSize
+        if (totalBytes > MAX_ZIP_TOTAL_BYTES) throw new Error('ZIP 解压大小超过安全限制')
+        const normalizedName = entry.name.replace(/\\/g, '/')
+        if (
+          normalizedName.startsWith('/') ||
+          normalizedName.split('/').includes('..') ||
+          /^[A-Za-z]:/.test(normalizedName)
+        ) {
+          throw new Error('ZIP 包含不安全路径')
+        }
+        return Boolean(FORMAT_BY_EXTENSION[extname(normalizedName).toLowerCase()])
+      }
+    })
+    const credentials: NormalizedCredential[] = []
+    const errors: string[] = []
+    for (const [entryName, bytes] of Object.entries(entries)) {
+      const entryFormat = FORMAT_BY_EXTENSION[extname(entryName).toLowerCase()]
+      if (!entryFormat || entryFormat === 'zip') continue
+      const parsed = parseCredentialText(strFromU8(bytes), {
+        sourcePath: `${path}::${entryName}`,
+        format: entryFormat
+      })
+      credentials.push(
+        ...parsed.credentials.map((credential) => ({
+          ...credential,
+          sourcePath: path,
+          sourceFormat: 'zip' as const
+        }))
+      )
+      errors.push(...parsed.errors)
+    }
+    return { credentials, errors }
+  }
+
+  private async archiveSourceFile(sourcePath: string): Promise<string> {
+    const directory = this.options.managedImportDirectory
+    if (!directory) return sourcePath
+    await mkdir(directory, { recursive: true })
+    const targetPath = await this.availableManagedPath(basename(sourcePath))
+    await copyFile(sourcePath, targetPath, constants.COPYFILE_EXCL)
+    return targetPath
+  }
+
+  private async archivePastedCredentials(
+    credentials: readonly NormalizedCredential[]
+  ): Promise<string> {
+    const directory = this.options.managedImportDirectory
+    if (!directory) return 'pasted-credential.json'
+    await mkdir(directory, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+    const targetPath = await this.availableManagedPath(`pasted-${stamp}.json`)
+    await writeFile(
+      targetPath,
+      `${JSON.stringify(serializeSub2ApiBundle(credentials), null, 2)}\n`,
+      { encoding: 'utf8', mode: 0o600, flag: 'wx' }
+    )
+    return targetPath
+  }
+
+  private async availableManagedPath(filename: string): Promise<string> {
+    const directory = this.options.managedImportDirectory
+    if (!directory) return filename
+    const extension = extname(filename)
+    const stem = extension ? filename.slice(0, -extension.length) : filename
+    for (let suffix = 1; suffix < 10_000; suffix += 1) {
+      const candidate = join(
+        directory,
+        suffix === 1 ? filename : `${stem}-${suffix}${extension}`
+      )
+      try {
+        await stat(candidate)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return candidate
+        throw error
+      }
+    }
+    throw new Error('托管导入目录无法生成可用文件名')
   }
 
   private async reconcileScannedDirectory(directory: string, currentPaths: string[]): Promise<void> {

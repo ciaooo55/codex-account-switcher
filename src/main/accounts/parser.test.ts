@@ -89,7 +89,144 @@ describe('parseCredentialText', () => {
       accountId: 'root-account',
       planType: 'plus',
       refreshToken: null,
-      canRefresh: false
+      canRefresh: false,
+      sourceDialect: 'cpa'
+    })
+  })
+
+  it('parses a native Sub2API file containing many accounts with outer metadata', () => {
+    const payload = {
+      type: 'sub2api-data',
+      version: 1,
+      exported_at: '2026-07-15T01:00:00Z',
+      proxies: [],
+      accounts: [
+        {
+          name: 'first@example.com',
+          platform: 'openai',
+          type: 'oauth',
+          credentials: {
+            access_token: jwt({ sub: 'sub-user-1', exp: 1_900_000_000 }),
+            refresh_token: 'refresh-sub-1',
+            chatgpt_account_id: 'sub-workspace-1',
+            chatgpt_user_id: 'sub-user-1',
+            plan_type: 'plus'
+          },
+          extra: {
+            email: 'first@example.com',
+            last_refresh: '2026-07-14T08:00:00Z'
+          },
+          expires_at: 1_900_000_000
+        },
+        {
+          name: 'second@example.com',
+          platform: 'openai',
+          type: 'oauth',
+          credentials: {
+            access_token: jwt({ sub: 'sub-user-2' }),
+            email: 'second@example.com',
+            organization_id: 'sub-workspace-2'
+          },
+          extra: { last_refresh: '2026-07-14T09:00:00Z' }
+        }
+      ]
+    }
+
+    const result = parseCredentialText(JSON.stringify(payload), {
+      sourcePath: 'sub2api-account.json',
+      format: 'json'
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.credentials).toHaveLength(2)
+    expect(result.credentials[0]).toMatchObject({
+      email: 'first@example.com',
+      accountId: 'sub-workspace-1',
+      subject: 'sub-user-1',
+      planType: 'plus',
+      lastRefresh: '2026-07-14T08:00:00Z',
+      accessExpiresAt: '2030-03-17T17:46:40.000Z',
+      sourceDialect: 'sub2api'
+    })
+    expect(result.credentials[1]).toMatchObject({
+      email: 'second@example.com',
+      accountId: 'sub-workspace-2',
+      lastRefresh: '2026-07-14T09:00:00Z',
+      sourceDialect: 'sub2api'
+    })
+  })
+
+  it('parses legacy and API-wrapped Sub2API bundles', () => {
+    const result = parseCredentialText(
+      JSON.stringify({
+        code: 0,
+        data: {
+          type: 'sub2api-bundle',
+          version: 1,
+          proxies: [],
+          accounts: [
+            {
+              name: 'wrapped@example.com',
+              platform: 'openai',
+              type: 'oauth',
+              credentials: {
+                access_token: jwt({ sub: 'wrapped-user' }),
+                chatgpt_account_id: 'wrapped-workspace'
+              },
+              extra: { email: 'wrapped@example.com' }
+            }
+          ]
+        }
+      }),
+      { sourcePath: 'wrapped.json', format: 'json' }
+    )
+
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      email: 'wrapped@example.com',
+      accountId: 'wrapped-workspace',
+      sourceDialect: 'sub2api'
+    })
+  })
+
+  it('does not mistake a Sub2API display name for an email address', () => {
+    const result = parseCredentialText(
+      JSON.stringify({
+        type: 'sub2api-data',
+        version: 1,
+        proxies: [],
+        accounts: [
+          {
+            name: 'My Codex Account',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: { access_token: jwt({ sub: 'named-user' }) }
+          }
+        ]
+      }),
+      { sourcePath: 'bundle.json', format: 'json' }
+    )
+
+    expect(result.credentials[0].email).toBeNull()
+  })
+
+  it('cleans fenced and noisy pasted content before extracting credentials', () => {
+    const result = parseCredentialText(
+      `下面是账号，请导入：\n\`\`\`json\n${JSON.stringify({
+        access_token: jwt({ sub: 'paste-user' }),
+        email: 'paste@example.com',
+        account_id: 'paste-workspace',
+        type: 'codex'
+      })}\n\`\`\`\n其余文字忽略。`,
+      { sourcePath: 'pasted-20260715.json', format: 'paste' }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      email: 'paste@example.com',
+      accountId: 'paste-workspace',
+      sourceDialect: 'cpa'
     })
   })
 
@@ -234,5 +371,42 @@ describe('dedupeCredentials', () => {
 
     expect(first.id).toBe(second.id)
     expect(dedupeCredentials([first, second])).toHaveLength(1)
+  })
+
+  it('deduplicates the same identity imported from CPA and Sub2API', () => {
+    const accessToken = jwt({ sub: 'cross-user' })
+    const cpa = parseCredentialText(
+      JSON.stringify({
+        type: 'codex',
+        access_token: accessToken,
+        email: 'cross@example.com',
+        account_id: 'cross-workspace'
+      }),
+      { sourcePath: 'cpa.json', format: 'json' }
+    ).credentials[0]
+    const sub2api = parseCredentialText(
+      JSON.stringify({
+        type: 'sub2api-data',
+        version: 1,
+        proxies: [],
+        accounts: [
+          {
+            name: 'cross@example.com',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              access_token: accessToken,
+              email: 'cross@example.com',
+              chatgpt_account_id: 'cross-workspace'
+            }
+          }
+        ]
+      }),
+      { sourcePath: 'sub2api.json', format: 'json' }
+    ).credentials[0]
+
+    const deduped = dedupeCredentials([cpa, sub2api])
+    expect(deduped).toHaveLength(1)
+    expect(deduped[0].sourceDialect).toBe('sub2api')
   })
 })

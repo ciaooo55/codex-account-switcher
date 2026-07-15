@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { strToU8, zipSync } from 'fflate'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AppSettings,
@@ -96,6 +97,156 @@ describe('AccountManager', () => {
     expect(await readFile(sourcePath, 'utf8')).toBe(source)
   })
 
+  it('recursively scans supported account files in nested folders', async () => {
+    const fixture = await setup()
+    const nested = join(fixture.accountDirectory, 'region-a', 'batch-1')
+    await mkdir(nested, { recursive: true })
+    await writeFile(
+      join(nested, 'nested.json'),
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'nested-user' }),
+        email: 'nested@example.com'
+      })
+    )
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.scanDirectory()
+
+    expect(result.accounts.map((item) => item.email)).toEqual(['nested@example.com'])
+  })
+
+  it('imports a bounded CPA ZIP containing one standard JSON per account', async () => {
+    const fixture = await setup()
+    const zipPath = join(fixture.accountDirectory, 'cpa-accounts.zip')
+    const archive = zipSync({
+      'one.json': strToU8(
+        JSON.stringify({
+          type: 'codex',
+          access_token: jwt({ sub: 'zip-user-1' }),
+          email: 'zip-one@example.com'
+        })
+      ),
+      'nested/two.json': strToU8(
+        JSON.stringify({
+          type: 'codex',
+          access_token: jwt({ sub: 'zip-user-2' }),
+          email: 'zip-two@example.com'
+        })
+      ),
+      'ignored.exe': strToU8('not a credential')
+    })
+    await writeFile(zipPath, archive)
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.scanDirectory()
+
+    expect(result.accounts.map((item) => item.email)).toEqual([
+      'zip-one@example.com',
+      'zip-two@example.com'
+    ])
+    expect(result.accounts.every((item) => item.sourceFormat === 'zip')).toBe(true)
+  })
+
+  it('archives manually imported source files without modifying their bytes', async () => {
+    const fixture = await setup()
+    const managedImportDirectory = join(fixture.root, 'app', 'imports')
+    const externalPath = join(fixture.root, 'external-source.txt')
+    const source = `email=managed@example.com\naccess_token=${jwt({ sub: 'managed-user' })}`
+    await writeFile(externalPath, source)
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.importFiles([externalPath], { archiveSources: true })
+    const archived = await readdir(managedImportDirectory)
+
+    expect(archived).toEqual(['external-source.txt'])
+    expect(await readFile(join(managedImportDirectory, archived[0]), 'utf8')).toBe(source)
+    expect(await readFile(externalPath, 'utf8')).toBe(source)
+    expect(result.accounts[0].sourcePath).toBe(join(managedImportDirectory, archived[0]))
+  })
+
+  it('does not replace a complete stored credential with an access-only duplicate', async () => {
+    const fixture = await setup()
+    const completePath = join(fixture.accountDirectory, 'complete.json')
+    const incompletePath = join(fixture.root, 'incomplete.json')
+    await writeFile(
+      completePath,
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'merge-user' }),
+        refresh_token: 'merge-refresh',
+        email: 'merge@example.com'
+      })
+    )
+    await writeFile(
+      incompletePath,
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'merge-user' }),
+        email: 'merge@example.com'
+      })
+    )
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    await manager.scanDirectory()
+    const result = await manager.importFiles([incompletePath])
+
+    expect(result.accounts).toHaveLength(1)
+    expect(result.accounts[0].canRefresh).toBe(true)
+    expect((await fixture.vault.list())[0].refreshToken).toBe('merge-refresh')
+  })
+
+  it('cleans pasted text, imports valid accounts and stores a reusable Sub2API file', async () => {
+    const fixture = await setup()
+    const managedImportDirectory = join(fixture.root, 'app', 'imports')
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const pasted = `账号如下：\n\`\`\`json\n${JSON.stringify({
+      type: 'codex',
+      access_token: jwt({ sub: 'pasted-user' }),
+      email: 'pasted@example.com'
+    })}\n\`\`\``
+
+    const result = await manager.importPasted(pasted)
+    const storedFiles = await readdir(managedImportDirectory)
+    const stored = JSON.parse(await readFile(join(managedImportDirectory, storedFiles[0]), 'utf8'))
+
+    expect(result.accounts[0].email).toBe('pasted@example.com')
+    expect(stored.type).toBe('sub2api-data')
+    expect(stored.accounts).toHaveLength(1)
+  })
+
   it('marks the credential matching the current auth.json as active', async () => {
     const fixture = await setup()
     const idToken = jwt({ sub: 'user-a', email: 'person@example.com' })
@@ -171,8 +322,59 @@ describe('AccountManager', () => {
 
     expect(result.tested).toBe(5)
     expect(maxActive).toBe(2)
-    expect(progress).toHaveBeenLastCalledWith({ done: 5, total: 5 })
+    expect(progress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ done: 5, total: 5, runningIds: [] })
+    )
+    expect(
+      progress.mock.calls.some(
+        ([value]) => value.updatedAccount?.status === 'valid' && value.updatedAccount?.usage?.planType === 'plus'
+      )
+    ).toBe(true)
     expect((await manager.listAccounts()).every((item) => item.status === 'valid')).toBe(true)
+  })
+
+  it('switches with refreshed credentials written to the vault during validation', async () => {
+    const fixture = await setup()
+    await writeFile(
+      join(fixture.accountDirectory, 'refresh.json'),
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'refresh-user' }),
+        refresh_token: 'refresh-old',
+        email: 'refresh@example.com'
+      })
+    )
+    const switchTo = vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null })
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: {
+        test: vi.fn(async (item: NormalizedCredential) => {
+          await fixture.vault.upsertMany([
+            {
+              ...item,
+              accessToken: 'refreshed-access-token',
+              refreshToken: 'refresh-new',
+              lastRefresh: '2026-07-16T00:00:00Z'
+            }
+          ])
+          return { ...successfulResult(item.id), refreshed: true }
+        })
+      },
+      switcher: { switchTo, restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const scan = await manager.scanDirectory()
+
+    await manager.switchAccount(scan.accounts[0].id)
+
+    expect(switchTo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessToken: 'refreshed-access-token',
+        refreshToken: 'refresh-new',
+        lastRefresh: '2026-07-16T00:00:00Z'
+      })
+    )
   })
 
   it('resolves an imported account source by opaque account id', async () => {

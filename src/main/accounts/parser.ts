@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { parse, type Node } from 'acorn'
 import type {
+  CredentialDialect,
   CredentialParseOptions,
   CredentialParseResult,
   NormalizedCredential
@@ -13,6 +14,11 @@ interface StaticObject {
 }
 
 type AstNode = Node & Record<string, unknown>
+
+interface CredentialCandidate {
+  record: Record<string, unknown>
+  dialect: CredentialDialect
+}
 
 const ACCESS_TOKEN_KEYS = ['access_token', 'accessToken', 'OPENAI_ACCESS_TOKEN'] as const
 const REFRESH_TOKEN_KEYS = ['refresh_token', 'refreshToken'] as const
@@ -79,6 +85,25 @@ function expiryFrom(payload: Record<string, unknown> | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
+function timestampFrom(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      const numeric = Number(value)
+      const timestamp = Number.isFinite(numeric)
+        ? numeric > 10_000_000_000
+          ? numeric
+          : numeric * 1_000
+        : Date.parse(value)
+      if (Number.isFinite(timestamp)) return new Date(timestamp).toISOString()
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const timestamp = value > 10_000_000_000 ? value : value * 1_000
+      return new Date(timestamp).toISOString()
+    }
+  }
+  return null
+}
+
 function filenameEmail(sourcePath: string): string | null {
   const filename = sourcePath.split(/[\\/]/).pop() ?? sourcePath
   const stem = filename.replace(/\.(?:jsonl?|txt|[cm]?js)$/i, '')
@@ -117,7 +142,8 @@ function credentialId(
 
 function normalizeCredential(
   record: Record<string, unknown>,
-  options: CredentialParseOptions
+  options: CredentialParseOptions,
+  sourceDialect: CredentialDialect
 ): NormalizedCredential | null {
   const tokens = asRecord(record.tokens)
   const accessToken = tokenFrom(record, tokens, ACCESS_TOKEN_KEYS)
@@ -139,11 +165,14 @@ function normalizeCredential(
     idPayload?.email,
     accessProfile?.email,
     record.email,
+    emailFromName(record.name),
     filenameEmail(options.sourcePath)
   )
   const accountId = firstString(
     record.account_id,
     record.chatgpt_account_id,
+    record.organization_id,
+    record.organizationId,
     accessAuth?.chatgpt_account_id,
     accessAuth?.poid,
     idAuth?.chatgpt_account_id,
@@ -151,7 +180,13 @@ function normalizeCredential(
     tokens?.account_id,
     tokens?.chatgpt_account_id
   )
-  const subject = firstString(idPayload?.sub, accessPayload?.sub, record.subject, record.sub)
+  const subject = firstString(
+    idPayload?.sub,
+    accessPayload?.sub,
+    record.chatgpt_user_id,
+    record.subject,
+    record.sub
+  )
   const planType = firstString(
     record.plan_type,
     record.planType,
@@ -177,11 +212,14 @@ function normalizeCredential(
     idToken,
     planType,
     lastRefresh,
-    accessExpiresAt: expiryFrom(accessPayload),
+    accessExpiresAt:
+      expiryFrom(accessPayload) ??
+      timestampFrom(record.expires_at, record.expiresAt, record.expired),
     idExpiresAt: expiryFrom(idPayload),
     canRefresh: refreshToken !== null,
     sourcePath: options.sourcePath,
-    sourceFormat: options.format
+    sourceFormat: options.format,
+    sourceDialect
   }
 }
 
@@ -206,14 +244,58 @@ function looksLikeCredential(record: Record<string, unknown>): boolean {
   )
 }
 
-function credentialRecords(value: unknown, depth = 0): Record<string, unknown>[] {
+function emailFromName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  return value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null
+}
+
+function sub2ApiCandidate(record: Record<string, unknown>): CredentialCandidate | null {
+  const credentials = asRecord(record.credentials)
+  if (!credentials || !looksLikeCredential(credentials)) return null
+  const platform = firstString(record.platform)?.toLowerCase()
+  const accountType = firstString(record.type)?.toLowerCase()
+  if (platform !== 'openai' && !['oauth', 'setup_token', 'api_key', 'upstream'].includes(accountType ?? '')) {
+    return null
+  }
+  const extra = asRecord(record.extra)
+  return {
+    dialect: 'sub2api',
+    record: {
+      ...extra,
+      ...record,
+      ...credentials,
+      email: firstString(credentials.email, extra?.email, record.email, emailFromName(record.name)),
+      last_refresh: firstString(
+        credentials.last_refresh,
+        credentials.lastRefresh,
+        extra?.last_refresh,
+        extra?.lastRefresh,
+        record.last_refresh,
+        record.lastRefresh
+      ),
+      expires_at:
+        credentials.expires_at ?? credentials.expiresAt ?? record.expires_at ?? record.expiresAt
+    }
+  }
+}
+
+function recordDialect(record: Record<string, unknown>): CredentialDialect {
+  if (asRecord(record.tokens)) return 'codex'
+  if (firstString(record.type)?.toLowerCase() === 'codex') return 'cpa'
+  if (hasAnyKey(record, ACCESS_TOKEN_KEYS)) return 'cpa'
+  return 'generic'
+}
+
+function credentialRecords(value: unknown, depth = 0): CredentialCandidate[] {
   if (depth > MAX_PARSE_DEPTH) throw new RangeError('Credential data exceeds maximum depth')
   if (Array.isArray(value)) {
     return value.flatMap((item) => credentialRecords(item, depth + 1))
   }
   const record = asRecord(value)
   if (!record) return []
-  if (looksLikeCredential(record)) return [record]
+  const sub2api = sub2ApiCandidate(record)
+  if (sub2api) return [sub2api]
+  if (looksLikeCredential(record)) return [{ record, dialect: recordDialect(record) }]
   return Object.values(record).flatMap((item) => credentialRecords(item, depth + 1))
 }
 
@@ -267,6 +349,64 @@ function tryJsonLines(text: string): unknown[] | undefined {
     }
   }
   return values
+}
+
+function jsonFragments(text: string): unknown[] {
+  const values: unknown[] = []
+  let start = -1
+  let depth = 0
+  let quote = ''
+  let escaped = false
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === quote) quote = ''
+      continue
+    }
+    if (character === '"') {
+      quote = character
+      continue
+    }
+    if (character === '{' || character === '[') {
+      if (depth === 0) start = index
+      depth += 1
+      continue
+    }
+    if ((character === '}' || character === ']') && depth > 0) {
+      depth -= 1
+      if (depth === 0 && start >= 0) {
+        const parsed = tryJson(text.slice(start, index + 1))
+        if (parsed !== undefined) values.push(parsed)
+        start = -1
+      }
+    }
+  }
+  return values
+}
+
+function pastedValues(text: string): unknown[] {
+  const direct = tryJson(text)
+  if (direct !== undefined) return [direct]
+  const values: unknown[] = []
+  const fenced = /```(?:jsonl?|javascript|js|txt)?\s*([\s\S]*?)```/gi
+  for (const match of text.matchAll(fenced)) {
+    const block = match[1]?.trim() ?? ''
+    if (!block) continue
+    const json = tryJson(block)
+    if (json !== undefined) values.push(json)
+    else {
+      values.push(...(tryJsonLines(block) ?? []))
+      values.push(...(tryKeyValueBlocks(block) ?? []))
+      values.push(...(tryStaticJavaScript(block) ?? []))
+    }
+  }
+  if (values.length > 0) return values
+  const fragments = jsonFragments(text)
+  if (fragments.length > 0) return fragments
+  return tryJsonLines(text) ?? tryKeyValueBlocks(text) ?? tryStaticJavaScript(text) ?? []
 }
 
 function parseKeyValueValue(raw: string): StaticScalar {
@@ -505,6 +645,7 @@ function tryStaticJavaScript(text: string): StaticValue[] | undefined {
 }
 
 function extractedValues(text: string, options: CredentialParseOptions): unknown[] {
+  if (options.format === 'paste') return pastedValues(text)
   const json = tryJson(text)
   if (json !== undefined) return [json]
 
@@ -531,7 +672,7 @@ export function parseCredentialText(
     validateValueLimits(values)
     const credentials = values
       .flatMap((value) => credentialRecords(value))
-      .map((record) => normalizeCredential(record, options))
+      .map((candidate) => normalizeCredential(candidate.record, options, candidate.dialect))
       .filter((credential): credential is NormalizedCredential => credential !== null)
 
     return credentials.length > 0 ? { credentials, errors: [] } : errorResult()
@@ -566,7 +707,20 @@ function preferredCredential(
   const completenessDifference = tokenCompleteness(candidate) - tokenCompleteness(current)
   if (completenessDifference > 0) return candidate
   if (completenessDifference < 0) return current
-  return refreshTime(candidate) > refreshTime(current) ? candidate : current
+  const refreshDifference = refreshTime(candidate) - refreshTime(current)
+  if (refreshDifference > 0) return candidate
+  if (refreshDifference < 0) return current
+  const dialectPriority: Record<CredentialDialect, number> = {
+    sub2api: 4,
+    codex: 3,
+    cpa: 2,
+    generic: 1
+  }
+  const dialectDifference =
+    dialectPriority[candidate.sourceDialect] - dialectPriority[current.sourceDialect]
+  if (dialectDifference > 0) return candidate
+  if (dialectDifference < 0) return current
+  return candidate
 }
 
 export function dedupeCredentials(

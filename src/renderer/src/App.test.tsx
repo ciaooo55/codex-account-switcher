@@ -2,7 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSnapshot, CodexSwitcherApi } from '../../shared/ipc'
+import type { AppSnapshot, CodexSwitcherApi, TestProgress } from '../../shared/ipc'
 import { App } from './App'
 
 const snapshot: AppSnapshot = {
@@ -14,6 +14,7 @@ const snapshot: AppSnapshot = {
       planType: 'plus',
       sourcePath: 'E:\\accounts\\person.json',
       sourceFormat: 'json',
+      sourceDialect: 'cpa',
       canRefresh: true,
       accessExpiresAt: '2026-10-14T12:00:00Z',
       lastRefresh: '2026-07-14T12:00:00Z',
@@ -44,6 +45,7 @@ const snapshot: AppSnapshot = {
       planType: 'free',
       sourcePath: 'E:\\accounts\\second.json',
       sourceFormat: 'json',
+      sourceDialect: 'sub2api',
       canRefresh: false,
       accessExpiresAt: null,
       lastRefresh: null,
@@ -63,8 +65,10 @@ const snapshot: AppSnapshot = {
     backupRetention: 20,
     deepTestModel: 'gpt-5.4'
   },
-  testing: { active: false, done: 0, total: 0 }
+  testing: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null }
 }
+
+let progressListener: ((progress: TestProgress) => void) | null = null
 
 function api(): CodexSwitcherApi {
   return {
@@ -76,6 +80,20 @@ function api(): CodexSwitcherApi {
       accounts: snapshot.accounts
     }),
     importFiles: vi.fn().mockResolvedValue(null),
+    importPasted: vi.fn().mockResolvedValue({
+      imported: 1,
+      skipped: 0,
+      errors: [],
+      accounts: snapshot.accounts
+    }),
+    exportAccounts: vi.fn().mockResolvedValue({
+      ok: true,
+      cancelled: false,
+      exported: 1,
+      files: ['E:\\export\\codex-person.json'],
+      errors: [],
+      message: '已导出 1 个账号'
+    }),
     testAccounts: vi.fn().mockResolvedValue({ tested: 1, results: [], cancelled: false }),
     cancelTests: vi.fn().mockResolvedValue(undefined),
     switchAccount: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
@@ -109,12 +127,35 @@ function api(): CodexSwitcherApi {
       globalStateKeysUpdated: 1,
       backupPath: 'C:\\backup'
     }),
-    onTestProgress: vi.fn().mockReturnValue(() => undefined)
+    getUpdateState: vi.fn().mockResolvedValue({
+      status: 'idle',
+      currentVersion: '0.1.0',
+      availableVersion: null,
+      percent: null,
+      message: '尚未检查更新'
+    }),
+    checkForUpdates: vi.fn().mockResolvedValue({
+      status: 'not_available',
+      currentVersion: '0.1.0',
+      availableVersion: null,
+      percent: null,
+      message: '当前已是最新版本'
+    }),
+    downloadUpdate: vi.fn().mockResolvedValue(undefined),
+    installUpdate: vi.fn().mockResolvedValue(undefined),
+    onUpdateState: vi.fn().mockImplementation(() => () => undefined),
+    onTestProgress: vi.fn().mockImplementation((listener) => {
+      progressListener = listener
+      return () => {
+        progressListener = null
+      }
+    })
   }
 }
 
 describe('App', () => {
   beforeEach(() => {
+    progressListener = null
     window.codexSwitcher = api()
   })
 
@@ -209,5 +250,69 @@ describe('App', () => {
         'openai'
       )
     )
+  })
+
+  it('imports cleaned credentials pasted by the user', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '粘贴导入' }))
+    fireEvent.change(screen.getByLabelText('凭据文本'), {
+      target: { value: '{"access_token":"secret"}' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '清洗并导入' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.importPasted).toHaveBeenCalledWith('{"access_token":"secret"}')
+    )
+  })
+
+  it('exports selected accounts using the chosen native format and layout', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.click(screen.getByLabelText('选择 person@example.com'))
+
+    fireEvent.click(screen.getByRole('button', { name: '导出账号' }))
+    fireEvent.click(screen.getByRole('button', { name: 'SubAPI' }))
+    fireEvent.click(screen.getByRole('button', { name: '合并单文件' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择目录并导出' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.exportAccounts).toHaveBeenCalledWith({
+        accountIds: ['account-a'],
+        format: 'sub2api',
+        layout: 'bundle'
+      })
+    )
+  })
+
+  it('shows a running row immediately and applies each completed account update', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    progressListener?.({
+      active: true,
+      done: 0,
+      total: 1,
+      runningIds: ['account-a'],
+      updatedAccount: null
+    })
+    expect(await screen.findByText('检测中')).toBeInTheDocument()
+
+    progressListener?.({
+      active: true,
+      done: 1,
+      total: 1,
+      runningIds: [],
+      updatedAccount: {
+        ...snapshot.accounts[0],
+        status: 'invalid',
+        detail: '凭据已失效',
+        usage: null
+      }
+    })
+
+    expect(await screen.findByText('已失效')).toBeInTheDocument()
+    expect(screen.getByText('凭据已失效')).toBeInTheDocument()
   })
 })

@@ -1,4 +1,5 @@
-export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js'
+export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'zip' | 'paste'
+export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'generic'
 
 export interface NormalizedCredential {
   id: string
@@ -15,6 +16,7 @@ export interface NormalizedCredential {
   canRefresh: boolean
   sourcePath: string
   sourceFormat: CredentialSourceFormat
+  sourceDialect: CredentialDialect
 }
 
 export interface CredentialParseOptions {
@@ -85,6 +87,7 @@ export interface AccountSummary {
   planType: string | null
   sourcePath: string
   sourceFormat: CredentialSourceFormat
+  sourceDialect: CredentialDialect
   canRefresh: boolean
   accessExpiresAt: string | null
   lastRefresh: string | null
@@ -116,6 +119,24 @@ export interface BatchTestResult {
   tested: number
   results: TestResult[]
   cancelled: boolean
+}
+
+export type CredentialExportFormat = 'cpa' | 'sub2api'
+export type CredentialExportLayout = 'separate' | 'bundle'
+
+export interface CredentialExportRequest {
+  accountIds: string[]
+  format: CredentialExportFormat
+  layout: CredentialExportLayout
+}
+
+export interface CredentialExportResult {
+  ok: boolean
+  cancelled: boolean
+  exported: number
+  files: string[]
+  errors: string[]
+  message: string
 }
 
 export interface SessionRepairPreview {

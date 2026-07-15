@@ -32,6 +32,7 @@ function credential(overrides: Partial<NormalizedCredential> = {}): NormalizedCr
     canRefresh: true,
     sourcePath: 'account.json',
     sourceFormat: 'json',
+    sourceDialect: 'cpa',
     ...overrides
   }
 }

@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -13,6 +13,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
   let root: string
   let accountDirectory: string
   let codexHome: string
+  let exportDirectory: string
   let electronApp: ElectronApplication
   let server: Server
   let baseUrl: string
@@ -23,9 +24,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     accountDirectory = join(root, 'accounts')
     codexHome = join(root, '.codex')
     const userData = join(root, 'user-data')
+    exportDirectory = join(root, 'exports')
     await mkdir(accountDirectory, { recursive: true })
     await mkdir(join(codexHome, 'sessions', '2026'), { recursive: true })
     await mkdir(userData, { recursive: true })
+    await mkdir(exportDirectory, { recursive: true })
 
     const accessToken = jwt({
       sub: 'user-e2e',
@@ -101,6 +104,10 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         )
         return
       }
+      if (request.url === '/compact') {
+        setTimeout(() => response.end(JSON.stringify({ output: [] })), 180)
+        return
+      }
       response.end(JSON.stringify({ output: [] }))
     })
     await new Promise<void>((resolve, reject) => {
@@ -118,7 +125,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         ...process.env,
         CODEX_SWITCHER_E2E: '1',
         CODEX_SWITCHER_USER_DATA: userData,
-        CODEX_SWITCHER_TEST_API_BASE_URL: baseUrl
+        CODEX_SWITCHER_TEST_API_BASE_URL: baseUrl,
+        CODEX_SWITCHER_E2E_EXPORT_DIR: exportDirectory
       }
     })
   })
@@ -134,11 +142,35 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
 
     await page.getByRole('button', { name: '测试全部' }).click()
+    await expect(page.getByText('检测中')).toBeVisible()
     await expect(page.getByText('77%')).toBeVisible()
     await expect(page.getByText('Codex 周额度')).toBeVisible()
+    await expect(page.getByRole('row', { name: /e2e@example\.com/ })).toHaveClass(/status-row-valid/)
     expect(requests.slice(0, 2)).toEqual(['/compact', '/usage'])
 
     await page.getByLabel('选择 e2e@example.com').check()
+    await page.getByRole('button', { name: '导出账号' }).click()
+    await page.getByRole('button', { name: '选择目录并导出' }).click()
+    await expect(page.getByText('已导出 1 个账号')).toBeVisible()
+    const exportedFiles = await readdir(exportDirectory)
+    expect(exportedFiles).toEqual(['codex-e2e@example.com.json'])
+    expect(JSON.parse(await readFile(join(exportDirectory, exportedFiles[0]), 'utf8'))).toMatchObject({
+      type: 'codex',
+      email: 'e2e@example.com'
+    })
+
+    const pastedAccess = jwt({
+      sub: 'user-pasted-e2e',
+      exp: 1_910_000_000,
+      'https://api.openai.com/profile': { email: 'pasted-e2e@example.com' }
+    })
+    await page.getByRole('button', { name: '粘贴导入' }).click()
+    await page.getByLabel('凭据文本').fill(
+      `账号：\n\`\`\`json\n${JSON.stringify({ type: 'codex', access_token: pastedAccess })}\n\`\`\``
+    )
+    await page.getByRole('button', { name: '清洗并导入' }).click()
+    await expect(page.getByText('pasted-e2e@example.com').first()).toBeVisible()
+
     await page.getByRole('button', { name: '切换账号' }).click()
     await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe(

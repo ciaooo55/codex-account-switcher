@@ -1,11 +1,14 @@
 import {
   CheckCircle2,
   CircleAlert,
+  ClipboardPaste,
   Copy,
+  Download,
   FolderOpen,
   Import,
   KeyRound,
   LoaderCircle,
+  PackageOpen,
   Play,
   RefreshCw,
   RotateCcw,
@@ -17,11 +20,13 @@ import {
   X
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSnapshot } from '../../shared/ipc'
+import type { AppSnapshot, UpdateState } from '../../shared/ipc'
 import type {
   AccountStatus,
   AccountSummary,
   AppSettings,
+  CredentialExportFormat,
+  CredentialExportLayout,
   SessionRepairPreview,
   UsageWindow
 } from '../../shared/types'
@@ -56,7 +61,20 @@ function resetText(window: UsageWindow): string {
   return '-'
 }
 
-function Quota({ account }: { account: AccountSummary }): React.JSX.Element {
+function Quota({
+  account,
+  running = false
+}: {
+  account: AccountSummary
+  running?: boolean
+}): React.JSX.Element {
+  if (running) {
+    return (
+      <span className="testing-inline">
+        <LoaderCircle className="spin" size={14} />正在刷新额度
+      </span>
+    )
+  }
   if (!account.usage?.windows.length) return <span className="muted">-</span>
   return (
     <div className="quota-list">
@@ -90,6 +108,14 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
+  const [exportDialog, setExportDialog] = useState<{
+    accountIds: string[]
+    format: CredentialExportFormat
+    layout: CredentialExportLayout
+  } | null>(null)
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null)
   const [contextMenu, setContextMenu] = useState<{
     account: AccountSummary
     x: number
@@ -105,9 +131,23 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     void reload()
-    return window.codexSwitcher.onTestProgress((testing) =>
-      setSnapshot((current) => (current ? { ...current, testing } : current))
+    void window.codexSwitcher.getUpdateState().then(setUpdateState)
+    const stopTesting = window.codexSwitcher.onTestProgress((testing) =>
+      setSnapshot((current) => {
+        if (!current) return current
+        const accounts = testing.updatedAccount
+          ? current.accounts.map((account) =>
+              account.id === testing.updatedAccount?.id ? testing.updatedAccount : account
+            )
+          : current.accounts
+        return { ...current, accounts, testing }
+      })
     )
+    const stopUpdates = window.codexSwitcher.onUpdateState(setUpdateState)
+    return () => {
+      stopTesting()
+      stopUpdates()
+    }
   }, [])
 
   useEffect(() => {
@@ -141,6 +181,67 @@ export function App(): React.JSX.Element {
       return `${account.email ?? ''} ${account.sourcePath} ${account.detail}`.toLowerCase().includes(query)
     })
   }, [keyword, snapshot, statusFilter])
+
+  const openExport = (ids?: string[]): void => {
+    const accountIds = ids ?? (selected.size > 0 ? [...selected] : accounts.map((item) => item.id))
+    if (accountIds.length === 0) {
+      setMessage({ kind: 'error', text: '没有可导出的账号' })
+      return
+    }
+    setExportDialog({ accountIds, format: 'cpa', layout: 'separate' })
+  }
+
+  const submitExport = async (): Promise<void> => {
+    if (!exportDialog) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await window.codexSwitcher.exportAccounts(exportDialog)
+      if (!result.cancelled) {
+        setMessage({ kind: result.ok ? 'ok' : 'error', text: result.message })
+        setExportDialog(null)
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitPaste = async (): Promise<void> => {
+    if (!pasteText.trim()) return
+    await run(async () => {
+      const result = await window.codexSwitcher.importPasted(pasteText)
+      if (result.imported === 0) throw new Error(result.errors[0] ?? '未提取到有效账号')
+      setPasteOpen(false)
+      setPasteText('')
+    }, '粘贴内容已清洗并导入')
+  }
+
+  const checkForUpdates = async (): Promise<void> => {
+    try {
+      setUpdateState(await window.codexSwitcher.checkForUpdates())
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  const downloadUpdate = async (): Promise<void> => {
+    try {
+      await window.codexSwitcher.downloadUpdate()
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  const installUpdate = async (): Promise<void> => {
+    if (!window.confirm('安装更新会退出应用并覆盖安装，继续吗？')) return
+    try {
+      await window.codexSwitcher.installUpdate()
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    }
+  }
 
   const run = async (action: () => Promise<unknown>, success?: string): Promise<void> => {
     setBusy(true)
@@ -188,7 +289,7 @@ export function App(): React.JSX.Element {
     setContextMenu({
       account,
       x: Math.min(event.clientX, Math.max(8, window.innerWidth - 238)),
-      y: Math.min(event.clientY, Math.max(8, window.innerHeight - 230))
+      y: Math.min(event.clientY, Math.max(8, window.innerHeight - 270))
     })
   }
 
@@ -269,6 +370,12 @@ export function App(): React.JSX.Element {
         <button onClick={() => void run(() => window.codexSwitcher.importFiles(), '文件导入完成')} disabled={busy}>
           <Import size={16} />导入文件
         </button>
+        <button onClick={() => setPasteOpen(true)} disabled={busy}>
+          <ClipboardPaste size={16} />粘贴导入
+        </button>
+        <button onClick={() => openExport()} disabled={busy || snapshot.accounts.length === 0}>
+          <Download size={16} />导出账号
+        </button>
         <span className="toolbar-divider" />
         <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成')} disabled={busy || snapshot.testing.active}>
           <TestTube2 size={16} />测试全部
@@ -340,24 +447,105 @@ export function App(): React.JSX.Element {
             </tr>
           </thead>
           <tbody>
-            {accounts.map((account) => (
-              <tr key={account.id} className={account.active ? 'active-row' : ''} onContextMenu={(event) => openContextMenu(event, account)}>
+            {accounts.map((account) => {
+              const running = snapshot.testing.runningIds.includes(account.id)
+              return (
+              <tr
+                key={account.id}
+                className={`account-row status-row-${account.status}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}`}
+                onContextMenu={(event) => openContextMenu(event, account)}
+              >
                 <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onChange={() => toggle(account.id)} /></td>
                 <td>
                   <div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div>
                   <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {account.canRefresh ? '可刷新' : '仅 access token'}</div>
                 </td>
-                <td><span className={`status status-${account.status}`}>{STATUS_LABELS[account.status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></td>
+                <td>
+                  {running ? (
+                    <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">正在验证账号并刷新额度</div></>
+                  ) : (
+                    <><span className={`status status-${account.status}`}>{STATUS_LABELS[account.status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>
+                  )}
+                </td>
                 <td>{account.planType ?? '-'}</td>
-                <td><Quota account={account} /></td>
+                <td><Quota account={account} running={running} /></td>
                 <td><div>刷新 {dateTime(account.lastRefresh)}</div><div className="muted">到期 {dateTime(account.accessExpiresAt)}</div><div className="muted">检测 {dateTime(account.lastCheckedAt)}</div></td>
-                <td><div className="source-path" title={account.sourcePath}>{account.sourcePath}</div><span className="format-label">{account.sourceFormat.toUpperCase()}</span></td>
+                <td><div className="source-path" title={account.sourcePath}>{account.sourcePath}</div><span className="format-label">{account.sourceDialect.toUpperCase()} · {account.sourceFormat.toUpperCase()}</span></td>
               </tr>
-            ))}
+              )
+            })}
             {accounts.length === 0 && <tr><td colSpan={7} className="empty-state">没有匹配的账号</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {pasteOpen && (
+        <div className="repair-backdrop" role="presentation">
+          <section className="compact-dialog" role="dialog" aria-modal="true" aria-label="粘贴导入账号">
+            <div className="panel-header">
+              <h2>粘贴导入</h2>
+              <button className="icon-button" title="关闭" aria-label="关闭粘贴导入" onClick={() => setPasteOpen(false)} disabled={busy}>
+                <X size={18} />
+              </button>
+            </div>
+            <label className="paste-field">
+              凭据文本
+              <textarea
+                aria-label="凭据文本"
+                value={pasteText}
+                onChange={(event) => setPasteText(event.target.value)}
+                placeholder="粘贴 JSON、JSONL、键值文本或静态 JS"
+              />
+            </label>
+            <div className="dialog-note">内容会在主进程清洗解析，完整 token 不会进入界面状态或日志。</div>
+            <div className="panel-actions">
+              <button onClick={() => setPasteOpen(false)} disabled={busy}>取消</button>
+              <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim()}>
+                {busy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
+                清洗并导入
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {exportDialog && (
+        <div className="repair-backdrop" role="presentation">
+          <section className="compact-dialog" role="dialog" aria-modal="true" aria-label="导出账号">
+            <div className="panel-header">
+              <h2>导出 {exportDialog.accountIds.length} 个账号</h2>
+              <button className="icon-button" title="关闭" aria-label="关闭账号导出" onClick={() => setExportDialog(null)} disabled={busy}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="option-group">
+              <span>目标格式</span>
+              <div className="segmented-control">
+                <button className={exportDialog.format === 'cpa' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'cpa' })}>CPA</button>
+                <button className={exportDialog.format === 'sub2api' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'sub2api' })}>SubAPI</button>
+              </div>
+            </div>
+            <div className="option-group">
+              <span>文件布局</span>
+              <div className="segmented-control">
+                <button className={exportDialog.layout === 'separate' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'separate' })}>每账号一文件</button>
+                <button className={exportDialog.layout === 'bundle' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'bundle' })}>合并单文件</button>
+              </div>
+            </div>
+            <div className="export-warning">
+              <CircleAlert size={17} />
+              <span>导出文件包含可直接使用的明文凭据。CPA 合并模式输出 ZIP；SubAPI 合并模式输出原生 accounts[] JSON。</span>
+            </div>
+            <div className="panel-actions">
+              <button onClick={() => setExportDialog(null)} disabled={busy}>取消</button>
+              <button className="primary-button" onClick={() => void submitExport()} disabled={busy}>
+                {busy ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={16} />}
+                选择目录并导出
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {contextMenu && (
         <div
@@ -378,6 +566,9 @@ export function App(): React.JSX.Element {
           </button>
           <button role="menuitem" onClick={() => contextAction(() => switchAccount(contextMenu.account.id, true))}>
             <RotateCcw size={15} />切换并重启
+          </button>
+          <button role="menuitem" onClick={() => contextAction(() => openExport([contextMenu.account.id]))}>
+            <Download size={15} />导出此账号
           </button>
           <button role="menuitem" onClick={() => contextAction(async () => {
             const result = await window.codexSwitcher.revealSource(contextMenu.account.id)
@@ -485,6 +676,31 @@ export function App(): React.JSX.Element {
               <label>备份保留数<input type="number" min={1} value={settingsDraft.backupRetention} onChange={(event) => setSettingsDraft({ ...settingsDraft, backupRetention: Number(event.target.value) })} /></label>
               <label>深度检测模型<input value={settingsDraft.deepTestModel} onChange={(event) => setSettingsDraft({ ...settingsDraft, deepTestModel: event.target.value })} /></label>
             </div>
+            <section className="update-panel" aria-label="应用更新">
+              <div>
+                <strong>应用更新</strong>
+                <span>{updateState?.message ?? '正在读取版本信息'}</span>
+              </div>
+              {updateState?.status === 'available' && (
+                <button onClick={() => void downloadUpdate()} disabled={busy}>
+                  <Download size={16} />下载 {updateState.availableVersion}
+                </button>
+              )}
+              {updateState?.status === 'downloading' && (
+                <button disabled><LoaderCircle className="spin" size={16} />{Math.round(updateState.percent ?? 0)}%</button>
+              )}
+              {updateState?.status === 'downloaded' && (
+                <button className="primary-button" onClick={() => void installUpdate()}>
+                  <PackageOpen size={16} />安装并重启
+                </button>
+              )}
+              {!['available', 'downloading', 'downloaded'].includes(updateState?.status ?? '') && (
+                <button onClick={() => void checkForUpdates()} disabled={updateState?.status === 'checking'}>
+                  {updateState?.status === 'checking' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                  检查更新
+                </button>
+              )}
+            </section>
             <div className="panel-actions"><button onClick={() => setSettingsOpen(false)}>取消</button><button className="primary-button" onClick={() => void run(async () => { await window.codexSwitcher.updateSettings(settingsDraft); setSettingsOpen(false) }, '设置已保存')}>保存设置</button></div>
           </section>
         </div>

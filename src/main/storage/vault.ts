@@ -37,7 +37,13 @@ export class CredentialVault {
     const credentials: NormalizedCredential[] = []
     for (const entry of file.entries) {
       try {
-        credentials.push(JSON.parse(this.cipher.decrypt(entry.encrypted)) as NormalizedCredential)
+        const credential = JSON.parse(
+          this.cipher.decrypt(entry.encrypted)
+        ) as NormalizedCredential & { sourceDialect?: NormalizedCredential['sourceDialect'] }
+        credentials.push({
+          ...credential,
+          sourceDialect: credential.sourceDialect ?? 'generic'
+        })
       } catch {
         // A corrupt entry must not prevent access to the rest of the local vault.
       }

@@ -21,6 +21,8 @@ Sub2API records will be adapted with parent context before normalization. Fields
 
 ZIP import reads supported entries in memory, rejects traversal names, limits entry count and uncompressed bytes, and never extracts archive content to disk. Each entry retains a virtual source path for diagnostics.
 
+Directory scans are recursive. Successful manual file imports are copied byte-for-byte into the application's managed `imports` directory with their original extension and collision-safe names. Pasted JSON, JSONL, key/value, static JavaScript, fenced blocks, and noisy text use the same parser; successfully extracted accounts are archived as a reusable native Sub2API JSON.
+
 Deduplication remains identity-based. Subject plus workspace is preferred, followed by email plus workspace, then token entropy when identity claims are unavailable. The same account in CPA and Sub2API input will appear once.
 
 ## Export Architecture
@@ -54,6 +56,8 @@ The account context menu gains an export action that opens the same dialog for t
 Batch detection is incremental. The main process emits an account-scoped progress event when an account enters the queue, starts network work, and completes. The renderer marks running rows with a visible spinner and a `检测中` state, then replaces that row immediately with its new status, usage, reset time, and refresh time instead of waiting for the whole batch.
 
 Account status is communicated across the full row: a stable colored leading rail, a restrained tinted row background, status text, and matching quota accents. Valid, exhausted, permission, expired, refresh, model, network, and file states each use semantic colors and patterns; color is never the only signal. Hover, selection, current-account, and running states remain distinguishable.
+
+Packaged builds use Electron's GitHub updater metadata. The settings panel can check for a release, display download progress, and launch the verified NSIS installer for an in-place upgrade after confirmation.
 
 ## Failure Handling and Security
 

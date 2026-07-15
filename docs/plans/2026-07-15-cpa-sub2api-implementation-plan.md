@@ -21,6 +21,7 @@
 3. Extend account-scoped progress IPC so each completed test updates its row immediately without exposing secrets.
 4. Build the compact export dialog, format/layout segmented controls, warning state, progress/busy state, source dialect labels, full-row semantic status styling, and a visible running animation.
 5. Update E2E coverage for selected and multi-account export flows plus incremental batch detection.
+6. Wire managed source archiving, paste import, and GitHub release update controls through main-process-only IPC.
 
 ## Phase 4: Full verification and release
 

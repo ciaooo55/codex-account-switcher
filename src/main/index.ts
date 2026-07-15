@@ -10,12 +10,14 @@ import {
   safeStorage,
   shell
 } from 'electron'
+import electronUpdater from 'electron-updater'
 import { z } from 'zod'
-import { ipcChannels, type TestProgress } from '../shared/ipc'
+import { ipcChannels, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { CodexProcessManager } from './services/codex-process'
 import { CredentialTester } from './services/detector'
+import { CredentialExportService } from './services/exporter'
 import { SessionRepairService } from './services/session-repair'
 import { SettingsStore } from './storage/settings'
 import { StatusStore } from './storage/status-store'
@@ -23,13 +25,27 @@ import { CredentialVault } from './storage/vault'
 import { CredentialSwitcher } from './switching/switcher'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
+const { autoUpdater } = electronUpdater
 const e2eMode = !app.isPackaged && process.env.CODEX_SWITCHER_E2E === '1'
 if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
   app.setPath('userData', resolve(process.env.CODEX_SWITCHER_USER_DATA))
 }
 let mainWindow: BrowserWindow | null = null
 let testController: AbortController | null = null
-let progress: TestProgress = { active: false, done: 0, total: 0 }
+let progress: TestProgress = {
+  active: false,
+  done: 0,
+  total: 0,
+  runningIds: [],
+  updatedAccount: null
+}
+let updateState: UpdateState = {
+  status: 'idle',
+  currentVersion: app.getVersion(),
+  availableVersion: null,
+  percent: null,
+  message: '尚未检查更新'
+}
 
 function createCipher(): SecretCipher {
   if (!safeStorage.isEncryptionAvailable()) {
@@ -142,8 +158,10 @@ async function main(): Promise<void> {
     vault,
     statusStore,
     tester,
-    switcher
+    switcher,
+    managedImportDirectory: join(userData, 'imports')
   })
+  const exporter = new CredentialExportService({ vault })
 
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()
@@ -159,6 +177,80 @@ async function main(): Promise<void> {
     mainWindow?.webContents.send(ipcChannels.testProgress, progress)
   }
 
+  const sendUpdateState = (next: UpdateState): void => {
+    updateState = next
+    mainWindow?.webContents.send(ipcChannels.updateState, updateState)
+  }
+
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.on('checking-for-update', () => {
+    sendUpdateState({
+      ...updateState,
+      status: 'checking',
+      percent: null,
+      message: '正在检查更新'
+    })
+  })
+  autoUpdater.on('update-available', (info) => {
+    sendUpdateState({
+      status: 'available',
+      currentVersion: app.getVersion(),
+      availableVersion: info.version,
+      percent: null,
+      message: `发现新版本 ${info.version}`
+    })
+  })
+  autoUpdater.on('update-not-available', () => {
+    sendUpdateState({
+      status: 'not_available',
+      currentVersion: app.getVersion(),
+      availableVersion: null,
+      percent: null,
+      message: '当前已是最新版本'
+    })
+  })
+  autoUpdater.on('download-progress', (info) => {
+    sendUpdateState({
+      ...updateState,
+      status: 'downloading',
+      percent: Math.max(0, Math.min(100, info.percent)),
+      message: `正在下载 ${info.percent.toFixed(1)}%`
+    })
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    sendUpdateState({
+      status: 'downloaded',
+      currentVersion: app.getVersion(),
+      availableVersion: info.version,
+      percent: 100,
+      message: '安装包已下载，可退出并覆盖安装'
+    })
+  })
+  autoUpdater.on('error', () => {
+    sendUpdateState({
+      ...updateState,
+      status: 'error',
+      percent: null,
+      message: '更新检查或下载失败，请稍后重试'
+    })
+  })
+
+  const checkForUpdates = async (): Promise<UpdateState> => {
+    if (!app.isPackaged || e2eMode) {
+      sendUpdateState({
+        status: 'not_available',
+        currentVersion: app.getVersion(),
+        availableVersion: null,
+        percent: null,
+        message: '开发环境不执行自动更新'
+      })
+      return updateState
+    }
+    await autoUpdater.checkForUpdates()
+    return updateState
+  }
+
   ipcMain.handle(ipcChannels.snapshot, async () => ({
     accounts: await manager.listAccounts(),
     settings: await settingsStore.get(),
@@ -169,23 +261,73 @@ async function main(): Promise<void> {
     const result = await dialog.showOpenDialog({
       title: '导入 Codex 账号文件',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '账号文件', extensions: ['json', 'txt', 'js'] }]
+      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'js', 'mjs', 'cjs', 'zip'] }]
     })
-    return result.canceled ? null : manager.importFiles(result.filePaths)
+    return result.canceled
+      ? null
+      : manager.importFiles(result.filePaths, { archiveSources: true })
+  })
+  ipcMain.handle(ipcChannels.importPasted, (_event, input: unknown) =>
+    manager.importPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input))
+  )
+  ipcMain.handle(ipcChannels.exportAccounts, async (_event, input: unknown) => {
+    const payload = z
+      .object({
+        accountIds: z.array(z.string().min(1)).min(1).max(20_000),
+        format: z.enum(['cpa', 'sub2api']),
+        layout: z.enum(['separate', 'bundle'])
+      })
+      .parse(input)
+    let outputDirectory: string
+    if (e2eMode && process.env.CODEX_SWITCHER_E2E_EXPORT_DIR) {
+      outputDirectory = resolve(process.env.CODEX_SWITCHER_E2E_EXPORT_DIR)
+    } else {
+      const settings = await settingsStore.get()
+      const selected = await dialog.showOpenDialog({
+        title: '选择账号导出目录',
+        defaultPath: settings.accountDirectory,
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (selected.canceled) {
+        return {
+          ok: false,
+          cancelled: true,
+          exported: 0,
+          files: [],
+          errors: [],
+          message: '已取消导出'
+        }
+      }
+      outputDirectory = selected.filePaths[0]
+    }
+    return exporter.exportAccounts({ ...payload, outputDirectory })
   })
   ipcMain.handle(ipcChannels.test, async (_event, input: unknown) => {
     if (testController) throw new Error('已有检测任务正在运行')
     const ids = z.array(z.string().min(1)).optional().parse(input)
     testController = new AbortController()
-    sendProgress({ active: true, done: 0, total: ids?.length ?? (await manager.listAccounts()).length })
+    sendProgress({
+      active: true,
+      done: 0,
+      total: ids?.length ?? (await manager.listAccounts()).length,
+      runningIds: [],
+      updatedAccount: null
+    })
     try {
       return await manager.testAccounts(ids, {
         signal: testController.signal,
-        onProgress: ({ done, total }) => sendProgress({ active: true, done, total })
+        onProgress: ({ done, total, runningIds, updatedAccount }) =>
+          sendProgress({
+            active: true,
+            done,
+            total,
+            runningIds,
+            updatedAccount: updatedAccount ?? null
+          })
       })
     } finally {
       testController = null
-      sendProgress({ ...progress, active: false })
+      sendProgress({ ...progress, active: false, runningIds: [], updatedAccount: null })
     }
   })
   ipcMain.handle(ipcChannels.cancelTest, () => {
@@ -246,7 +388,7 @@ async function main(): Promise<void> {
     const id = z.string().min(1).parse(input)
     const sourcePath = await manager.getSourcePath(id)
     if (!sourcePath) return { ok: false, message: '账号来源不存在' }
-    if (!['.json', '.txt', '.js'].includes(extname(sourcePath).toLowerCase())) {
+    if (!['.json', '.jsonl', '.txt', '.js', '.mjs', '.cjs', '.zip'].includes(extname(sourcePath).toLowerCase())) {
       return { ok: false, message: '账号来源文件类型不受支持' }
     }
     try {
@@ -274,12 +416,25 @@ async function main(): Promise<void> {
       .parse(input)
     return (await sessionRepairService()).apply(payload.snapshotId, payload.targetProvider)
   })
+  ipcMain.handle(ipcChannels.updateGetState, () => updateState)
+  ipcMain.handle(ipcChannels.updateCheck, () => checkForUpdates())
+  ipcMain.handle(ipcChannels.updateDownload, async () => {
+    if (updateState.status !== 'available') throw new Error('当前没有可下载的新版本')
+    await autoUpdater.downloadUpdate()
+  })
+  ipcMain.handle(ipcChannels.updateInstall, () => {
+    if (updateState.status !== 'downloaded') throw new Error('安装包尚未下载完成')
+    autoUpdater.quitAndInstall(false, true)
+  })
 
   mainWindow = createWindow()
   mainWindow.on('closed', () => {
     mainWindow = null
   })
   void manager.scanDirectory().catch(() => undefined)
+  if (app.isPackaged && !e2eMode) {
+    setTimeout(() => void checkForUpdates().catch(() => undefined), 4_000)
+  }
 }
 
 app.whenReady().then(main).catch((error) => {
