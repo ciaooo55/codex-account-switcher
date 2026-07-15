@@ -114,6 +114,33 @@ describe('parseUsageResponse', () => {
     )
   })
 
+  it('keeps CPA five-hour and weekly windows distinct regardless of slot names', () => {
+    const usage = parseUsageResponse(
+      {
+        plan_type: 'k12',
+        rate_limit: {
+          primary_window: {
+            used_percent: 100,
+            limit_window_seconds: 18_000,
+            reset_at: 1_784_149_051
+          },
+          secondary_window: {
+            used_percent: 19,
+            limit_window_seconds: 604_800,
+            reset_at: 1_784_735_851
+          }
+        }
+      },
+      '2026-07-16T00:00:00.000Z'
+    )
+
+    expect(usage.planType).toBe('k12')
+    expect(usage.windows).toEqual([
+      expect.objectContaining({ label: 'Codex 5 小时', usedPercent: 100 }),
+      expect.objectContaining({ label: 'Codex 周额度', usedPercent: 19 })
+    ])
+  })
+
   it('uses neutral labels when the backend omits the window duration', () => {
     const usage = parseUsageResponse({
       rate_limit: {
@@ -130,16 +157,16 @@ describe('parseUsageResponse', () => {
 })
 
 describe('CredentialTester', () => {
-  it('matches CPA by verifying compact before loading quota', async () => {
+  it('matches CPA by loading quota before verifying compact', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
       .mockResolvedValueOnce(
         jsonResponse(200, {
           plan_type: 'plus',
           rate_limit: { primary_window: { used_percent: 20 } }
         })
       )
+      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
     const tester = new CredentialTester({ fetchImpl, now: () => new Date('2026-07-14T12:00:00Z') })
 
     const result = await tester.test(credential())
@@ -147,10 +174,10 @@ describe('CredentialTester', () => {
     expect(result.status).toBe('valid')
     expect(result.usage?.planType).toBe('plus')
     expect(fetchImpl).toHaveBeenCalledTimes(2)
-    expect(fetchImpl.mock.calls[0][0]).toBe(
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/wham/usage')
+    expect(fetchImpl.mock.calls[1][0]).toBe(
       'https://chatgpt.com/backend-api/codex/responses/compact'
     )
-    expect(fetchImpl.mock.calls[1][0]).toBe('https://chatgpt.com/backend-api/wham/usage')
     expect(fetchImpl.mock.calls[0][1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({
@@ -174,8 +201,8 @@ describe('CredentialTester', () => {
           id_token: jwt({ sub: 'user-a', email: 'person@example.com', exp: 1_910_000_000 })
         })
       )
-      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
       .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'plus', rate_limit: {} }))
+      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
     const onCredentialUpdated = vi.fn()
     const tester = new CredentialTester({
       fetchImpl,
@@ -197,6 +224,7 @@ describe('CredentialTester', () => {
     const quotaTester = new CredentialTester({
       fetchImpl: vi
         .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
         .mockResolvedValueOnce(
           jsonResponse(429, {
             error: { type: 'usage_limit_reached', message: 'usage limit reached' }
@@ -206,6 +234,7 @@ describe('CredentialTester', () => {
     const permissionTester = new CredentialTester({
       fetchImpl: vi
         .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
         .mockResolvedValueOnce(jsonResponse(403, { error: { message: 'forbidden' } }))
     })
 
@@ -219,9 +248,10 @@ describe('CredentialTester', () => {
 
   it('preserves plain-text backend errors for an accurate test result', async () => {
     const tester = new CredentialTester({
-      fetchImpl: vi.fn<typeof fetch>().mockResolvedValueOnce(
-        textResponse(429, 'usage limit reached; retry later')
-      )
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
+        .mockResolvedValueOnce(textResponse(429, 'usage limit reached; retry later'))
     })
 
     await expect(tester.test(credential())).resolves.toMatchObject({
@@ -232,9 +262,12 @@ describe('CredentialTester', () => {
 
   it('does not treat a transient 429 as exhausted quota', async () => {
     const tester = new CredentialTester({
-      fetchImpl: vi.fn<typeof fetch>().mockResolvedValueOnce(
-        jsonResponse(429, { error: { type: 'rate_limit_error', message: 'retry later' } })
-      )
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
+        .mockResolvedValueOnce(
+          jsonResponse(429, { error: { type: 'rate_limit_error', message: 'retry later' } })
+        )
     })
 
     await expect(tester.test(credential())).resolves.toMatchObject({
@@ -248,13 +281,13 @@ describe('CredentialTester', () => {
     const tester = new CredentialTester({
       fetchImpl: vi
         .fn<typeof fetch>()
-        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
         .mockResolvedValueOnce(jsonResponse(404, { error: { message: 'route changed' } }))
+        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
     })
 
     await expect(tester.test(credential())).resolves.toMatchObject({
       status: 'valid',
-      stage: 'usage',
+      stage: 'deep-test',
       usage: null,
       detail: expect.stringContaining('额度接口 HTTP 404')
     })
@@ -262,9 +295,12 @@ describe('CredentialTester', () => {
 
   it('classifies payment-required responses as exhausted quota', async () => {
     const tester = new CredentialTester({
-      fetchImpl: vi.fn<typeof fetch>().mockResolvedValueOnce(
-        jsonResponse(402, { error: { code: 'payment_required', message: 'insufficient credits' } })
-      )
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
+        .mockResolvedValueOnce(
+          jsonResponse(402, { error: { code: 'payment_required', message: 'insufficient credits' } })
+        )
     })
 
     await expect(tester.test(credential())).resolves.toMatchObject({
@@ -277,6 +313,7 @@ describe('CredentialTester', () => {
     const tester = new CredentialTester({
       fetchImpl: vi
         .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
         .mockResolvedValueOnce(
           jsonResponse(400, { error: { code: 'model_not_found', message: 'model unavailable' } })
         )
@@ -308,7 +345,10 @@ describe('CredentialTester', () => {
 
   it('maps transport failures to network_error without leaking token text', async () => {
     const tester = new CredentialTester({
-      fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(new Error('socket closed bearer-secret'))
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
+        .mockRejectedValueOnce(new Error('socket closed bearer-secret'))
     })
 
     const result = await tester.test(credential({ accessToken: 'bearer-secret' }))

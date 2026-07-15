@@ -82,22 +82,57 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-function authDocument(credential: NormalizedCredential): string {
-  return `${JSON.stringify(
-    {
-      auth_mode: 'chatgpt',
-      OPENAI_API_KEY: null,
-      tokens: {
-        id_token: credential.idToken,
-        access_token: credential.accessToken,
-        refresh_token: credential.refreshToken,
-        account_id: credential.accountId
-      },
-      last_refresh: credential.lastRefresh ?? new Date().toISOString()
+interface AuthDocument {
+  text: string
+  externallyManaged: boolean
+}
+
+function authDocument(credential: NormalizedCredential): AuthDocument {
+  const managed = Boolean(credential.idToken && credential.refreshToken)
+  if (!managed && !credential.accountId) {
+    throw new Error('CPA/Team access token 缺少 account_id，无法切换到官方 Codex')
+  }
+
+  const document = {
+    auth_mode: managed ? 'chatgpt' : 'chatgptAuthTokens',
+    OPENAI_API_KEY: null,
+    tokens: {
+      // Codex derives identity claims from the access JWT for externally managed tokens.
+      id_token: managed ? credential.idToken : credential.accessToken,
+      access_token: credential.accessToken,
+      refresh_token: managed ? credential.refreshToken : '',
+      account_id: credential.accountId
     },
-    null,
-    2
-  )}\n`
+    last_refresh: credential.lastRefresh ?? new Date().toISOString()
+  }
+  return {
+    text: `${JSON.stringify(document, null, 2)}\n`,
+    externallyManaged: !managed
+  }
+}
+
+function validAuthDocument(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const auth = value as {
+    auth_mode?: unknown
+    tokens?: {
+      id_token?: unknown
+      access_token?: unknown
+      refresh_token?: unknown
+      account_id?: unknown
+    }
+  }
+  const tokens = auth.tokens
+  if (!tokens || typeof tokens !== 'object') return false
+  if (typeof tokens.id_token !== 'string' || !tokens.id_token.trim()) return false
+  if (typeof tokens.access_token !== 'string' || !tokens.access_token.trim()) return false
+  if (typeof tokens.refresh_token !== 'string') return false
+  if (auth.auth_mode === 'chatgpt') return Boolean(tokens.refresh_token.trim())
+  return (
+    auth.auth_mode === 'chatgptAuthTokens' &&
+    typeof tokens.account_id === 'string' &&
+    Boolean(tokens.account_id.trim())
+  )
 }
 
 export class CredentialSwitcher {
@@ -107,11 +142,7 @@ export class CredentialSwitcher {
     this.validate =
       options.validate ??
       (async ({ authPath }) => {
-        const parsed = JSON.parse(await readFile(authPath, 'utf8')) as {
-          auth_mode?: string
-          tokens?: { access_token?: string }
-        }
-        return parsed.auth_mode === 'chatgpt' && Boolean(parsed.tokens?.access_token)
+        return validAuthDocument(JSON.parse(await readFile(authPath, 'utf8')))
       })
   }
 
@@ -129,7 +160,8 @@ export class CredentialSwitcher {
         configSnapshot: appliedConfig.snapshot
       })
 
-      await writeAtomic(this.options.authPath, authDocument(credential))
+      const auth = authDocument(credential)
+      await writeAtomic(this.options.authPath, auth.text)
       await writeAtomic(this.options.configPath, appliedConfig.text)
       const valid = await this.validate({
         authPath: this.options.authPath,
@@ -138,7 +170,13 @@ export class CredentialSwitcher {
       if (!valid) throw new Error('Codex 登录配置校验失败')
 
       await this.pruneBackups()
-      return { ok: true, message: '账号切换完成', backupPath }
+      return {
+        ok: true,
+        message: auth.externallyManaged
+          ? '账号切换完成（CPA/Team 临时登录，token 到期后需重新导入）'
+          : '账号切换完成',
+        backupPath
+      }
     } catch (error) {
       try {
         if (previousAuth === null) await rm(this.options.authPath, { force: true })

@@ -17,6 +17,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
   let electronApp: ElectronApplication
   let server: Server
   let baseUrl: string
+  let accessToken: string
   const requests: string[] = []
 
   test.beforeAll(async () => {
@@ -30,7 +31,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await mkdir(userData, { recursive: true })
     await mkdir(exportDirectory, { recursive: true })
 
-    const accessToken = jwt({
+    accessToken = jwt({
       sub: 'user-e2e',
       exp: 1_910_000_000,
       'https://api.openai.com/auth': { chatgpt_account_id: 'workspace-e2e' },
@@ -146,7 +147,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('77%')).toBeVisible()
     await expect(page.getByText('Codex 周额度')).toBeVisible()
     await expect(page.getByRole('row', { name: /e2e@example\.com/ })).toHaveClass(/status-row-valid/)
-    expect(requests.slice(0, 2)).toEqual(['/compact', '/usage'])
+    expect(requests.slice(0, 2)).toEqual(['/usage', '/compact'])
 
     await page.getByLabel('选择 e2e@example.com').check()
     await page.getByRole('button', { name: '导出账号' }).click()
@@ -173,9 +174,15 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByRole('button', { name: '切换账号' }).click()
     await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
-    expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe(
-      'chatgpt'
-    )
+    expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
+      auth_mode: 'chatgptAuthTokens',
+      tokens: {
+        id_token: accessToken,
+        access_token: accessToken,
+        refresh_token: '',
+        account_id: 'workspace-e2e'
+      }
+    })
 
     await page.getByRole('button', { name: '修复历史会话' }).click()
     await expect(page.getByRole('dialog', { name: '修复历史会话' })).toBeVisible()

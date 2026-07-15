@@ -350,6 +350,33 @@ export class CredentialTester {
     credential: NormalizedCredential,
     signal?: AbortSignal
   ): Promise<StageResult> {
+    let usage: UsageSummary | null = null
+    let usageNotice: string | null = null
+    let usageQuota: { detail: string; httpStatus: number } | null = null
+
+    const usageResponse = await this.request(
+      this.usageUrl,
+      { method: 'GET', headers: headersFor(credential) },
+      signal,
+      credential
+    )
+    if ('networkError' in usageResponse) {
+      usageNotice = `额度查询失败: ${usageResponse.networkError.detail}`
+    } else {
+      const usagePayload = await responsePayload(usageResponse)
+      const usageDetail = responseDetail(usagePayload)
+      if (usageResponse.status === 401) {
+        return this.stage('invalid', usageDetail, 401, 'usage', null, true)
+      }
+      if (isQuotaError(usageResponse.status, usageDetail, usagePayload)) {
+        usageQuota = { detail: usageDetail, httpStatus: usageResponse.status }
+      } else if (usageResponse.ok) {
+        usage = parseUsageResponse(usagePayload, this.now().toISOString())
+      } else {
+        usageNotice = `额度接口 HTTP ${usageResponse.status}: ${usageDetail}`
+      }
+    }
+
     const compactResponse = await this.request(
       this.compactUrl,
       {
@@ -370,21 +397,24 @@ export class CredentialTester {
       signal,
       credential
     )
-    if ('networkError' in compactResponse) return compactResponse.networkError
+    if ('networkError' in compactResponse) {
+      return { ...compactResponse.networkError, stage: 'deep-test', usage }
+    }
     const compactPayload = await responsePayload(compactResponse)
     const compactDetail = responseDetail(compactPayload)
     if (compactResponse.status === 401) {
-      return this.stage('invalid', compactDetail, 401, 'deep-test', null, true)
+      return this.stage('invalid', compactDetail, 401, 'deep-test', usage, true)
     }
     if (compactResponse.status === 403) {
-      return this.stage('no_permission', compactDetail, 403, 'deep-test')
+      return this.stage('no_permission', compactDetail, 403, 'deep-test', usage)
     }
     if (isQuotaError(compactResponse.status, compactDetail, compactPayload)) {
       return this.stage(
         'quota_exhausted',
         compactDetail,
         compactResponse.status,
-        'deep-test'
+        'deep-test',
+        usage
       )
     }
     if (compactResponse.status === 429) {
@@ -392,7 +422,8 @@ export class CredentialTester {
         'network_error',
         `临时限流: ${compactDetail}`,
         429,
-        'deep-test'
+        'deep-test',
+        usage
       )
     }
     if (isModelError(compactDetail, compactPayload)) {
@@ -400,7 +431,8 @@ export class CredentialTester {
         'model_unavailable',
         compactDetail,
         compactResponse.status,
-        'deep-test'
+        'deep-test',
+        usage
       )
     }
     if (!compactResponse.ok) {
@@ -408,42 +440,26 @@ export class CredentialTester {
         'endpoint_incompatible',
         `深度检测 HTTP ${compactResponse.status}: ${compactDetail}`,
         compactResponse.status,
-        'deep-test'
+        'deep-test',
+        usage
       )
     }
-
-    const usageResponse = await this.request(
-      this.usageUrl,
-      { method: 'GET', headers: headersFor(credential) },
-      signal,
-      credential
+    if (usageQuota) {
+      return this.stage(
+        'quota_exhausted',
+        usageQuota.detail,
+        usageQuota.httpStatus,
+        'usage',
+        usage
+      )
+    }
+    return this.stage(
+      'valid',
+      usageNotice ? `账号可用；${usageNotice}` : '正常可用',
+      200,
+      'deep-test',
+      usage
     )
-    if ('networkError' in usageResponse) {
-      return this.stage(
-        'valid',
-        `账号可用；额度查询失败: ${usageResponse.networkError.detail}`,
-        null,
-        'usage'
-      )
-    }
-    const usagePayload = await responsePayload(usageResponse)
-    const usageDetail = responseDetail(usagePayload)
-    if (usageResponse.status === 401) {
-      return this.stage('invalid', usageDetail, 401, 'usage', null, true)
-    }
-    if (isQuotaError(usageResponse.status, usageDetail, usagePayload)) {
-      return this.stage('quota_exhausted', usageDetail, usageResponse.status, 'usage')
-    }
-    if (!usageResponse.ok) {
-      return this.stage(
-        'valid',
-        `账号可用；额度接口 HTTP ${usageResponse.status}: ${usageDetail}`,
-        usageResponse.status,
-        'usage'
-      )
-    }
-    const usage = parseUsageResponse(usagePayload, this.now().toISOString())
-    return this.stage('valid', '正常可用', 200, 'usage', usage)
   }
 
   private async refresh(

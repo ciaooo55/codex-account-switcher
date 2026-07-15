@@ -8,12 +8,13 @@ Windows 本地 Codex 账号切换器。应用扫描账号文件、检测真实 C
 - 支持直接粘贴混有 Markdown 代码块或说明文字的凭据内容，清洗后提取有效账号。
 - 手动导入的源文件会原样归档到应用数据目录的 `imports` 文件夹，保留扩展名且不修改原文件。
 - 从 JWT 与文件字段提取邮箱、workspace 和过期时间，按 subject、邮箱与 workspace 去重。
-- 按 CPA 流程先调用 Codex compact 做真实验证，401 时刷新并从头重试，再读取 `wham/usage`。
+- 按 CPA 流程先读取 `wham/usage` 的完整额度与重置时间，再调用 Codex compact 做真实验证；401 时刷新并完整重试。
 - 根据后端 `limit_window_seconds` 动态显示 5 小时、周额度及准确重置时间。
 - 并发检测全部或选中账号，支持取消；账号开始检测时整行显示动画，每完成一个账号立即显示状态、额度、重置时间和刷新时间。
 - 按完整账号行显示有效、额度耗尽、无权限、失效、不可刷新、模型、网络和文件状态配色。
 - 一键导出 CPA 或 SubAPI：每账号一个文件，或 CPA 多账号 ZIP / SubAPI 原生多账号 JSON。
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
+- 完整 OAuth 账号使用标准 `chatgpt` 登录；只有 access token 的 CPA/Team 账号使用 Codex 外部令牌模式临时登录，不会写入无效的 `null` token 字段。
 - 恢复上一个配置或最初保存的 API/代理模式。
 - 按 Codex++ 行为同步历史 rollout、SQLite 可见性与工作区路径，写入前预览、加锁、备份并支持失败回滚。
 - 凭据使用 Electron `safeStorage` / Windows DPAPI 加密保存，renderer 与日志不接收 token。
@@ -40,8 +41,8 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.2.0.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.2.0.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.2.1.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.2.1.exe`：便携版
 
 ## 默认路径
 
@@ -50,6 +51,8 @@ npm run package:win
 - Codex 配置：`%USERPROFILE%\.codex\config.toml`
 
 所有 Codex 路径均可在设置中修改。应用不会删除、重命名或覆盖源账号文件；手动导入只会在应用数据目录额外保存一份托管副本。
+
+只有 access token、没有 refresh token 的 CPA/Team 账号可检测额度并在 token 有效期内临时切换，但无法自动续期；到期后需要重新导入更新后的凭据。完整 OAuth 凭据仍由 Codex 正常自动刷新。
 
 ## 历史会话修复
 
