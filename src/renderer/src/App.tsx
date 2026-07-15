@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Import,
   KeyRound,
+  ListChecks,
   LoaderCircle,
   PackageOpen,
   Play,
@@ -17,6 +18,7 @@ import {
   Settings,
   Square,
   TestTube2,
+  TimerReset,
   Trash2,
   Wrench,
   X
@@ -40,6 +42,7 @@ const STATUS_LABELS: Record<AccountStatus, string> = {
   quota_exhausted: '额度耗尽',
   quota_exhausted_5h: '5 小时额度耗尽',
   quota_exhausted_weekly: '周额度耗尽',
+  workspace_deactivated: '工作区已停用',
   no_permission: '无权限',
   invalid: '已失效',
   needs_refresh: '需要刷新',
@@ -108,6 +111,8 @@ export function App(): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<AccountStatus | ''>('')
+  const [activeView, setActiveView] = useState<'accounts' | 'automation'>('accounts')
+  const [automationKeyword, setAutomationKeyword] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null)
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
@@ -265,10 +270,30 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const runAutoSwitchNow = async (): Promise<void> => {
+  const automationPatch = (): Pick<AppSettings, 'autoSwitchEnabled' | 'autoSwitchIntervalSeconds' | 'autoSwitchAccountIds' | 'autoSwitchRestartCodex'> => ({
+    autoSwitchEnabled: settingsDraft!.autoSwitchEnabled,
+    autoSwitchIntervalSeconds: settingsDraft!.autoSwitchIntervalSeconds,
+    autoSwitchAccountIds: settingsDraft!.autoSwitchAccountIds,
+    autoSwitchRestartCodex: settingsDraft!.autoSwitchRestartCodex
+  })
+
+  const saveAutomation = async (): Promise<void> => {
+    if (settingsDraft?.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) {
+      setMessage({ kind: 'error', text: '启用自动切换前至少选择一个候选账号' })
+      return
+    }
+    await run(() => window.codexSwitcher.updateSettings(automationPatch()), '自动切换设置已保存')
+  }
+
+  const saveAndRunAutomation = async (): Promise<void> => {
+    if (!settingsDraft || settingsDraft.autoSwitchAccountIds.length === 0) {
+      setMessage({ kind: 'error', text: '请先选择至少一个候选账号' })
+      return
+    }
     setBusy(true)
     setMessage(null)
     try {
+      await window.codexSwitcher.updateSettings(automationPatch())
       const result = await window.codexSwitcher.runAutoSwitchNow()
       await reload()
       setMessage({ kind: result.ok ? 'ok' : 'warn', text: result.message })
@@ -363,7 +388,7 @@ export function App(): React.JSX.Element {
       setMessage({ kind: 'error', text: '请选择要删除的账号' })
       return
     }
-    if (!window.confirm(`确定删除 ${accountIds.length} 个账号吗？aa 中的托管凭证会同步删除或重写，外部原始文件不受影响。`)) {
+    if (!window.confirm(`确定删除 ${accountIds.length} 个账号吗？aa 中对应的账号 JSON 会一并删除，外部原始文件不受影响。`)) {
       return
     }
     await run(async () => {
@@ -374,7 +399,7 @@ export function App(): React.JSX.Element {
         for (const id of accountIds) next.delete(id)
         return next
       })
-    }, `已删除 ${accountIds.length} 个账号并同步 aa 凭证库`)
+    }, `已删除 ${accountIds.length} 个账号及对应凭证文件`)
   }
 
   const openContextMenu = (event: React.MouseEvent, account: AccountSummary): void => {
@@ -439,32 +464,50 @@ export function App(): React.JSX.Element {
   const selectedAccount = selected.size === 1
     ? snapshot.accounts.find((account) => selected.has(account.id)) ?? null
     : null
+  const automationAccounts = snapshot.accounts.filter((account) => {
+    const query = automationKeyword.trim().toLowerCase()
+    return !query || `${account.email ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
+  })
 
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div>
+        <div className="app-identity">
           <h1>Codex Account Switcher</h1>
           <p>{snapshot.importDirectory}</p>
         </div>
+        <nav className="view-tabs" aria-label="主页面">
+          <button className={activeView === 'accounts' ? 'active' : ''} onClick={() => setActiveView('accounts')}>
+            <ListChecks size={16} />账号库
+          </button>
+          <button className={activeView === 'automation' ? 'active' : ''} onClick={() => setActiveView('automation')}>
+            <TimerReset size={16} />定时切换
+          </button>
+        </nav>
         <button className="icon-button" title="设置" aria-label="设置" onClick={() => setSettingsOpen(true)} disabled={busy}>
           <Settings size={19} />
         </button>
       </header>
 
+      {message && (
+        <div className={`message ${message.kind}`}>
+          {message.kind === 'ok' ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
+          {message.text}
+        </div>
+      )}
+
+      {activeView === 'accounts' ? <div className="page-view accounts-view">
+
       <section className="summary-band">
         <div><span>账号</span><strong>{snapshot.accounts.length}</strong></div>
         <div><span>有效</span><strong className="text-ok">{counts.valid ?? 0}</strong></div>
         <div><span>额度耗尽</span><strong className="text-warn">{(counts.quota_exhausted ?? 0) + (counts.quota_exhausted_5h ?? 0) + (counts.quota_exhausted_weekly ?? 0)}</strong></div>
-        <div><span>异常</span><strong className="text-error">{(counts.invalid ?? 0) + (counts.no_permission ?? 0) + (counts.network_error ?? 0)}</strong></div>
+        <div><span>异常</span><strong className="text-error">{(counts.invalid ?? 0) + (counts.no_permission ?? 0) + (counts.workspace_deactivated ?? 0) + (counts.network_error ?? 0)}</strong></div>
         <div><span>当前账号</span><strong>{snapshot.accounts.find((item) => item.active)?.email ?? '未知/API 模式'}</strong></div>
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
       </section>
 
       <div className="toolbar">
-        <button onClick={() => void runScan(() => window.codexSwitcher.scanDirectory(), 'aa 凭证库同步完成')} disabled={busy}>
-          <RefreshCw size={16} />同步 aa
-        </button>
         <button onClick={() => void runScan(() => window.codexSwitcher.importFiles(), '文件导入完成')} disabled={busy}>
           <Import size={16} />导入文件
         </button>
@@ -523,13 +566,6 @@ export function App(): React.JSX.Element {
           <span>{snapshot.testing.done} / {snapshot.testing.total}</span>
         </div>
       )}
-      {message && (
-        <div className={`message ${message.kind}`}>
-          {message.kind === 'ok' ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
-          {message.text}
-        </div>
-      )}
-
       <div className="filter-row">
         <label className="search-field">
           <Search size={16} />
@@ -583,6 +619,71 @@ export function App(): React.JSX.Element {
           </tbody>
         </table>
       </div>
+      </div> : (
+        <main className="page-view automation-view">
+          <section className="automation-status-band">
+            <div><span>运行状态</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '正在检查' : snapshot.autoSwitch.enabled ? '已启用' : '未启用'}</strong></div>
+            <div><span>当前账号</span><strong>{snapshot.accounts.find((account) => account.active)?.email ?? '未匹配'}</strong></div>
+            <div><span>上次检查</span><strong>{dateTime(snapshot.autoSwitch.lastCheckAt)}</strong></div>
+            <div><span>下次检查</span><strong>{dateTime(snapshot.autoSwitch.nextCheckAt)}</strong></div>
+            <div className="automation-message"><span>结果</span><strong>{snapshot.autoSwitch.lastMessage}</strong></div>
+          </section>
+
+          {snapshot.testing.active && snapshot.autoSwitch.running && (
+            <div className="task-progress">
+              <div style={{ width: `${snapshot.testing.total ? (snapshot.testing.done / snapshot.testing.total) * 100 : 0}%` }} />
+              <span>{snapshot.testing.done} / {snapshot.testing.total}</span>
+            </div>
+          )}
+
+          <section className="automation-controls" aria-label="自动切换设置">
+            <label className="automation-toggle">
+              <span>定时自动切换</span>
+              <span className="switch-control">
+                <input aria-label="启用定时自动切换" type="checkbox" checked={settingsDraft.autoSwitchEnabled} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchEnabled: event.target.checked })} />
+                <span />
+              </span>
+            </label>
+            <label>检查间隔（秒）<input aria-label="自动切换检查间隔" type="number" min={5} max={86400} value={settingsDraft.autoSwitchIntervalSeconds} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchIntervalSeconds: Number(event.target.value) })} /></label>
+            <label className="check-option"><input type="checkbox" checked={settingsDraft.autoSwitchRestartCodex} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchRestartCodex: event.target.checked })} />切换成功后重启 Codex</label>
+            <span className="automation-spacer" />
+            <button onClick={() => void saveAutomation()} disabled={busy}>保存设置</button>
+            <button className="primary-button" onClick={() => void saveAndRunAutomation()} disabled={busy || snapshot.autoSwitch.running || settingsDraft.autoSwitchAccountIds.length === 0}>
+              {snapshot.autoSwitch.running ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}立即检查
+            </button>
+          </section>
+
+          <div className="automation-filter-row">
+            <label className="search-field"><Search size={16} /><input value={automationKeyword} onChange={(event) => setAutomationKeyword(event.target.value)} placeholder="搜索候选账号" /></label>
+            <span>候选 {settingsDraft.autoSwitchAccountIds.length} / {snapshot.accounts.filter((account) => account.switchable).length}</span>
+            <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: snapshot.accounts.filter((account) => account.switchable).map((account) => account.id) })}>全选可切换</button>
+            <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</button>
+          </div>
+
+          <div className="table-wrap automation-table-wrap">
+            <table className="automation-table">
+              <thead><tr><th className="select-column">候选</th><th>账号</th><th>状态</th><th>等级</th><th>当前额度</th><th>最后检测</th></tr></thead>
+              <tbody>
+                {automationAccounts.map((account) => {
+                  const checked = settingsDraft.autoSwitchAccountIds.includes(account.id)
+                  const running = snapshot.testing.runningIds.includes(account.id)
+                  return (
+                    <tr key={account.id} className={`status-row-${account.status}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}`}>
+                      <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
+                      <td><div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div><div className="workspace-id">{account.switchable ? '可切换' : '缺少完整登录凭据'}</div></td>
+                      <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${account.status}`}>{STATUS_LABELS[account.status]}</span><div className="status-detail">{account.detail}</div></>}</td>
+                      <td>{account.planType ?? '未知'}</td>
+                      <td><Quota account={account} running={running} /></td>
+                      <td>{dateTime(account.lastCheckedAt)}</td>
+                    </tr>
+                  )
+                })}
+                {automationAccounts.length === 0 && <tr><td colSpan={6} className="empty-state">没有匹配的账号</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </main>
+      )}
 
       {pasteOpen && (
         <div className="repair-backdrop" role="presentation">
@@ -775,8 +876,8 @@ export function App(): React.JSX.Element {
         <div className="modal-backdrop" role="presentation">
           <section className="settings-panel" role="dialog" aria-modal="true" aria-label="设置">
             <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" onClick={() => setSettingsOpen(false)}><X size={18} /></button></div>
-            <label>应用凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
-            <label>账号目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
+            <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
+            <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
             <label>auth.json 路径<input value={settingsDraft.authPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, authPath: event.target.value })} /></label>
             <label>config.toml 路径<input value={settingsDraft.configPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, configPath: event.target.value })} /></label>
             <div className="settings-grid">
@@ -785,79 +886,6 @@ export function App(): React.JSX.Element {
               <label>备份保留数<input type="number" min={1} value={settingsDraft.backupRetention} onChange={(event) => setSettingsDraft({ ...settingsDraft, backupRetention: Number(event.target.value) })} /></label>
               <label>深度检测模型<input value={settingsDraft.deepTestModel} onChange={(event) => setSettingsDraft({ ...settingsDraft, deepTestModel: event.target.value })} /></label>
             </div>
-            <section className="auto-switch-panel" aria-label="自动切换账号">
-              <div className="auto-switch-heading">
-                <div>
-                  <strong>定时自动切换</strong>
-                  <span>{snapshot.autoSwitch.lastMessage}</span>
-                </div>
-                <label className="switch-control">
-                  <input
-                    aria-label="启用定时自动切换"
-                    type="checkbox"
-                    checked={settingsDraft.autoSwitchEnabled}
-                    onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchEnabled: event.target.checked })}
-                  />
-                  <span />
-                </label>
-              </div>
-              <div className="auto-switch-options">
-                <label>
-                  检查间隔（秒）
-                  <input
-                    aria-label="自动切换检查间隔"
-                    type="number"
-                    min={5}
-                    max={86400}
-                    value={settingsDraft.autoSwitchIntervalSeconds}
-                    onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchIntervalSeconds: Number(event.target.value) })}
-                  />
-                </label>
-                <label className="check-option">
-                  <input
-                    type="checkbox"
-                    checked={settingsDraft.autoSwitchRestartCodex}
-                    onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchRestartCodex: event.target.checked })}
-                  />
-                  切换成功后重启 Codex
-                </label>
-              </div>
-              <div className="pool-heading">
-                <span>候选账号池</span>
-                <strong>{settingsDraft.autoSwitchAccountIds.length} 个</strong>
-              </div>
-              <div className="account-pool-list">
-                {snapshot.accounts.map((account) => {
-                  const checked = settingsDraft.autoSwitchAccountIds.includes(account.id)
-                  return (
-                    <label className={!account.switchable ? 'disabled' : ''} key={account.id}>
-                      <input
-                        type="checkbox"
-                        aria-label={`自动切换候选 ${account.email ?? account.id}`}
-                        disabled={!account.switchable}
-                        checked={checked}
-                        onChange={(event) => setSettingsDraft({
-                          ...settingsDraft,
-                          autoSwitchAccountIds: event.target.checked
-                            ? [...settingsDraft.autoSwitchAccountIds, account.id]
-                            : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id)
-                        })}
-                      />
-                      <span>{account.email ?? '邮箱未知'}</span>
-                      <small>{STATUS_LABELS[account.status]}</small>
-                    </label>
-                  )
-                })}
-                {snapshot.accounts.length === 0 && <div className="pool-empty">暂无账号</div>}
-              </div>
-              <div className="auto-switch-footer">
-                <span>仅在明确失效、无权限、不可刷新或 Codex 额度耗尽时切换。</span>
-                <button onClick={() => void runAutoSwitchNow()} disabled={busy || snapshot.autoSwitch.running || snapshot.settings.autoSwitchAccountIds.length === 0}>
-                  {snapshot.autoSwitch.running ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
-                  立即检查
-                </button>
-              </div>
-            </section>
             <section className="update-panel" aria-label="应用更新">
               <div>
                 <strong>应用更新</strong>

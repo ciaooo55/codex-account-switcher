@@ -189,6 +189,12 @@ describe('CredentialTester', () => {
         })
       })
     )
+    expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
+      input: [
+        { type: 'message', role: 'user', content: 'ping' },
+        { type: 'compaction_trigger' }
+      ]
+    })
   })
 
   it('refreshes after 401 and reruns the complete two-stage check', async () => {
@@ -361,6 +367,21 @@ describe('CredentialTester', () => {
       status: 'quota_exhausted',
       httpStatus: 402
     })
+  })
+
+  it('reports a deactivated Team/K12 workspace separately from exhausted quota', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(402, { detail: { code: 'deactivated_workspace' } }))
+    const tester = new CredentialTester({ fetchImpl })
+
+    await expect(tester.test(credential({ planType: 'k12' }))).resolves.toMatchObject({
+      status: 'workspace_deactivated',
+      detail: 'Team/K12 工作区已停用',
+      httpStatus: 402,
+      stage: 'usage'
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
   it('reports model errors separately from credential failures', async () => {

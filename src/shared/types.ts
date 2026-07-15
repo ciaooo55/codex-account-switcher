@@ -50,6 +50,7 @@ export type AccountStatus =
   | 'quota_exhausted'
   | 'quota_exhausted_5h'
   | 'quota_exhausted_weekly'
+  | 'workspace_deactivated'
   | 'no_permission'
   | 'invalid'
   | 'needs_refresh'

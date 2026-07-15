@@ -51,6 +51,7 @@ jobs:
         run: |
           $exe = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/win-unpacked/Codex Account Switcher.exe").Path
           $setup = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/Codex-Account-Switcher-Setup-*.exe").Path
+          $testInstall = Join-Path $env:RUNNER_TEMP "codex-switcher-install"
 
           function Get-PackagedSwitcherProcess {
             @(Get-Process | Where-Object { $_.Path -eq $exe })
@@ -67,13 +68,22 @@ jobs:
               throw "Expected one primary application window after two launches, found $($windows.Count)."
             }
 
-            $installer = Start-Process -FilePath $setup -ArgumentList "/S" -Wait -PassThru
+            $installer = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
             if ($installer.ExitCode -ne 0) {
               throw "Silent installer exited with code $($installer.ExitCode)."
             }
             Start-Sleep -Seconds 2
             if ((Get-PackagedSwitcherProcess).Count -ne 0) {
               throw "Installer did not close the running packaged application."
+            }
+
+            $managedLibrary = Join-Path $testInstall "aa"
+            New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
+            $sentinel = Join-Path $managedLibrary "update-preservation-test.json"
+            Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
+            $reinstall = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
+            if ($reinstall.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $sentinel)) {
+              throw "Installer update did not preserve the managed aa library."
             }
           } finally {
             Get-PackagedSwitcherProcess | Stop-Process -Force -ErrorAction SilentlyContinue

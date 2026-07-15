@@ -169,15 +169,15 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByRole('button', { name: '导入文件夹' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
-    expect(await readdir(join(userData, 'aa'))).toContain('folder-accounts.md')
+    expect(await readdir(join(userData, 'aa'))).toContain('folder-e2e@example.com_unknown.json')
     await unlink(join(importSourceDirectory, 'folder-accounts.md'))
-    await page.getByRole('button', { name: '同步 aa' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
 
     await page.getByLabel('选择 folder-e2e@example.com').check()
     page.once('dialog', (dialog) => dialog.accept())
     await page.getByRole('button', { name: '删除选中' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toHaveCount(0)
+    expect(await readdir(join(userData, 'aa'))).not.toContain('folder-e2e@example.com_unknown.json')
 
     await page.getByRole('button', { name: '测试全部' }).click()
     await expect(page.getByText('检测中')).toBeVisible()
@@ -268,9 +268,6 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '设置' }).click()
     const settingsPanel = page.getByRole('dialog', { name: '设置' })
     await expect(settingsPanel).toBeVisible()
-    await expect(page.getByLabel('启用定时自动切换')).toBeVisible()
-    await expect(page.getByLabel('自动切换候选 e2e@example.com')).toBeEnabled()
-    await expect(page.getByLabel('自动切换候选 pasted-e2e@example.com')).toBeDisabled()
     const panelBounds = await settingsPanel.boundingBox()
     expect(panelBounds).not.toBeNull()
     expect(panelBounds!.x).toBeGreaterThanOrEqual(0)
@@ -289,6 +286,14 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     })
 
     await settingsPanel.getByRole('button', { name: '取消' }).click()
+    await page.getByRole('button', { name: '定时切换' }).click()
+    await expect(page.getByLabel('启用定时自动切换')).toBeVisible()
+    await expect(page.getByLabel('自动切换候选 e2e@example.com')).toBeEnabled()
+    await expect(page.getByLabel('自动切换候选 pasted-e2e@example.com')).toBeDisabled()
+    await page.screenshot({
+      path: join(process.cwd(), 'test-results', 'automation-ui.png'),
+      fullPage: true
+    })
     await electronApp.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]
       if (!window) throw new Error('主窗口不存在')

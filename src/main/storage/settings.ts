@@ -19,7 +19,7 @@ const storedSettingsSchema = z.object({
 
 function defaults(homeDirectory: string): AppSettings {
   return {
-    accountDirectory: 'E:\\home\\lee\\.cli-proxy-api',
+    accountDirectory: homeDirectory,
     authPath: join(homeDirectory, '.codex', 'auth.json'),
     configPath: join(homeDirectory, '.codex', 'config.toml'),
     concurrency: 4,

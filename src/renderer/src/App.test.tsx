@@ -225,8 +225,8 @@ describe('App', () => {
     expect(screen.queryByText(/文件导入完成/)).not.toBeInTheDocument()
   })
 
-  it('reports partial scan failures instead of hiding them behind a success message', async () => {
-    window.codexSwitcher.scanDirectory = vi.fn().mockResolvedValue({
+  it('reports partial import failures instead of hiding them behind a success message', async () => {
+    window.codexSwitcher.importFiles = vi.fn().mockResolvedValue({
       imported: 3,
       skipped: 2,
       errors: ['broken.json: invalid'],
@@ -235,9 +235,9 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByRole('button', { name: '同步 aa' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入文件' }))
 
-    const warning = await screen.findByText('aa 凭证库同步完成：导入 3，跳过 2，失败 1')
+    const warning = await screen.findByText('文件导入完成：导入 3，跳过 2，失败 1')
     expect(warning.closest('.message')).toHaveClass('warn')
   })
 
@@ -304,7 +304,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByRole('button', { name: '设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '定时切换' }))
     fireEvent.click(screen.getByLabelText('启用定时自动切换'))
     fireEvent.change(screen.getByLabelText('自动切换检查间隔'), { target: { value: '45' } })
     fireEvent.click(screen.getByLabelText('自动切换候选 person@example.com'))

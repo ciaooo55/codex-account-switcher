@@ -91,26 +91,27 @@ interface AuthDocument {
 }
 
 function authDocument(credential: NormalizedCredential): AuthDocument {
-  if (!credential.idToken || !credential.refreshToken) {
+  const externallyManaged = !credential.idToken || !credential.refreshToken
+  if (externallyManaged && !credential.accountId) {
     throw new Error(
-      '该账号只有 access token，可用于 CPA/Sub2API 检测，但官方 Codex auth.json 登录必须同时包含 id_token 和 refresh_token'
+      '该账号只有 access token 且缺少 Team/K12 workspace ID，无法生成 Codex 外部认证配置'
     )
   }
 
   const document = {
-    auth_mode: 'chatgpt',
+    auth_mode: externallyManaged ? 'chatgptAuthTokens' : 'chatgpt',
     OPENAI_API_KEY: null,
     tokens: {
-      id_token: credential.idToken,
+      id_token: externallyManaged ? credential.accessToken : credential.idToken,
       access_token: credential.accessToken,
-      refresh_token: credential.refreshToken,
+      refresh_token: externallyManaged ? '' : credential.refreshToken,
       account_id: credential.accountId
     },
     last_refresh: credential.lastRefresh ?? new Date().toISOString()
   }
   return {
     text: `${JSON.stringify(document, null, 2)}\n`,
-    externallyManaged: false
+    externallyManaged
   }
 }
 
@@ -130,6 +131,9 @@ function validAuthDocument(value: unknown): boolean {
   if (typeof tokens.id_token !== 'string' || !tokens.id_token.trim()) return false
   if (typeof tokens.access_token !== 'string' || !tokens.access_token.trim()) return false
   if (typeof tokens.refresh_token !== 'string') return false
+  if (auth.auth_mode === 'chatgptAuthTokens') {
+    return tokens.refresh_token === '' && typeof tokens.account_id === 'string' && Boolean(tokens.account_id.trim())
+  }
   return auth.auth_mode === 'chatgpt' && Boolean(tokens.refresh_token.trim())
 }
 
@@ -179,7 +183,9 @@ export class CredentialSwitcher {
       await this.pruneBackups()
       return {
         ok: true,
-        message: '账号切换完成',
+        message: nextAuth.externallyManaged
+          ? 'Team/K12 外部凭据已写入，请重启 Codex 后生效；该模式不会自动刷新 token'
+          : '账号切换完成',
         backupPath
       }
     } catch (error) {

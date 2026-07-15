@@ -184,7 +184,7 @@ describe('AccountManager', () => {
     expect(result.accounts.every((item) => item.sourceFormat === 'zip')).toBe(true)
   })
 
-  it('archives manually imported source files without modifying their bytes', async () => {
+  it('normalizes manual imports into one account file and skips duplicate re-imports', async () => {
     const fixture = await setup()
     const managedImportDirectory = join(fixture.root, 'app', 'imports')
     const externalPath = join(fixture.root, 'external-source.txt')
@@ -202,10 +202,16 @@ describe('AccountManager', () => {
     const result = await manager.importFiles([externalPath], { archiveSources: true })
     const archived = await readdir(managedImportDirectory)
 
-    expect(archived).toEqual(['external-source.txt'])
-    expect(await readFile(join(managedImportDirectory, archived[0]), 'utf8')).toBe(source)
+    expect(archived).toEqual(['managed@example.com_unknown.json'])
+    expect(JSON.parse(await readFile(join(managedImportDirectory, archived[0]), 'utf8'))).toMatchObject({
+      schema: 'codex-account-switcher/account-v1',
+      email: 'managed@example.com'
+    })
     expect(await readFile(externalPath, 'utf8')).toBe(source)
     expect(result.accounts[0].sourcePath).toBe(join(managedImportDirectory, archived[0]))
+    const duplicate = await manager.importFiles([externalPath], { archiveSources: true })
+    expect(duplicate).toMatchObject({ imported: 0, skipped: 1 })
+    expect(await readdir(managedImportDirectory)).toEqual(archived)
   })
 
   it('recursively imports a folder with Markdown and multi-account files into app storage', async () => {
@@ -243,7 +249,11 @@ describe('AccountManager', () => {
       'folder-three@example.com',
       'folder-two@example.com'
     ])
-    expect((await readdir(managedImportDirectory)).sort()).toEqual(['accounts.md', 'third.txt'])
+    expect((await readdir(managedImportDirectory)).sort()).toEqual([
+      'folder-one@example.com_unknown.json',
+      'folder-three@example.com_unknown.json',
+      'folder-two@example.com_unknown.json'
+    ])
     expect(result.accounts.every((account) => account.sourcePath.startsWith(managedImportDirectory))).toBe(true)
   })
 
@@ -284,7 +294,7 @@ describe('AccountManager', () => {
     expect((await fixture.vault.list())[0].refreshToken).toBe('merge-refresh')
   })
 
-  it('cleans pasted text, imports valid accounts and stores a reusable Sub2API file', async () => {
+  it('cleans pasted text and stores the same normalized account format as file imports', async () => {
     const fixture = await setup()
     const managedImportDirectory = join(fixture.root, 'app', 'imports')
     const manager = new AccountManager({
@@ -306,8 +316,11 @@ describe('AccountManager', () => {
     const stored = JSON.parse(await readFile(join(managedImportDirectory, storedFiles[0]), 'utf8'))
 
     expect(result.accounts[0].email).toBe('pasted@example.com')
-    expect(stored.type).toBe('sub2api-data')
-    expect(stored.accounts).toHaveLength(1)
+    expect(stored).toMatchObject({
+      schema: 'codex-account-switcher/account-v1',
+      type: 'codex',
+      email: 'pasted@example.com'
+    })
   })
 
   it('marks the credential matching the current auth.json as active', async () => {
@@ -580,7 +593,7 @@ describe('AccountManager', () => {
     expect(await readFile(externalPath, 'utf8')).toContain('external@example.com')
   })
 
-  it('rewrites a managed multi-account file on partial deletion and removes it when empty', async () => {
+  it('splits multi-account imports and removes exactly the deleted account file', async () => {
     const fixture = await setup()
     const externalPath = join(fixture.root, 'multi.json')
     const managedImportDirectory = join(fixture.root, 'app', 'aa')
@@ -607,11 +620,12 @@ describe('AccountManager', () => {
     const remaining = await manager.scanDirectory()
     expect(remaining.accounts.map((account) => account.email)).toEqual(['managed-b@example.com'])
     expect(await readFile(externalPath, 'utf8')).toBe(source)
-    expect(await readFile(managedPath, 'utf8')).not.toContain('managed-a@example.com')
-    expect(await readFile(managedPath, 'utf8')).toContain('managed-b@example.com')
+    await expect(stat(managedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    const remainingPath = remaining.accounts[0].sourcePath
+    expect(await readFile(remainingPath, 'utf8')).toContain('managed-b@example.com')
 
     await manager.deleteAccounts([remaining.accounts[0].id])
-    await expect(stat(managedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(remainingPath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('migrates the legacy imports directory into aa', async () => {
@@ -636,8 +650,8 @@ describe('AccountManager', () => {
 
     const accounts = await manager.listAccounts()
     expect(accounts).toHaveLength(1)
-    expect(accounts[0].sourcePath).toBe(join(managedImportDirectory, 'legacy.json'))
-    await expect(stat(legacy)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(accounts[0].sourcePath).toBe(join(managedImportDirectory, 'legacy@example.com_unknown.json'))
+    await expect(stat(join(legacy, 'legacy.json'))).resolves.toMatchObject({ isFile: expect.any(Function) })
   })
 
   it('persists account deletion across automatic scans and restores it on manual import', async () => {

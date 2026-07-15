@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +19,7 @@ import { ipcChannels, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { AutoSwitchScheduler } from './services/auto-switch'
+import { discoverCodexDirectory, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { CodexProcessManager } from './services/codex-process'
 import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
@@ -142,15 +143,54 @@ function showMainWindow(): void {
 
 async function main(): Promise<void> {
   const userData = app.getPath('userData')
+  const homeDirectory = homedir()
   const cipher = createCipher()
-  const settingsStore = new SettingsStore(join(userData, 'settings.json'), homedir())
+  const settingsStore = new SettingsStore(join(userData, 'settings.json'), homeDirectory)
+  const initialSettings = await settingsStore.get()
+  let codexDirectory = await discoverCodexDirectory({
+    homeDirectory,
+    configuredAuthPath: initialSettings.authPath,
+    configuredConfigPath: initialSettings.configPath
+  })
+  if (!codexDirectory) {
+    const selected = await dialog.showOpenDialog({
+      title: '未找到 Codex 配置目录，请选择或创建 .codex 文件夹',
+      defaultPath: homeDirectory,
+      buttonLabel: '使用此目录',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    codexDirectory = selected.canceled
+      ? join(homeDirectory, '.codex')
+      : await normalizeSelectedCodexDirectory(selected.filePaths[0])
+  }
+  await mkdir(codexDirectory, { recursive: true })
+  const discoveredAuthPath = join(codexDirectory, 'auth.json')
+  const discoveredConfigPath = join(codexDirectory, 'config.toml')
+  if (
+    resolve(initialSettings.authPath) !== resolve(discoveredAuthPath) ||
+    resolve(initialSettings.configPath) !== resolve(discoveredConfigPath)
+  ) {
+    await settingsStore.update({
+      authPath: discoveredAuthPath,
+      configPath: discoveredConfigPath
+    })
+  }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
-  const importDirectory = e2eMode
-    ? join(userData, 'aa')
-    : join(app.getPath('appData'), 'Codex Account Switcher', 'aa')
-  const legacyImportDirectories = [join(userData, 'imports'), join(userData, 'aa')]
+  const applicationDirectory = e2eMode
+    ? userData
+    : app.isPackaged
+      ? resolve(process.env.PORTABLE_EXECUTABLE_DIR ?? dirname(process.execPath))
+      : resolve(currentDirectory, '../..')
+  const importDirectory = join(applicationDirectory, 'aa')
+  const legacyImportDirectories = [...new Set(e2eMode
+    ? [join(userData, 'imports'), join(userData, 'aa')]
+    : [
+        join(userData, 'imports'),
+        join(userData, 'aa'),
+        join(app.getPath('appData'), 'Codex Account Switcher', 'aa')
+      ])]
   const processManager = new CodexProcessManager()
   let testApiBase: string | null = null
   if (e2eMode && process.env.CODEX_SWITCHER_TEST_API_BASE_URL) {
@@ -243,7 +283,7 @@ async function main(): Promise<void> {
       await manager.migrateManagedDirectory(directory)
     }
     return manager.scanDirectory()
-  }).catch(() => undefined)
+  })
 
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()

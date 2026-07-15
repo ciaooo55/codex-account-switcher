@@ -1,8 +1,6 @@
-import { randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises'
+import { extname, join, resolve } from 'node:path'
+import { strFromU8, unzipSync } from 'fflate'
 import type {
   AccountSummary,
   AppSettings,
@@ -16,8 +14,7 @@ import type {
   TestResult
 } from '../../shared/types'
 import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
-import { serializeCodexCredential, serializeCpaCredential, serializeSub2ApiBundle } from './exporter'
-import { atomicWriteFile } from '../storage/atomic-file'
+import { ManagedCredentialLibrary } from '../storage/managed-library'
 import type { CredentialVault } from '../storage/vault'
 import type { StatusStore } from '../storage/status-store'
 
@@ -101,7 +98,13 @@ async function collectSupportedFiles(directory: string): Promise<string[]> {
 }
 
 export class AccountManager {
-  constructor(private readonly options: AccountManagerOptions) {}
+  private readonly managedLibrary: ManagedCredentialLibrary | null
+
+  constructor(private readonly options: AccountManagerOptions) {
+    this.managedLibrary = options.managedImportDirectory
+      ? new ManagedCredentialLibrary(options.managedImportDirectory)
+      : null
+  }
 
   async scanDirectory(): Promise<ScanResult> {
     const settings = await this.options.settings()
@@ -136,13 +139,7 @@ export class AccountManager {
       }
       try {
         const parsed = await this.parseCredentialFile(path, format)
-        let sourcePath = path
-        if (options.archiveSources && parsed.credentials.length > 0) {
-          sourcePath = await this.archiveSourceFile(path)
-        }
-        credentials.push(
-          ...parsed.credentials.map((credential) => ({ ...credential, sourcePath }))
-        )
+        credentials.push(...parsed.credentials)
         errors.push(...parsed.errors)
       } catch (error) {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
@@ -157,10 +154,15 @@ export class AccountManager {
         await this.options.deletedStore.removeMany(deduped.map((credential) => credential.id))
       }
     }
-    const merged = dedupeCredentials([...(await this.options.vault.list()), ...deduped])
-    await this.options.vault.replace(merged)
+    const existing = dedupeCredentials(await this.options.vault.list())
+    const existingIds = new Set(existing.map((credential) => credential.id))
+    const imported = deduped.filter((credential) => !existingIds.has(credential.id)).length
+    skipped += deduped.length - imported
+    const merged = dedupeCredentials([...existing, ...deduped])
+    const stored = await this.persistManagedLibrary(merged, existing)
+    await this.options.vault.replace(stored)
     return {
-      imported: deduped.length,
+      imported,
       skipped,
       errors,
       accounts: await this.listAccounts()
@@ -184,14 +186,16 @@ export class AccountManager {
         accounts: await this.listAccounts()
       }
     }
-    const sourcePath = await this.archivePastedCredentials(credentials)
-    const stored = credentials.map((credential) => ({ ...credential, sourcePath }))
-    await this.options.deletedStore?.removeMany(stored.map((credential) => credential.id))
-    const merged = dedupeCredentials([...(await this.options.vault.list()), ...stored])
-    await this.options.vault.replace(merged)
+    await this.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
+    const existing = dedupeCredentials(await this.options.vault.list())
+    const existingIds = new Set(existing.map((credential) => credential.id))
+    const imported = credentials.filter((credential) => !existingIds.has(credential.id)).length
+    const merged = dedupeCredentials([...existing, ...credentials])
+    const stored = await this.persistManagedLibrary(merged, existing)
+    await this.options.vault.replace(stored)
     return {
-      imported: stored.length,
-      skipped: 0,
+      imported,
+      skipped: credentials.length - imported,
       errors: [],
       accounts: await this.listAccounts()
     }
@@ -205,21 +209,20 @@ export class AccountManager {
       .map((credential) => credential.id)
     const existingSet = new Set(existingIds)
     const remaining = before.filter((credential) => !existingSet.has(credential.id))
-    const managedMutation = await this.prepareManagedDeletion(before, remaining, existingSet)
     try {
       await this.options.deletedStore?.addMany(existingIds)
-      await this.options.vault.replace(remaining)
+      const stored = await this.persistManagedLibrary(remaining, before)
+      await this.options.vault.replace(stored)
       await this.options.statusStore.removeMany(existingIds)
-      await managedMutation.commit()
     } catch (error) {
-      await managedMutation.rollback()
       await this.options.deletedStore?.removeMany(existingIds).catch(() => undefined)
       await this.options.vault.replace(before).catch(() => undefined)
+      await this.managedLibrary?.replace(before).catch(() => undefined)
       throw error
     }
     return {
       deleted: existingIds.length,
-      message: `已删除 ${existingIds.length} 个账号并同步 aa 凭证库，外部原始文件未修改`
+      message: `已删除 ${existingIds.length} 个账号和对应的 aa 凭证文件，外部原始文件未修改`
     }
   }
 
@@ -233,12 +236,8 @@ export class AccountManager {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw error
     }
-    if (paths.length === 0) {
-      await rm(sourceDirectory, { recursive: true, force: true })
-      return
-    }
-    const result = await this.importFiles(paths, { archiveSources: true, restoreDeleted: false })
-    if (result.errors.length === 0) await rm(sourceDirectory, { recursive: true, force: true })
+    if (paths.length === 0) return
+    await this.importFiles(paths, { archiveSources: true, restoreDeleted: false })
   }
 
   async listAccounts(): Promise<AccountSummary[]> {
@@ -258,7 +257,9 @@ export class AccountManager {
           sourceFormat: credential.sourceFormat,
           sourceDialect: credential.sourceDialect,
           canRefresh: credential.canRefresh,
-          switchable: Boolean(credential.idToken && credential.refreshToken),
+          switchable: Boolean(
+            (credential.idToken && credential.refreshToken) || credential.accountId
+          ),
           accessExpiresAt: credential.accessExpiresAt,
           lastRefresh: credential.lastRefresh,
           status: status?.status ?? 'untested',
@@ -314,6 +315,7 @@ export class AccountManager {
           }
         }
         results.push(result)
+        await this.updateCredentialPlan(credential.id, result)
         await this.options.statusStore.set(result)
         runningIds.delete(credential.id)
         done += 1
@@ -330,6 +332,7 @@ export class AccountManager {
     }
     const concurrency = Math.max(1, Math.min(12, settings.concurrency))
     await Promise.all(Array.from({ length: Math.min(concurrency, total) }, () => worker()))
+    await this.persistVaultLibrary()
     return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
   }
 
@@ -337,7 +340,9 @@ export class AccountManager {
     const credential = await this.options.vault.get(id)
     if (!credential) return { ok: false, message: '账号不存在', backupPath: null }
     const result = await this.options.tester.test(credential)
+    await this.updateCredentialPlan(credential.id, result)
     await this.options.statusStore.set(result)
+    await this.persistVaultLibrary()
     if (!['valid', 'quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly', 'model_unavailable'].includes(result.status)) {
       return { ok: false, message: `账号不可切换：${result.detail}`, backupPath: null }
     }
@@ -361,7 +366,9 @@ export class AccountManager {
     }
     const notify = async (id: string, result: TestResult): Promise<void> => {
       checkedAccountIds.push(id)
+      await this.updateCredentialPlan(id, result)
       await this.options.statusStore.set(result)
+      await this.persistVaultLibrary()
       const updatedAccount = (await this.listAccounts()).find((account) => account.id === id)
       onProgress?.({
         done: checkedAccountIds.length,
@@ -491,152 +498,32 @@ export class AccountManager {
     return { credentials, errors }
   }
 
-  private async archiveSourceFile(sourcePath: string): Promise<string> {
-    const directory = this.options.managedImportDirectory
-    if (!directory) return sourcePath
-    await mkdir(directory, { recursive: true })
-    const filename = basename(sourcePath)
-    const extension = extname(filename)
-    const stem = extension ? filename.slice(0, -extension.length) : filename
-    const source = await readFile(sourcePath)
-    for (let suffix = 1; suffix < 10_000; suffix += 1) {
-      const candidate = join(
-        directory,
-        suffix === 1 ? filename : `${stem}-${suffix}${extension}`
-      )
-      try {
-        const existing = await readFile(candidate)
-        if (existing.equals(source)) return candidate
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        await copyFile(sourcePath, candidate, constants.COPYFILE_EXCL)
-        return candidate
-      }
-    }
-    throw new Error('托管导入目录无法生成可用文件名')
-  }
-
-  private async archivePastedCredentials(
-    credentials: readonly NormalizedCredential[]
-  ): Promise<string> {
-    const directory = this.options.managedImportDirectory
-    if (!directory) return 'pasted-credential.json'
-    await mkdir(directory, { recursive: true })
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
-    const targetPath = await this.availableManagedPath(`pasted-${stamp}.json`)
-    await writeFile(
-      targetPath,
-      `${JSON.stringify(serializeSub2ApiBundle(credentials), null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600, flag: 'wx' }
-    )
-    return targetPath
-  }
-
-  private async availableManagedPath(filename: string): Promise<string> {
-    const directory = this.options.managedImportDirectory
-    if (!directory) return filename
-    const extension = extname(filename)
-    const stem = extension ? filename.slice(0, -extension.length) : filename
-    for (let suffix = 1; suffix < 10_000; suffix += 1) {
-      const candidate = join(
-        directory,
-        suffix === 1 ? filename : `${stem}-${suffix}${extension}`
-      )
-      try {
-        await stat(candidate)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return candidate
-        throw error
-      }
-    }
-    throw new Error('托管导入目录无法生成可用文件名')
-  }
-
-  private isManagedPath(path: string): boolean {
-    const directory = this.options.managedImportDirectory
-    if (!directory) return false
-    const child = relative(resolve(directory), resolve(path))
-    return child !== '' && !child.startsWith('..') && !isAbsolute(child)
-  }
-
-  private managedBytes(credentials: readonly NormalizedCredential[], sourcePath: string): Uint8Array {
-    const format = FORMAT_BY_EXTENSION[extname(sourcePath).toLowerCase()] ?? 'json'
-    const allSub2Api = credentials.every((credential) => credential.sourceDialect === 'sub2api')
-    const values = credentials.map((credential) =>
-      credential.sourceDialect === 'codex'
-        ? serializeCodexCredential(credential)
-        : serializeCpaCredential(credential)
-    )
-    const document = allSub2Api
-      ? serializeSub2ApiBundle(credentials)
-      : values.length === 1
-        ? values[0]
-        : values
-    if (format === 'zip') {
-      const entries = Object.fromEntries(
-        credentials.map((credential, index) => [
-          `codex-${index + 1}-${credential.id.slice(0, 10)}.json`,
-          strToU8(`${JSON.stringify(serializeCpaCredential(credential), null, 2)}\n`)
-        ])
-      )
-      return zipSync(entries, { level: 6 })
-    }
-    if (format === 'jsonl') {
-      const rows = allSub2Api ? [document] : values
-      return strToU8(`${rows.map((value) => JSON.stringify(value)).join('\n')}\n`)
-    }
-    const json = JSON.stringify(document, null, 2)
-    if (format === 'js') return strToU8(`export default ${json};\n`)
-    if (format === 'md') return strToU8(`\`\`\`json\n${json}\n\`\`\`\n`)
-    return strToU8(`${json}\n`)
-  }
-
-  private async prepareManagedDeletion(
-    before: readonly NormalizedCredential[],
-    remaining: readonly NormalizedCredential[],
-    deletedIds: ReadonlySet<string>
-  ): Promise<{ commit(): Promise<void>; rollback(): Promise<void> }> {
-    const paths = [...new Set(
-      before.filter((credential) => deletedIds.has(credential.id) && this.isManagedPath(credential.sourcePath))
-        .map((credential) => credential.sourcePath)
-    )]
-    const backups: Array<{ source: string; backup: string; replacement: boolean }> = []
+  private async persistManagedLibrary(
+    credentials: readonly NormalizedCredential[],
+    rollbackCredentials: readonly NormalizedCredential[] = []
+  ): Promise<NormalizedCredential[]> {
+    if (!this.managedLibrary) return dedupeCredentials(credentials)
     try {
-      for (const source of paths) {
-        try {
-          if (!(await stat(source)).isFile()) continue
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-          throw error
-        }
-        const backup = `${source}.${randomUUID()}.deleting`
-        await rename(source, backup)
-        const keep = remaining.filter((credential) => credential.sourcePath === source)
-        const entry = { source, backup, replacement: false }
-        backups.push(entry)
-        if (keep.length > 0) {
-          await atomicWriteFile(source, this.managedBytes(keep, source))
-          entry.replacement = true
-        }
-      }
+      return await this.managedLibrary.replace(credentials)
     } catch (error) {
-      for (const entry of backups.reverse()) {
-        if (entry.replacement) await rm(entry.source, { force: true }).catch(() => undefined)
-        await rename(entry.backup, entry.source).catch(() => undefined)
-      }
+      await this.managedLibrary.replace(rollbackCredentials).catch(() => undefined)
       throw error
     }
-    return {
-      commit: async () => {
-        await Promise.all(backups.map((entry) => rm(entry.backup, { force: true }).catch(() => undefined)))
-      },
-      rollback: async () => {
-        for (const entry of backups.reverse()) {
-          if (entry.replacement) await rm(entry.source, { force: true }).catch(() => undefined)
-          await rename(entry.backup, entry.source).catch(() => undefined)
-        }
-      }
-    }
+  }
+
+  private async persistVaultLibrary(): Promise<void> {
+    if (!this.managedLibrary) return
+    const before = await this.options.vault.list()
+    const stored = await this.persistManagedLibrary(before, before)
+    await this.options.vault.replace(stored)
+  }
+
+  private async updateCredentialPlan(id: string, result: TestResult): Promise<void> {
+    const planType = result.usage?.planType?.trim()
+    if (!planType) return
+    const current = await this.options.vault.get(id)
+    if (!current || current.planType === planType) return
+    await this.options.vault.upsertMany([{ ...current, planType }])
   }
 
   private async activeCredentialId(authPath: string): Promise<string | null> {

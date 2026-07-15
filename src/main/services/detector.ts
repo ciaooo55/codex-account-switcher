@@ -286,6 +286,14 @@ function isQuotaError(status: number, detail: string, payload: unknown): boolean
   )
 }
 
+function isDeactivatedWorkspace(payload: unknown): boolean {
+  const root = asRecord(payload)
+  const detail = asRecord(root?.detail)
+  const error = asRecord(root?.error)
+  const code = stringOrNull(detail?.code) ?? stringOrNull(error?.code)
+  return code?.toLowerCase() === 'deactivated_workspace'
+}
+
 function sanitizedDetail(detail: string, credential: NormalizedCredential): string {
   let result = detail
   for (const token of [credential.accessToken, credential.refreshToken, credential.idToken]) {
@@ -392,6 +400,9 @@ export class CredentialTester {
       if (usageResponse.status === 401) {
         return this.stage('invalid', usageDetail, 401, 'usage', null, true)
       }
+      if (isDeactivatedWorkspace(usagePayload)) {
+        return this.stage('workspace_deactivated', 'Team/K12 工作区已停用', usageResponse.status, 'usage')
+      }
       if (isQuotaError(usageResponse.status, usageDetail, usagePayload)) {
         usageQuota = { detail: usageDetail, httpStatus: usageResponse.status }
       } else if (usageResponse.ok) {
@@ -413,8 +424,9 @@ export class CredentialTester {
             {
               type: 'message',
               role: 'user',
-              content: [{ type: 'input_text', text: 'ping' }]
-            }
+              content: 'ping'
+            },
+            { type: 'compaction_trigger' }
           ]
         })
       },
@@ -431,6 +443,9 @@ export class CredentialTester {
     }
     if (compactResponse.status === 403) {
       return this.stage('no_permission', compactDetail, 403, 'deep-test', usage)
+    }
+    if (isDeactivatedWorkspace(compactPayload)) {
+      return this.stage('workspace_deactivated', 'Team/K12 工作区已停用', compactResponse.status, 'deep-test', usage)
     }
     if (isQuotaError(compactResponse.status, compactDetail, compactPayload)) {
       const quota = exhaustedCodexQuota(usage)

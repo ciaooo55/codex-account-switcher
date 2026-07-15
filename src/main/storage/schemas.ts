@@ -44,6 +44,7 @@ export const testResultSchema = z.object({
     'quota_exhausted',
     'quota_exhausted_5h',
     'quota_exhausted_weekly',
+    'workspace_deactivated',
     'no_permission',
     'invalid',
     'needs_refresh',

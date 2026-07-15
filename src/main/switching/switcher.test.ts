@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -75,7 +75,21 @@ describe('CredentialSwitcher', () => {
     expect(backupRaw).not.toContain('api-secret')
   })
 
-  it('rejects CPA access-only credentials that official auth.json cannot deserialize', async () => {
+  it('creates auth.json when the discovered .codex directory does not have one yet', async () => {
+    const paths = await fixture()
+    await rm(paths.authPath)
+    const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
+
+    const result = await switcher.switchTo(credential())
+
+    expect(result.ok).toBe(true)
+    expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toMatchObject({
+      auth_mode: 'chatgpt',
+      tokens: { access_token: 'access-a' }
+    })
+  })
+
+  it('writes the official external-token shape for CPA Team/K12 access-only credentials', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
 
@@ -88,12 +102,20 @@ describe('CredentialSwitcher', () => {
       })
     )
 
-    expect(result).toMatchObject({ ok: false })
-    expect(result.message).toContain('官方 Codex auth.json')
-    expect(result.backupPath).toBeNull()
-    await expect(readdir(paths.backupDir)).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(JSON.parse(await readFile(paths.authPath, 'utf8')).auth_mode).toBe('apikey')
-    expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
+    expect(result).toMatchObject({ ok: true })
+    expect(result.message).toContain('重启 Codex')
+    expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toEqual({
+      auth_mode: 'chatgptAuthTokens',
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: 'access-a',
+        access_token: 'access-a',
+        refresh_token: '',
+        account_id: 'workspace-a'
+      },
+      last_refresh: '2026-07-14T12:00:00Z'
+    })
+    expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "openai"')
   })
 
   it('rejects access-only credentials without an account id and restores prior config', async () => {
@@ -110,7 +132,7 @@ describe('CredentialSwitcher', () => {
     )
 
     expect(result).toMatchObject({ ok: false })
-    expect(result.message).toContain('官方 Codex auth.json')
+    expect(result.message).toContain('workspace ID')
     expect(JSON.parse(await readFile(paths.authPath, 'utf8')).auth_mode).toBe('apikey')
     expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "custom"')
   })
