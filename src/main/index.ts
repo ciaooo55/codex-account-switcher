@@ -9,6 +9,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  net,
   safeStorage,
   shell,
   Tray
@@ -26,6 +27,11 @@ import { CredentialExportService } from './services/exporter'
 import { GrokAccountManager } from './services/grok-account-manager'
 import { GrokCredentialTester } from './services/grok-detector'
 import { SessionRepairService } from './services/session-repair'
+import {
+  cleanupLegacyUpdateCache,
+  downloadInstaller,
+  launchInstallerAndDelete
+} from './services/update-installer'
 import { SettingsStore } from './storage/settings'
 import { StatusStore } from './storage/status-store'
 import { DeletedCredentialStore } from './storage/deleted-credentials'
@@ -150,6 +156,7 @@ function showMainWindow(): void {
 }
 
 async function main(): Promise<void> {
+  await cleanupLegacyUpdateCache(process.env.LOCALAPPDATA).catch(() => undefined)
   const userData = app.getPath('userData')
   const homeDirectory = homedir()
   const cipher = createCipher()
@@ -429,6 +436,8 @@ async function main(): Promise<void> {
 
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  let availableUpdate: { version: string; expectedSha512: string } | null = null
+  let downloadedInstallerPath: string | null = null
   autoUpdater.on('checking-for-update', () => {
     sendUpdateState({
       ...updateState,
@@ -438,6 +447,12 @@ async function main(): Promise<void> {
     })
   })
   autoUpdater.on('update-available', (info) => {
+    const setupFile = info.files.find((file) => /setup.*\.exe$/i.test(String(file.url)))
+      ?? info.files.find((file) => /\.exe$/i.test(String(file.url)))
+    availableUpdate = setupFile
+      ? { version: info.version, expectedSha512: setupFile.sha512 }
+      : null
+    downloadedInstallerPath = null
     sendUpdateState({
       status: 'available',
       currentVersion: app.getVersion(),
@@ -447,29 +462,14 @@ async function main(): Promise<void> {
     })
   })
   autoUpdater.on('update-not-available', () => {
+    availableUpdate = null
+    downloadedInstallerPath = null
     sendUpdateState({
       status: 'not_available',
       currentVersion: app.getVersion(),
       availableVersion: null,
       percent: null,
       message: '当前已是最新版本'
-    })
-  })
-  autoUpdater.on('download-progress', (info) => {
-    sendUpdateState({
-      ...updateState,
-      status: 'downloading',
-      percent: Math.max(0, Math.min(100, info.percent)),
-      message: `正在下载 ${info.percent.toFixed(1)}%`
-    })
-  })
-  autoUpdater.on('update-downloaded', (info) => {
-    sendUpdateState({
-      status: 'downloaded',
-      currentVersion: app.getVersion(),
-      availableVersion: info.version,
-      percent: 100,
-      message: '安装包已下载，可退出并覆盖安装'
     })
   })
   autoUpdater.on('error', () => {
@@ -914,15 +914,53 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.updateDownload, async () => {
     if (updateDownloadPromise) return updateDownloadPromise
     if (updateState.status !== 'available') throw new Error('当前没有可下载的新版本')
+    if (!availableUpdate) throw new Error('更新元数据缺少 Windows 安装包或校验值')
     sendUpdateState({ ...updateState, status: 'downloading', percent: 0, message: '正在准备下载更新' })
-    updateDownloadPromise = autoUpdater.downloadUpdate().then(() => undefined).finally(() => {
+    const version = availableUpdate.version.replace(/^v/i, '')
+    const fileName = `Codex-Account-Switcher-Setup-${version}.exe`
+    const targetPath = join(app.getPath('downloads'), fileName)
+    const url = `https://github.com/ciaooo55/codex-account-switcher/releases/download/v${version}/${fileName}`
+    downloadedInstallerPath = null
+    updateDownloadPromise = downloadInstaller({
+      url,
+      targetPath,
+      expectedSha512: availableUpdate.expectedSha512,
+      fetch: (input) => net.fetch(input) as never,
+      onProgress: (percent) => sendUpdateState({
+        ...updateState,
+        status: 'downloading',
+        percent,
+        message: `正在下载到“下载”文件夹 ${percent.toFixed(1)}%`
+      })
+    }).then((path) => {
+      downloadedInstallerPath = path
+      sendUpdateState({
+        status: 'downloaded',
+        currentVersion: app.getVersion(),
+        availableVersion: availableUpdate?.version ?? version,
+        percent: 100,
+        message: `安装包已保存到“下载”文件夹，安装完成后会自动删除`
+      })
+    }).catch((error) => {
+      sendUpdateState({
+        ...updateState,
+        status: 'available',
+        percent: null,
+        message: error instanceof Error ? error.message : '安装包下载失败'
+      })
+      throw error
+    }).finally(() => {
       updateDownloadPromise = null
     })
     return updateDownloadPromise
   })
   ipcMain.handle(ipcChannels.updateInstall, () => {
-    if (updateState.status !== 'downloaded') throw new Error('安装包尚未下载完成')
-    autoUpdater.quitAndInstall(false, true)
+    if (updateState.status !== 'downloaded' || !downloadedInstallerPath) {
+      throw new Error('安装包尚未下载完成')
+    }
+    launchInstallerAndDelete(downloadedInstallerPath)
+    isQuitting = true
+    app.quit()
   })
   ipcMain.handle(ipcChannels.autoSwitchRun, () => autoSwitchScheduler.runNow(true))
 
