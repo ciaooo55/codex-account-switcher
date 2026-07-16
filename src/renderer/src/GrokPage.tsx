@@ -193,7 +193,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, now = Date.now() }: Props
     <StatusFilters value={status} counts={count} total={snapshot.cpaCodexAccounts.length} onChange={setStatus} />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.scanCpaCodexDirectory(), 'CPA Codex 扫描完成')} disabled={busy}><RefreshCw size={16} />重新扫描</button></div>
-      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(), 'CPA Codex 全部检测完成', false)} disabled={busy || snapshot.cpaCodexTesting.active}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
+      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(accounts.map((account) => account.id)), `CPA Codex 当前筛选 ${accounts.length} 个账号检测完成`, false)} disabled={busy || snapshot.cpaCodexTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
     </div>
     {selected.size > 0 && <div className="selection-toolbar" aria-label="CPA Codex 选中账号操作">
       <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>批量管理 CPA 文件状态</span></div>
@@ -256,7 +256,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, now = Date.now() }: Props): R
     <StatusFilters value={status} counts={count} total={snapshot.grokAccounts.length} onChange={setStatus} />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.scanGrokDirectory(), 'Grok 扫描完成')} disabled={busy || snapshot.grokTesting.active}><RefreshCw size={16} />重新扫描</button></div>
-      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.testGrokAccounts(), 'Grok 全部检测完成', false)} disabled={busy || snapshot.grokTesting.active}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.grokTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelGrokTests()}><Square size={15} />取消</button>}</div>
+      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.testGrokAccounts(accounts.map((account) => account.id)), `Grok 当前筛选 ${accounts.length} 个账号检测完成`, false)} disabled={busy || snapshot.grokTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.grokTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelGrokTests()}><Square size={15} />取消</button>}</div>
     </div>
     {selected.size > 0 && <div className="selection-toolbar" aria-label="Grok 选中账号操作">
       <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>批量测试、导出或调整文件状态</span></div>

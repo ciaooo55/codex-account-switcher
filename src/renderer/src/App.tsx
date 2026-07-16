@@ -767,7 +767,14 @@ export function App(): React.JSX.Element {
         </button>
         </div>
         <div className="toolbar-group">
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成', false)} disabled={busy || snapshot.testing.active}>
+        <button
+          onClick={() => void run(
+            () => window.codexSwitcher.testAccounts(accounts.map((account) => account.id)),
+            `当前筛选 ${accounts.length} 个账号检测完成`,
+            false
+          )}
+          disabled={busy || snapshot.testing.active || accounts.length === 0}
+        >
           <TestTube2 size={16} />测试当前页面全部
         </button>
         {snapshot.testing.active && !snapshot.autoSwitch.running && (

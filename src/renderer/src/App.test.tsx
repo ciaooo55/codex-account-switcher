@@ -335,7 +335,7 @@ describe('App', () => {
     expect(grokRow).toHaveClass('selected-row')
     fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
 
-    await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith())
+    await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith(['g'.repeat(64)]))
     expect(bridge.testAccounts).not.toHaveBeenCalled()
   })
 
@@ -424,6 +424,78 @@ describe('App', () => {
     })
     expect(screen.getByRole('row', { name: /second@example\.com/ })).toBeInTheDocument()
     expect(screen.queryByRole('row', { name: /person@example\.com/ })).not.toBeInTheDocument()
+  })
+
+  it('tests only the accounts visible under the current Codex status filter', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.change(screen.getByLabelText('Codex 状态筛选'), { target: { value: 'valid' } })
+    fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
+
+    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a']))
+  })
+
+  it('tests only the visible CPA Codex status group', async () => {
+    const bridge = api()
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      cpaCodexAccounts: [
+        {
+          id: 'c'.repeat(64), email: 'valid-cpa@example.com', workspaceId: 'workspace-valid',
+          planType: 'plus', sourcePath: 'E:\\cpa\\valid.json', sourceDialect: 'cpa',
+          canRefresh: true, accessExpiresAt: null, lastRefresh: null, status: 'valid',
+          detail: '有效', lastCheckedAt: null, usage: null, disabled: false
+        },
+        {
+          id: 'd'.repeat(64), email: 'invalid-cpa@example.com', workspaceId: 'workspace-invalid',
+          planType: 'team', sourcePath: 'E:\\cpa\\invalid.json.0', sourceDialect: 'cpa',
+          canRefresh: false, accessExpiresAt: null, lastRefresh: null, status: 'invalid',
+          detail: '已失效', lastCheckedAt: null, usage: null, disabled: true
+        }
+      ]
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^已失效/ }))
+    fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
+
+    await waitFor(() => expect(bridge.testCpaCodexAccounts).toHaveBeenCalledWith(['d'.repeat(64)]))
+  })
+
+  it('tests only the visible Grok quota status group', async () => {
+    const bridge = api()
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      grokAccounts: [
+        {
+          id: 'e'.repeat(64), email: 'valid-grok@example.com', subject: 'grok-valid', teamId: null,
+          planType: 'SuperGrok', sourcePath: 'E:\\cpa\\grok-valid.json', sourceFormat: 'json',
+          sourceDialect: 'cpa', canRefresh: true, expiresAt: null, lastRefresh: null,
+          status: 'valid', detail: '有效', lastCheckedAt: null, usage: null, disabled: false
+        },
+        {
+          id: 'f'.repeat(64), email: 'limited-grok@example.com', subject: 'grok-limited', teamId: null,
+          planType: 'SuperGrok', sourcePath: 'E:\\cpa\\grok-limited.json.0', sourceFormat: 'json',
+          sourceDialect: 'cpa', canRefresh: true, expiresAt: null, lastRefresh: null,
+          status: 'quota_exhausted_weekly', detail: '周额度耗尽', lastCheckedAt: null,
+          usage: null, disabled: true
+        }
+      ]
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Grok/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^周额度耗尽/ }))
+    fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
+
+    await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith(['f'.repeat(64)]))
   })
 
   it('deletes selected accounts only after confirmation', async () => {
