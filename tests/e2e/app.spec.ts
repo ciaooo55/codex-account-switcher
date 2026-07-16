@@ -279,12 +279,13 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(accountRow).toContainText('支出限额68%')
     await expect(accountRow).toContainText('重置券3')
     await accountRow.hover()
-    const cellGeometry = await accountRow.locator('td').evaluateAll((cells) =>
-      cells.map((cell) => {
+    const cellGeometry = await accountRow.evaluate((row) =>
+      [...row.children].filter((child) => child.tagName === 'TD').map((cell) => {
         const bounds = cell.getBoundingClientRect()
         return { top: bounds.top, height: bounds.height, background: getComputedStyle(cell).backgroundColor }
       })
     )
+    expect(cellGeometry).toHaveLength(7)
     expect(Math.max(...cellGeometry.map((cell) => cell.top)) - Math.min(...cellGeometry.map((cell) => cell.top))).toBeLessThanOrEqual(1)
     expect(Math.max(...cellGeometry.map((cell) => cell.height)) - Math.min(...cellGeometry.map((cell) => cell.height))).toBeLessThanOrEqual(1)
     expect(new Set(cellGeometry.map((cell) => cell.background)).size).toBe(1)
