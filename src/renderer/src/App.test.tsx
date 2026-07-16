@@ -120,12 +120,10 @@ function api(): CodexSwitcherApi {
     }),
     importAnyFiles: vi.fn().mockResolvedValue(null),
     importAnyDirectory: vi.fn().mockResolvedValue({
-      codex: { imported: 2, skipped: 0, errors: [], accounts: snapshot.accounts },
-      grok: { imported: 0, skipped: 0, errors: [], accounts: [] }
+      imported: 2, skipped: 0, errors: [], accounts: snapshot.accounts
     }),
     importAnyPasted: vi.fn().mockResolvedValue({
-      codex: { imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts },
-      grok: { imported: 0, skipped: 0, errors: [], accounts: [] }
+      imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts
     }),
     deleteAccounts: vi.fn().mockResolvedValue({
       deleted: 1,
@@ -138,6 +136,12 @@ function api(): CodexSwitcherApi {
       files: ['E:\\export\\codex-person.json'],
       errors: [],
       message: '已导出 1 个账号'
+    }),
+    exportAccountsToCpa: vi.fn().mockResolvedValue({
+      imported: 1,
+      skipped: 0,
+      errors: [],
+      accounts: []
     }),
     testAccounts: vi.fn().mockResolvedValue({ tested: 1, results: [], cancelled: false }),
     cancelTests: vi.fn().mockResolvedValue(undefined),
@@ -345,7 +349,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
 
     await waitFor(() => expect(window.codexSwitcher.importAnyDirectory).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('文件夹导入完成：Codex 导入 2、跳过 0；Grok 导入 0、跳过 0')).toBeInTheDocument()
+    expect(await screen.findByText('文件夹导入完成：导入 2 个 Codex 账号，重复跳过 0 个')).toBeInTheDocument()
   })
 
   it('does not report success when the file picker is cancelled', async () => {
@@ -361,8 +365,7 @@ describe('App', () => {
 
   it('reports partial import failures instead of hiding them behind a success message', async () => {
     window.codexSwitcher.importAnyFiles = vi.fn().mockResolvedValue({
-      codex: { imported: 3, skipped: 2, errors: ['broken.json: invalid'], accounts: snapshot.accounts },
-      grok: { imported: 1, skipped: 0, errors: [], accounts: [] }
+      imported: 3, skipped: 2, errors: ['broken.json: invalid'], accounts: snapshot.accounts
     })
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
@@ -370,8 +373,8 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
     fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
 
-    const result = await screen.findByText('文件导入完成：Codex 导入 3、跳过 2；Grok 导入 1、跳过 0')
-    expect(result.closest('.message')).toHaveClass('ok')
+    const result = await screen.findByText('文件导入完成：导入 3 个 Codex 账号，重复跳过 2 个')
+    expect(result.closest('.message')).toHaveClass('warn')
   })
 
   it('filters by persistent status and searches workspace text', async () => {

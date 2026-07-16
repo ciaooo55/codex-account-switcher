@@ -519,6 +519,16 @@ export class CredentialTester {
         usageQuota = { detail: usageDetail, httpStatus: usageResponse.status }
       } else if (usageResponse.ok) {
         usage = parseUsageResponse(usagePayload, this.now().toISOString())
+        const exhaustedQuota = exhaustedCodexQuota(usage)
+        if (exhaustedQuota) {
+          return this.stage(
+            exhaustedQuota.status,
+            exhaustedQuota.detail,
+            usageResponse.status,
+            'usage',
+            usage
+          )
+        }
       } else {
         usageNotice = `额度接口 HTTP ${usageResponse.status}: ${usageDetail}`
       }
@@ -550,6 +560,15 @@ export class CredentialTester {
     const compactPayload = await responsePayload(compactResponse)
     const compactDetail = responseDetail(compactPayload)
     if (compactResponse.status === 401) {
+      if (usage) {
+        return this.stage(
+          'endpoint_incompatible',
+          `额度凭据有效，但深度检测接口拒绝了请求格式: ${compactDetail}`,
+          401,
+          'deep-test',
+          usage
+        )
+      }
       return this.stage('invalid', compactDetail, 401, 'deep-test', usage, true)
     }
     if (compactResponse.status === 403) {
@@ -597,16 +616,6 @@ export class CredentialTester {
     }
     if (usageQuota) {
       usageNotice = `额度查询返回 HTTP ${usageQuota.httpStatus}: ${usageQuota.detail}`
-    }
-    const exhaustedQuota = exhaustedCodexQuota(usage)
-    if (exhaustedQuota) {
-      return this.stage(
-        exhaustedQuota.status,
-        exhaustedQuota.detail,
-        200,
-        'usage',
-        usage
-      )
     }
     return this.stage(
       'valid',

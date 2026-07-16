@@ -377,8 +377,7 @@ describe('CredentialTester', () => {
   })
 
   it('distinguishes five-hour exhaustion from weekly exhaustion using window duration', async () => {
-    const fiveHourTester = new CredentialTester({
-      fetchImpl: vi
+    const fiveHourFetch = vi
         .fn<typeof fetch>()
         .mockResolvedValueOnce(jsonResponse(200, {
           plan_type: 'plus',
@@ -387,10 +386,8 @@ describe('CredentialTester', () => {
             secondary_window: { used_percent: 20, limit_window_seconds: 604_800 }
           }
         }))
-        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
-    })
-    const weeklyTester = new CredentialTester({
-      fetchImpl: vi
+    const fiveHourTester = new CredentialTester({ fetchImpl: fiveHourFetch })
+    const weeklyFetch = vi
         .fn<typeof fetch>()
         .mockResolvedValueOnce(jsonResponse(200, {
           plan_type: 'plus',
@@ -399,8 +396,7 @@ describe('CredentialTester', () => {
             secondary_window: { used_percent: 100, limit_window_seconds: 604_800 }
           }
         }))
-        .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
-    })
+    const weeklyTester = new CredentialTester({ fetchImpl: weeklyFetch })
 
     await expect(fiveHourTester.test(credential())).resolves.toMatchObject({
       status: 'quota_exhausted_5h',
@@ -409,6 +405,26 @@ describe('CredentialTester', () => {
     await expect(weeklyTester.test(credential())).resolves.toMatchObject({
       status: 'quota_exhausted_weekly',
       detail: '周额度已耗尽'
+    })
+    expect(fiveHourFetch).toHaveBeenCalledTimes(1)
+    expect(weeklyFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not invalidate a usage-authenticated Team account when compact rejects the request format', async () => {
+    const tester = new CredentialTester({
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'k12', rate_limit: {} }))
+        .mockResolvedValueOnce(jsonResponse(401, {
+          error: { message: 'Could not parse your authentication token. Please try signing in again.' }
+        }))
+    })
+
+    await expect(tester.test(credential({ refreshToken: null, canRefresh: false }))).resolves.toMatchObject({
+      status: 'endpoint_incompatible',
+      stage: 'deep-test',
+      httpStatus: 401,
+      usage: expect.objectContaining({ planType: 'k12' })
     })
   })
 

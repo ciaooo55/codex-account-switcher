@@ -602,41 +602,17 @@ async function main(): Promise<void> {
     return runAccountLibraryMutation(() => manager.importPasted(text))
   })
   const importAnyFiles = async (paths: string[]) => {
-    if (grokTestController || cpaCodexTestController) throw new Error('CPA 检测正在运行')
-    return runAccountLibraryMutation(async () => {
-      const [codex, grok] = await Promise.all([
-        manager.importFiles(paths, { archiveSources: true }),
-        grokManager.importFiles(paths),
-        cpaCodexManager.importFiles(paths)
-      ])
-      return { codex, grok }
-    })
+    return runAccountLibraryMutation(() => manager.importFiles(paths, { archiveSources: true }))
   }
   const importAnyDirectory = async (directory: string) => {
-    if (grokTestController || cpaCodexTestController) throw new Error('CPA 检测正在运行')
-    return runAccountLibraryMutation(async () => {
-      const [codex, grok] = await Promise.all([
-        manager.importDirectory(directory),
-        grokManager.importDirectory(directory),
-        cpaCodexManager.importDirectory(directory)
-      ])
-      return { codex, grok }
-    })
+    return runAccountLibraryMutation(() => manager.importDirectory(directory))
   }
   const importAnyPasted = async (text: string) => {
-    if (grokTestController || cpaCodexTestController) throw new Error('CPA 检测正在运行')
-    return runAccountLibraryMutation(async () => {
-      const [codex, grok] = await Promise.all([
-        manager.importPasted(text),
-        grokManager.importPasted(text),
-        cpaCodexManager.importPasted(text)
-      ])
-      return { codex, grok }
-    })
+    return runAccountLibraryMutation(() => manager.importPasted(text))
   }
   ipcMain.handle(ipcChannels.importAny, async () => {
     const result = await dialog.showOpenDialog({
-      title: '导入 Codex 或 Grok 账号文件',
+      title: '导入 Codex 账号文件到 aa',
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
     })
@@ -649,7 +625,7 @@ async function main(): Promise<void> {
     } else {
       const settings = await settingsStore.get()
       const result = await dialog.showOpenDialog({
-        title: '导入文件夹内的 Codex 或 Grok 账号',
+        title: '导入文件夹内的 Codex 账号到 aa',
         defaultPath: settings.accountDirectory,
         properties: ['openDirectory']
       })
@@ -696,6 +672,16 @@ async function main(): Promise<void> {
       outputDirectory = selected.filePaths[0]
     }
     return exporter.exportAccounts({ ...payload, outputDirectory })
+  })
+  ipcMain.handle(ipcChannels.exportAccountsToCpa, async (_event, input: unknown) => {
+    const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
+    const all = new Map((await vault.list()).map((credential) => [credential.id, credential]))
+    const credentials = [...new Set(ids)].map((id) => {
+      const credential = all.get(id)
+      if (!credential) throw new Error(`账号不存在：${id}`)
+      return credential
+    })
+    return cpaCodexManager.exportCredentials(credentials)
   })
   ipcMain.handle(ipcChannels.test, async (_event, input: unknown) => {
     if (testController) throw new Error('已有检测任务正在运行')

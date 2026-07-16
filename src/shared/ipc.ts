@@ -15,7 +15,6 @@ import type {
   GrokBatchTestResult,
   GrokScanResult,
   ManagedFileStateResult,
-  UnifiedImportResult,
   ScanResult,
   SessionRepairPreview,
   SessionRepairResult,
@@ -88,11 +87,12 @@ export interface CodexSwitcherApi {
   importFiles(): Promise<ScanResult | null>
   importDirectory(): Promise<ScanResult | null>
   importPasted(text: string): Promise<ScanResult>
-  importAnyFiles(): Promise<UnifiedImportResult | null>
-  importAnyDirectory(): Promise<UnifiedImportResult | null>
-  importAnyPasted(text: string): Promise<UnifiedImportResult>
+  importAnyFiles(): Promise<ScanResult | null>
+  importAnyDirectory(): Promise<ScanResult | null>
+  importAnyPasted(text: string): Promise<ScanResult>
   deleteAccounts(ids: string[]): Promise<DeleteAccountsResult>
   exportAccounts(request: CredentialExportRequest): Promise<CredentialExportResult>
+  exportAccountsToCpa(ids: string[]): Promise<CpaCodexScanResult>
   testAccounts(ids?: string[]): Promise<BatchTestResult>
   cancelTests(): Promise<void>
   switchAccount(id: string, restart: boolean): Promise<SwitchResult>
@@ -144,6 +144,7 @@ export const ipcChannels = {
   importAnyPasted: 'accounts:import-any-pasted',
   deleteAccounts: 'accounts:delete',
   exportAccounts: 'accounts:export',
+  exportAccountsToCpa: 'accounts:export-to-cpa',
   test: 'accounts:test',
   cancelTest: 'accounts:test-cancel',
   switchAccount: 'accounts:switch',

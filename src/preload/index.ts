@@ -14,6 +14,7 @@ const api: CodexSwitcherApi = {
   importAnyPasted: (text) => ipcRenderer.invoke(ipcChannels.importAnyPasted, text),
   deleteAccounts: (ids) => ipcRenderer.invoke(ipcChannels.deleteAccounts, ids),
   exportAccounts: (request) => ipcRenderer.invoke(ipcChannels.exportAccounts, request),
+  exportAccountsToCpa: (ids) => ipcRenderer.invoke(ipcChannels.exportAccountsToCpa, ids),
   testAccounts: (ids) => ipcRenderer.invoke(ipcChannels.test, ids),
   cancelTests: () => ipcRenderer.invoke(ipcChannels.cancelTest),
   switchAccount: (id, restart) =>

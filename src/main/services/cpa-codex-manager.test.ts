@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NormalizedCredential, TestResult } from '../../shared/types'
+import { parseCredentialText } from '../accounts/parser'
 import { StatusStore } from '../storage/status-store'
 import { CpaCodexManager } from './cpa-codex-manager'
 
@@ -124,5 +125,44 @@ describe('CpaCodexManager', () => {
     expect(toggled.changed).toBeGreaterThan(0)
     expect(await readdir(library)).toEqual([`${enabled}.0`])
     expect((await manager.listAccounts())[0].disabled).toBe(true)
+  })
+
+  it('skips an explicit CPA export when the same stable identity already exists', async () => {
+    const { library, manager } = await setup()
+    await mkdir(library, { recursive: true })
+    const accessToken = token({ sub: 'existing-user', email: 'existing@example.com' })
+    const source = join(library, 'third-party-name.json')
+    const raw = JSON.stringify({
+      type: 'codex',
+      access_token: accessToken,
+      account_id: 'existing-workspace',
+      email: 'existing@example.com'
+    })
+    await writeFile(source, raw)
+    const credential = parseCredentialText(raw, { sourcePath: source, format: 'json' }).credentials[0]
+
+    const exported = await manager.exportCredentials([credential, { ...credential }])
+
+    expect(exported).toMatchObject({ imported: 0, skipped: 1 })
+    expect(await readdir(library)).toEqual(['third-party-name.json'])
+  })
+
+  it('normalizes an existing CPA JSON in the shared directory without leaving a duplicate', async () => {
+    const { library, manager } = await setup()
+    await mkdir(library, { recursive: true })
+    await writeFile(join(library, 'legacy-team.json'), JSON.stringify({
+      type: 'codex',
+      access_token: token({ sub: 'legacy-team', email: 'legacy-team@example.com' }),
+      account_id: 'legacy-workspace',
+      email: 'legacy-team@example.com',
+      plan_type: 'k12'
+    }))
+
+    const scanned = await manager.scanDirectory()
+    const names = await readdir(library)
+
+    expect(scanned.accounts).toHaveLength(1)
+    expect(names).toHaveLength(1)
+    expect(names[0]).toMatch(/^codex-legacy-team@example\.com-k12-[a-f0-9]{10}\.json$/)
   })
 })

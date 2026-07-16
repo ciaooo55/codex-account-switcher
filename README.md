@@ -4,11 +4,11 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 
 ## 主要功能
 
-- 统一导入单个文件、多个文件、整个文件夹或粘贴内容，自动识别并分流 Codex 与 Grok/xAI 凭据；支持 `.json`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、嵌套 Codex、CPA 扁平凭据和 SubAPI `accounts[].credentials`。
+- Codex 账号库可导入单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、嵌套 Codex、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录。
 - 支持直接粘贴混有 Markdown 代码块或说明文字的凭据内容，清洗后提取有效账号。
 - 所有成功导入或粘贴的凭据都会清洗为统一的一账号一 JSON，保存到程序所在目录的 `aa`；文件名为 `邮箱_等级.json`，无等级时使用 `unknown`。外部源文件只参与一次导入，删除或移动源文件不影响账号库。
 - 从 JWT 与文件字段提取邮箱、workspace 和过期时间，按 subject、邮箱与 workspace 去重。
-- 按 CPA 流程先读取 `wham/usage` 的完整额度与重置时间，再调用 Codex compact 做真实验证；401 时刷新并完整重试。
+- 按 CPA 流程先读取 `wham/usage` 的完整额度与重置时间；额度可用时再调用 Codex compact 做真实验证，已明确耗尽时直接保留准确的 5h/周状态；401 时刷新并完整重试。
 - 根据后端 `limit_window_seconds` 动态显示 5 小时、周额度及准确重置时间，并将“5 小时额度耗尽”和“周额度耗尽”保存为不同状态。
 - 并发检测全部或选中账号，支持取消；检测中的账号使用稳定状态指示，每完成一个账号立即显示状态、额度、重置时间和刷新时间。
 - 检测状态和额度结果持久保存到下次检测；支持按邮箱、workspace、计划、来源和错误搜索，并按账号状态筛选。
@@ -31,12 +31,12 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 ## CPA 账号管理
 
 - CPA 页面包含 Codex 和 Grok 两个独立子页。两类账号共用 `E:\home\<当前用户名>\.cli-proxy-api`，但测试全部、测试选中、实时进度、取消和筛选互不串台，CPA 页面也不会写入 `.codex`。
-- 无论从何处导入，Codex 与 Grok 凭据都会清洗并拆分成共享目录下的 `codex-邮箱-等级-身份短码.json` 或 `grok-邮箱-等级-身份短码.json`。
+- 只有 CPA 页面中的明确管理操作或 Codex 账号库的“直接导出到 CPA”会写共享目录；直接导出按稳定用户身份与 workspace 去重，已有账号会跳过。
 - 支持单选、多选或批量把规范托管文件从 `.json` 改为 `.json.0`，使 CPA 暂停读取；再次启用会恢复 `.json`。只有周额度耗尽会在测试后自动停用，5 小时额度耗尽不会；后续测试发现周额度恢复时会自动启用。
-- 扫描、导入、token 刷新和启停操作会把同一账号意外并存的 `.json` / `.json.0` 规范副本收敛为一个文件，不删除、不改写任何外部源文件。
+- CPA 目录扫描、token 刷新和启停操作会把同一账号意外并存的 `.json` / `.json.0` 规范副本收敛为一个文件；共享目录之外的导入源文件不会被删除或改写。
 - 支持 CPA/CLIProxyAPI 扁平 xAI JSON、Sub2API `accounts[].credentials` 批量导出、对象数组、JSONL、文本、Markdown、静态 JS 和 ZIP。
 - 使用 `sub + team_id`，缺失时回退到邮箱进行稳定去重；重复导入会合并较新、较完整的 token，不会产生重复文件。
-- 扫描与导入严格非破坏：不会删除或改写任何用户源文件，即使文件名以 `grok-` 开头；只有二次确认删除账号时才移除与凭证指纹完全匹配的托管单账号文件。
+- Grok 扫描与导入保持非破坏：不会删除或改写共享目录之外的用户源文件；只有二次确认删除账号时才移除与凭证指纹完全匹配的托管单账号文件。
 - 按 CPA 与 Sub2API 的实现通过 `auth.x.ai/oauth2/token` 刷新 OAuth，再读取 Grok CLI 周/月 billing，最后以 CPA 相同的 Grok CLI 身份头和 SSE 流式 Responses 请求验证真实能力。503 等瞬时上游错误会短重试且不会误判失效，429 或明确的 `free-usage-exhausted` 才判额度耗尽。
 - 支持搜索、状态筛选、额度/等级/状态排序、单选/多选、右键检测/复制/导出/删除、二次确认删除、CPA 一账号一文件导出和 Sub2API 多账号合并导出。
 - CPA 共享目录中的凭据是供 CPA/Sub2API 直接使用的明文 OAuth JSON，请限制该目录访问。应用状态文件和 renderer 数据不包含 token。
@@ -62,8 +62,8 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.8.0.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.8.0.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.8.1.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.8.1.exe`：便携版
 
 ## 默认路径
 

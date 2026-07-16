@@ -37,7 +37,6 @@ import type {
   CredentialExportLayout,
   ScanResult,
   SessionRepairPreview,
-  UnifiedImportResult,
   UsageWindow
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
@@ -286,23 +285,18 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const unifiedImportMessage = (result: UnifiedImportResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
-    const codexTotal = result.codex.imported + result.codex.skipped
-    const grokTotal = result.grok.imported + result.grok.skipped
-    const total = codexTotal + grokTotal
-    const errors = total === 0
-      ? [...new Set([...result.codex.errors, ...result.grok.errors])]
-      : []
+  const importMessage = (result: ScanResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
+    const total = result.imported + result.skipped
     return {
-      kind: errors.length > 0 ? 'warn' : 'ok',
+      kind: result.errors.length > 0 ? 'warn' : 'ok',
       text: total === 0
-        ? `${source}：未识别到 Codex 或 Grok 账号`
-        : `${source}：Codex 导入 ${result.codex.imported}、跳过 ${result.codex.skipped}；Grok 导入 ${result.grok.imported}、跳过 ${result.grok.skipped}`
+        ? `${source}：未识别到 Codex 账号`
+        : `${source}：导入 ${result.imported} 个 Codex 账号，重复跳过 ${result.skipped} 个`
     }
   }
 
-  const runUnifiedImport = async (
-    action: () => Promise<UnifiedImportResult | null>,
+  const runAccountImport = async (
+    action: () => Promise<ScanResult | null>,
     source: string
   ): Promise<boolean> => {
     setBusy(true)
@@ -314,8 +308,8 @@ export function App(): React.JSX.Element {
         return false
       }
       await reload()
-      setMessage(unifiedImportMessage(result, source))
-      const recognized = result.codex.imported + result.codex.skipped + result.grok.imported + result.grok.skipped > 0
+      setMessage(importMessage(result, source))
+      const recognized = result.imported + result.skipped > 0
       if (recognized) setImportOpen(false)
       return recognized
     } catch (error) {
@@ -328,8 +322,27 @@ export function App(): React.JSX.Element {
 
   const submitPaste = async (): Promise<void> => {
     if (!pasteText.trim()) return
-    if (await runUnifiedImport(() => window.codexSwitcher.importAnyPasted(pasteText), '粘贴导入完成')) {
+    if (await runAccountImport(() => window.codexSwitcher.importAnyPasted(pasteText), '粘贴导入完成')) {
       setPasteText('')
+    }
+  }
+
+  const submitExportToCpa = async (): Promise<void> => {
+    if (!exportDialog) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await window.codexSwitcher.exportAccountsToCpa(exportDialog.accountIds)
+      await reload()
+      setMessage({
+        kind: result.errors.length ? 'warn' : 'ok',
+        text: `已导出 ${result.imported} 个到 CPA，重复跳过 ${result.skipped} 个`
+      })
+      setExportDialog(null)
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -584,8 +597,8 @@ export function App(): React.JSX.Element {
             <TimerReset size={16} />定时切换
           </button>
         </nav>
-        <button className="header-import-button" onClick={() => setImportOpen(true)} disabled={busy}>
-          <Import size={17} />导入账号
+        <button className="header-import-button" aria-label="导入账号" onClick={() => setImportOpen(true)} disabled={busy}>
+          <Import size={17} />导入到 aa
         </button>
         <button className="icon-button" title="设置" aria-label="设置" onClick={() => setSettingsOpen(true)} disabled={busy}>
           <Settings size={19} />
@@ -812,14 +825,14 @@ export function App(): React.JSX.Element {
         <div className="repair-backdrop" role="presentation">
           <section className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号">
             <div className="panel-header">
-              <div><h2>导入账号</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span className="provider-label grok"><Zap size={11} />Grok / xAI</span><span>自动识别并分库</span></div></div>
+              <div><h2>导入 Codex 账号</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span>统一清洗后保存到应用 aa 账号库</span></div></div>
               <button className="icon-button" title="关闭" aria-label="关闭导入账号" onClick={() => setImportOpen(false)} disabled={busy}>
                 <X size={18} />
               </button>
             </div>
             <div className="import-source-actions">
-              <button aria-label="导入多个文件" onClick={() => void runUnifiedImport(() => window.codexSwitcher.importAnyFiles(), '文件导入完成')} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>可多选</small></span></button>
-              <button aria-label="导入文件夹" onClick={() => void runUnifiedImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归读取</small></span></button>
+              <button aria-label="导入多个文件" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyFiles(), '文件导入完成')} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>保存到 aa</small></span></button>
+              <button aria-label="导入文件夹" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归保存到 aa</small></span></button>
             </div>
             <div className="import-divider"><span>或粘贴凭据</span></div>
             <label className="paste-field">
@@ -827,7 +840,7 @@ export function App(): React.JSX.Element {
                 aria-label="凭据文本"
                 value={pasteText}
                 onChange={(event) => setPasteText(event.target.value)}
-                placeholder="粘贴 JSON、JSONL、CPA、SubAPI、键值文本或静态 JS"
+                placeholder="粘贴 Codex JSON、JSONL、CPA、SubAPI、键值文本或静态 JS"
               />
             </label>
             <div className="panel-actions">
@@ -866,10 +879,13 @@ export function App(): React.JSX.Element {
             </div>
             <div className="export-warning">
               <CircleAlert size={17} />
-              <span>导出文件包含可直接使用的明文凭据。CPA 合并模式输出 ZIP；SubAPI 合并模式输出原生 accounts[] JSON。</span>
+              <span>普通导出可选择任意目录；“直接导出到 CPA”仅写入设置中的 CPA 共享目录，并按账号稳定身份跳过重复。</span>
             </div>
             <div className="panel-actions">
               <button onClick={() => setExportDialog(null)} disabled={busy}>取消</button>
+              <button onClick={() => void submitExportToCpa()} disabled={busy}>
+                <Zap size={16} />直接导出到 CPA
+              </button>
               <button className="primary-button" onClick={() => void submitExport()} disabled={busy}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={16} />}
                 选择目录并导出

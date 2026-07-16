@@ -94,6 +94,67 @@ describe('parseCredentialText', () => {
     })
   })
 
+  it('parses a trailing-comma Sub2API Team bundle and keeps workspace members distinct', () => {
+    const workspace = 'shared-team-workspace'
+    const account = (index: number) => {
+      const email = `team-${index}@example.com`
+      const userId = `user-team-${index}`
+      return {
+        name: `${email}--noRT`,
+        platform: 'openai',
+        type: 'oauth',
+        credentials: {
+          access_token: jwt({
+            sub: `auth0|team-${index}`,
+            exp: 1_900_000_000,
+            'https://api.openai.com/profile': { email },
+            'https://api.openai.com/auth': {
+              chatgpt_account_id: workspace,
+              chatgpt_user_id: userId,
+              chatgpt_plan_type: 'k12'
+            }
+          }),
+          id_token: jwt({
+            email,
+            exp: 1_900_000_000,
+            'https://api.openai.com/auth': {
+              chatgpt_account_id: workspace,
+              chatgpt_user_id: userId,
+              chatgpt_plan_type: 'k12'
+            }
+          }),
+          chatgpt_account_id: workspace,
+          chatgpt_user_id: userId,
+          email,
+          plan_type: 'k12'
+        },
+        extra: { no_rt: true }
+      }
+    }
+    const text = `${JSON.stringify({
+      exported_at: '2026-07-16T08:39:12.946Z',
+      proxies: [],
+      accounts: [account(1), account(2)]
+    }, null, 2).replace(/\n  ]\n}/, '\n  ],\n}')}`
+    const result = parseCredentialText(text, { sourcePath: 'team-bundle.txt', format: 'txt' })
+
+    expect(result.errors).toEqual([])
+    expect(result.credentials).toHaveLength(2)
+    expect(new Set(result.credentials.map((item) => item.id))).toHaveLength(2)
+    expect(result.credentials).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        email: 'team-1@example.com',
+        accountId: workspace,
+        subject: 'auth0|team-1',
+        planType: 'k12',
+        refreshToken: null,
+        canRefresh: false,
+        sourceDialect: 'sub2api'
+      }),
+      expect.objectContaining({ email: 'team-2@example.com', accountId: workspace })
+    ]))
+  })
+
   it('does not misclassify direct xAI credentials as Codex accounts', () => {
     const result = parseCredentialText(
       JSON.stringify({

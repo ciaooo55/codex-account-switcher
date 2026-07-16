@@ -107,7 +107,8 @@ export class CpaCodexManager {
   async scanDirectory(): Promise<CpaCodexScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    return this.importPaths(await files(directory))
+    const parsed = await this.readPaths(await files(directory))
+    return this.mergeImported(parsed.credentials, parsed.errors, true)
   }
 
   async importFiles(paths: string[]): Promise<CpaCodexScanResult> {
@@ -123,6 +124,23 @@ export class CpaCodexManager {
     if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error('粘贴内容超过安全限制')
     const parsed = parseCredentialText(text, { sourcePath: 'pasted-cpa-codex.json', format: 'paste' })
     return this.mergeImported(parsed.credentials, parsed.errors)
+  }
+
+  async exportCredentials(values: NormalizedCredential[]): Promise<CpaCodexScanResult> {
+    const directory = await this.directory()
+    await mkdir(directory, { recursive: true })
+    const incoming = dedupeCredentials(values)
+    const existing = await this.readPaths(await files(directory))
+    const existingIds = new Set(dedupeCredentials(existing.credentials).map((item) => item.id))
+    const fresh = incoming.filter((item) => !existingIds.has(item.id))
+    const result = await this.mergeImported(fresh, [])
+    return {
+      ...result,
+      imported: fresh.length,
+      skipped: incoming.length - fresh.length,
+      errors: existing.errors,
+      accounts: await this.listAccounts()
+    }
   }
 
   async listAccounts(): Promise<CpaCodexAccountSummary[]> {
@@ -258,6 +276,11 @@ export class CpaCodexManager {
   }
 
   private async importPaths(paths: string[]): Promise<CpaCodexScanResult> {
+    const parsed = await this.readPaths(paths)
+    return this.mergeImported(parsed.credentials, parsed.errors)
+  }
+
+  private async readPaths(paths: string[]): Promise<{ credentials: NormalizedCredential[]; errors: string[] }> {
     const credentials: NormalizedCredential[] = []
     const errors: string[] = []
     for (const path of paths) {
@@ -282,10 +305,14 @@ export class CpaCodexManager {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
       }
     }
-    return this.mergeImported(credentials, errors)
+    return { credentials, errors }
   }
 
-  private async mergeImported(values: NormalizedCredential[], errors: string[]): Promise<CpaCodexScanResult> {
+  private async mergeImported(
+    values: NormalizedCredential[],
+    errors: string[],
+    normalizeDirectorySources = false
+  ): Promise<CpaCodexScanResult> {
     const existingRecords = this.dedupeRecords(await this.managedRecords())
     const existing = existingRecords.map((item) => item.credential)
     const imported = dedupeCredentials(values)
@@ -310,6 +337,15 @@ export class CpaCodexManager {
       return target !== undefined && resolve(item.path).toLowerCase() !== target
     })
     await Promise.all(duplicates.map((item) => rm(item.path, { force: true })))
+    if (normalizeDirectorySources) {
+      const targetPaths = new Set([...targets.values()].map((path) => resolve(path).toLowerCase()))
+      const sourcePaths = new Set(values.map((item) => item.sourcePath))
+      await Promise.all([...sourcePaths].map(async (path) => {
+        if (path.includes('#') || !/\.json(?:\.0)?$/i.test(path)) return
+        const normalized = resolve(path).toLowerCase()
+        if (!targetPaths.has(normalized)) await rm(path, { force: true })
+      }))
+    }
     return {
       imported: importedCount,
       skipped: imported.length - importedCount,

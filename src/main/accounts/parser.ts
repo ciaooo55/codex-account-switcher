@@ -390,8 +390,44 @@ function tryJson(text: string): unknown | undefined {
   try {
     return JSON.parse(text)
   } catch {
-    return undefined
+    try {
+      return JSON.parse(stripTrailingCommas(text))
+    } catch {
+      return undefined
+    }
   }
+}
+
+function stripTrailingCommas(text: string): string {
+  let result = ''
+  let quote = ''
+  let escaped = false
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (quote) {
+      result += character
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === quote) quote = ''
+      continue
+    }
+    if (character === '"') {
+      quote = character
+      result += character
+      continue
+    }
+    if (character !== ',') {
+      result += character
+      continue
+    }
+
+    let next = index + 1
+    while (next < text.length && /\s/.test(text[next])) next += 1
+    if (text[next] !== '}' && text[next] !== ']') result += character
+  }
+
+  return result
 }
 
 function tryJsonLines(text: string): unknown[] | undefined {
