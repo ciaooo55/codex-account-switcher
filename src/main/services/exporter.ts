@@ -38,7 +38,7 @@ interface Sub2ApiAccount {
   notes: null
   platform: 'openai'
   type: 'oauth'
-  credentials: Record<string, string | number>
+  credentials: Record<string, string | number | boolean>
   extra: Record<string, string>
   proxy_key: null
   concurrency: number
@@ -87,6 +87,9 @@ function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
       access_token: credential.accessToken,
       ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
       ...(credential.oauthClientId ? { client_id: credential.oauthClientId } : {}),
+      ...(credential.isFedRamp !== null && credential.isFedRamp !== undefined
+        ? { chatgpt_account_is_fedramp: credential.isFedRamp }
+        : {}),
       ...(credential.idToken ? { id_token: credential.idToken } : {}),
       ...(credential.accountId ? { chatgpt_account_id: credential.accountId } : {}),
       ...(credential.subject ? { chatgpt_user_id: credential.subject } : {}),

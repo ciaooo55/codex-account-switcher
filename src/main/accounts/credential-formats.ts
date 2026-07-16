@@ -9,7 +9,7 @@ export interface CodexAuthDocument {
 
 export function serializeCpaCredential(
   credential: NormalizedCredential
-): Record<string, string> {
+): Record<string, string | boolean> {
   const personalAccessToken =
     credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')
 
@@ -26,6 +26,9 @@ export function serializeCpaCredential(
     access_token: credential.accessToken,
     ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
     ...(credential.oauthClientId ? { client_id: credential.oauthClientId } : {}),
+    ...(credential.isFedRamp !== null && credential.isFedRamp !== undefined
+      ? { chatgpt_account_is_fedramp: credential.isFedRamp }
+      : {}),
     ...(credential.idToken ? { id_token: credential.idToken } : {}),
     ...(credential.accountId
       ? {

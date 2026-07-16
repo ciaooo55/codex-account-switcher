@@ -43,13 +43,15 @@ describe('GrokCredentialTester', () => {
     const probeInit = request.mock.calls[2][1]
     const headers = probeInit?.headers as Record<string, string>
     expect(headers['X-XAI-Token-Auth']).toBe('xai-grok-cli')
-    expect(headers.Accept).toBe('text/event-stream')
+    expect(headers.Accept).toBe('application/json, text/event-stream')
+    expect((request.mock.calls[0][1]?.headers as Record<string, string>)['User-Agent'])
+      .toContain('grok-pager/0.2.93')
+    expect(headers['User-Agent']).toBe('xai-grok-workspace/0.2.93')
     expect(JSON.parse(String(probeInit?.body))).toMatchObject({
       model: 'grok-4.5',
-      stream: true,
+      input: '.',
+      max_output_tokens: 1,
       store: false,
-      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply OK.' }] }],
-      tools: [{ type: 'x_search' }]
     })
   })
 

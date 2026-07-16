@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NormalizedCredential } from '../../shared/types'
-import { CredentialTester, parseUsageResponse } from './detector'
+import { CredentialTester, parseResetCreditCount, parseUsageResponse } from './detector'
 import { MOBILE_OAUTH_CLIENT_ID } from './refresh-token-importer'
 
 function jwt(payload: Record<string, unknown>): string {
@@ -188,7 +188,7 @@ describe('parseUsageResponse', () => {
     ])
   })
 
-  it('uses neutral labels when the backend omits the window duration', () => {
+  it('uses the Sub2API legacy mapping when the backend omits window durations', () => {
     const usage = parseUsageResponse({
       rate_limit: {
         primary_window: { used_percent: 12 },
@@ -197,9 +197,20 @@ describe('parseUsageResponse', () => {
     })
 
     expect(usage.windows.map((window) => window.label)).toEqual([
-      'Codex 主窗口',
-      'Codex 次窗口'
+      'Codex 周额度',
+      'Codex 5 小时'
     ])
+  })
+
+  it('parses reset-credit detail payload variants without counting spent credits', () => {
+    expect(parseResetCreditCount({ availableCount: '3' })).toBe(3)
+    expect(parseResetCreditCount({
+      items: [
+        { resetType: 'codex_rate_limits', status: 'available' },
+        { reset_type: 'codex_rate_limits', status: 'consumed' },
+        { reset_type: 'other', status: 'available' }
+      ]
+    })).toBe(1)
   })
 })
 
@@ -228,11 +239,11 @@ describe('CredentialTester', () => {
     expect(fetchImpl.mock.calls[0][1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({
-          Originator: 'codex-tui',
+          Originator: 'Codex Desktop',
           'Chatgpt-Account-Id': 'workspace-a',
-          Session_id: expect.any(String),
-          Version: '0.135.0',
-          'User-Agent': expect.stringContaining('codex-tui/0.135.0')
+          'OpenAI-Beta': 'codex-1',
+          'Oai-Language': 'zh-CN',
+          'Sec-Fetch-Mode': 'no-cors'
         })
       })
     )
@@ -567,7 +578,7 @@ describe('CredentialTester', () => {
       refreshToken: null,
       idToken: null,
       canRefresh: false,
-      accessExpiresAt: null,
+      accessExpiresAt: '2020-01-01T00:00:00Z',
       idExpiresAt: null
     }))).resolves.toMatchObject({
       status: 'valid',
@@ -575,6 +586,10 @@ describe('CredentialTester', () => {
     })
     expect(fetchImpl).toHaveBeenCalledTimes(3)
     expect(fetchImpl.mock.calls[0][0]).toContain('/v1/user-auth-credential/whoami')
+    expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({
+      Originator: 'codex_cli_rs',
+      'User-Agent': expect.stringContaining('codex_cli_rs/0.144.1')
+    })
     expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
       Authorization: 'Bearer at-personal-token',
       'Chatgpt-Account-Id': 'workspace-team'
@@ -584,8 +599,37 @@ describe('CredentialTester', () => {
       accountId: 'workspace-team',
       subject: 'user-team',
       planType: 'team',
-      authKind: 'personal_access_token'
+      authKind: 'personal_access_token',
+      isFedRamp: false
     }))
+  })
+
+  it('queries the Sub2API reset-credit endpoint and merges its fresher count', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        plan_type: 'plus',
+        rate_limit: {},
+        rate_limit_reset_credits: { available_count: 1 }
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        available_count: 4,
+        credits: []
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
+    const tester = new CredentialTester({ fetchImpl, queryResetCredits: true })
+
+    await expect(tester.test(credential({ isFedRamp: true }))).resolves.toMatchObject({
+      status: 'valid',
+      usage: expect.objectContaining({ resetCreditsAvailable: 4 })
+    })
+    expect(fetchImpl.mock.calls[1][0]).toBe(
+      'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+    )
+    expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
+      Originator: 'Codex Desktop',
+      'X-OpenAI-FedRAMP': 'true'
+    })
   })
 
   it('marks a rejected personal access token invalid without querying usage', async () => {

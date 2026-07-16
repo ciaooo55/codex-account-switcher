@@ -9,6 +9,7 @@ import type {
 import { parseCredentialText } from '../accounts/parser'
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
 const COMPACT_URL = 'https://chatgpt.com/backend-api/codex/responses/compact'
 const REFRESH_URL = 'https://auth.openai.com/oauth/token'
 const PERSONAL_ACCESS_TOKEN_WHOAMI_URL =
@@ -16,6 +17,8 @@ const PERSONAL_ACCESS_TOKEN_WHOAMI_URL =
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const CODEX_VERSION = '0.135.0'
 const CODEX_USER_AGENT = `codex-tui/${CODEX_VERSION} (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; ${CODEX_VERSION})`
+const CODEX_CLI_VERSION = '0.144.1'
+const CODEX_CLI_USER_AGENT = `codex_cli_rs/${CODEX_CLI_VERSION} (Ubuntu 22.4.0; x86_64) xterm-256color`
 
 type FetchImplementation = typeof fetch
 
@@ -26,6 +29,8 @@ interface CredentialTesterOptions {
   deepTestModel?: string
   onCredentialUpdated?: (credential: NormalizedCredential) => void | Promise<void>
   usageUrl?: string
+  resetCreditsUrl?: string
+  queryResetCredits?: boolean
   compactUrl?: string
   refreshUrl?: string
   personalAccessTokenWhoamiUrl?: string
@@ -105,6 +110,33 @@ function windowLabel(baseLabel: string, slot: 'primary' | 'secondary', seconds: 
   return `${baseLabel} ${slot === 'primary' ? '主窗口' : '次窗口'}`
 }
 
+function rawWindowSeconds(value: unknown): number | null {
+  const record = asRecord(value)
+  return record ? numberOrNull(record.limit_window_seconds ?? record.limitWindowSeconds) : null
+}
+
+function normalizedWindowSeconds(
+  primaryValue: unknown,
+  secondaryValue: unknown
+): { primary: number | null; secondary: number | null } {
+  const primary = rawWindowSeconds(primaryValue)
+  const secondary = rawWindowSeconds(secondaryValue)
+  if (primary !== null && secondary !== null) return { primary, secondary }
+  if (primary !== null) {
+    return primary <= 21_600
+      ? { primary, secondary: 604_800 }
+      : { primary, secondary: 18_000 }
+  }
+  if (secondary !== null) {
+    return secondary <= 21_600
+      ? { primary: 604_800, secondary }
+      : { primary: 18_000, secondary }
+  }
+  // Sub2API keeps compatibility with the legacy wham response where duration
+  // was omitted: primary is weekly and secondary is the short (5h) window.
+  return { primary: 604_800, secondary: 18_000 }
+}
+
 function usageWindow(
   id: string,
   baseLabel: string,
@@ -112,14 +144,17 @@ function usageWindow(
   value: unknown,
   checkedAt: string,
   limitReached?: unknown,
-  allowed?: unknown
+  allowed?: unknown,
+  normalizedSeconds?: number | null
 ): UsageWindow | null {
   const record = asRecord(value)
   if (!record) return null
   let usedPercent = numberOrNull(record.used_percent ?? record.usedPercent)
   if (usedPercent === null && (limitReached === true || allowed === false)) usedPercent = 100
   if (usedPercent !== null) usedPercent = Math.max(0, Math.min(100, usedPercent))
-  const windowSeconds = numberOrNull(record.limit_window_seconds ?? record.limitWindowSeconds)
+  const windowSeconds = normalizedSeconds ?? numberOrNull(
+    record.limit_window_seconds ?? record.limitWindowSeconds
+  )
   const resetInSeconds = numberOrNull(
     record.reset_after_seconds ??
       record.resetAfterSeconds ??
@@ -155,26 +190,57 @@ function appendRateWindows(
 ): void {
   const rate = asRecord(rateValue)
   if (!rate) return
+  const primaryValue = rate.primary_window ?? rate.primaryWindow
+  const secondaryValue = rate.secondary_window ?? rate.secondaryWindow
+  const normalizedSeconds = normalizedWindowSeconds(primaryValue, secondaryValue)
   const primary = usageWindow(
     `${idPrefix}-primary`,
     baseLabel,
     'primary',
-    rate.primary_window ?? rate.primaryWindow,
+    primaryValue,
     checkedAt,
     rate.limit_reached ?? rate.limitReached,
-    rate.allowed
+    rate.allowed,
+    normalizedSeconds.primary
   )
   const secondary = usageWindow(
     `${idPrefix}-secondary`,
     baseLabel,
     'secondary',
-    rate.secondary_window ?? rate.secondaryWindow,
+    secondaryValue,
     checkedAt,
     rate.limit_reached ?? rate.limitReached,
-    rate.allowed
+    rate.allowed,
+    normalizedSeconds.secondary
   )
   if (primary) rows.push(primary)
   if (secondary) rows.push(secondary)
+}
+
+export function parseResetCreditCount(data: unknown): number | null {
+  const root = asRecord(data)
+  const explicit = numberOrNull(root?.available_count ?? root?.availableCount)
+  if (explicit !== null && explicit >= 0) return Math.floor(explicit)
+
+  let rows: unknown[] | null = Array.isArray(data) ? data : null
+  if (!rows && root) {
+    for (const value of [root.credits, root.rate_limit_reset_credits, root.items, root.data]) {
+      if (Array.isArray(value)) {
+        rows = value
+        break
+      }
+    }
+  }
+  if (!rows) return null
+  return rows.reduce<number>((count, value) => {
+    const item = asRecord(value)
+    if (!item) return count
+    const resetType = stringOrNull(item.reset_type ?? item.resetType)
+    const status = stringOrNull(item.status)
+    if (resetType && resetType.toLowerCase() !== 'codex_rate_limits') return count
+    if (status && status.toLowerCase() !== 'available') return count
+    return count + 1
+  }, 0)
 }
 
 export function parseUsageResponse(data: unknown, checkedAt = new Date().toISOString()): UsageSummary {
@@ -422,6 +488,7 @@ function headersFor(
     'User-Agent': CODEX_USER_AGENT,
     Version: CODEX_VERSION,
     ...(credential.accountId ? { 'Chatgpt-Account-Id': credential.accountId } : {}),
+    ...(credential.isFedRamp ? { 'X-OpenAI-FedRAMP': 'true' } : {}),
     ...(compact
       ? {
           Conversation_ID: sessionId,
@@ -431,12 +498,30 @@ function headersFor(
   }
 }
 
+function usageHeaders(credential: NormalizedCredential): HeadersInit {
+  return {
+    Accept: 'application/json',
+    Authorization: `Bearer ${credential.accessToken}`,
+    'OpenAI-Beta': 'codex-1',
+    'Oai-Language': 'zh-CN',
+    Originator: 'Codex Desktop',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-Mode': 'no-cors',
+    'Sec-Fetch-Dest': 'empty',
+    Priority: 'u=4, i',
+    ...(credential.accountId ? { 'Chatgpt-Account-Id': credential.accountId } : {}),
+    ...(credential.isFedRamp ? { 'X-OpenAI-FedRAMP': 'true' } : {})
+  }
+}
+
 export class CredentialTester {
   private readonly fetchImpl: FetchImplementation
   private readonly now: () => Date
   private readonly timeoutMs: number
   private readonly deepTestModel: string
   private readonly usageUrl: string
+  private readonly resetCreditsUrl: string
+  private readonly queryResetCredits: boolean
   private readonly compactUrl: string
   private readonly refreshUrl: string
   private readonly personalAccessTokenWhoamiUrl: string
@@ -447,6 +532,8 @@ export class CredentialTester {
     this.timeoutMs = options.timeoutMs ?? 30_000
     this.deepTestModel = options.deepTestModel ?? 'gpt-5.4'
     this.usageUrl = options.usageUrl ?? USAGE_URL
+    this.resetCreditsUrl = options.resetCreditsUrl ?? RESET_CREDITS_URL
+    this.queryResetCredits = options.queryResetCredits ?? (options.fetchImpl === undefined)
     this.compactUrl = options.compactUrl ?? COMPACT_URL
     this.refreshUrl = options.refreshUrl ?? REFRESH_URL
     this.personalAccessTokenWhoamiUrl =
@@ -516,7 +603,8 @@ export class CredentialTester {
         headers: {
           Accept: 'application/json',
           Authorization: `Bearer ${credential.accessToken}`,
-          'User-Agent': CODEX_USER_AGENT
+          Originator: 'codex_cli_rs',
+          'User-Agent': CODEX_CLI_USER_AGENT
         }
       },
       signal,
@@ -549,7 +637,15 @@ export class CredentialTester {
     const accountId = stringOrNull(root?.chatgpt_account_id ?? root?.chatgptAccountId)
     const subject = stringOrNull(root?.chatgpt_user_id ?? root?.chatgptUserId)
     const planType = stringOrNull(root?.chatgpt_plan_type ?? root?.chatgptPlanType)
-    if (!accountId || !subject || !planType) {
+    const email = stringOrNull(root?.email)
+    const isFedRamp = [
+      root?.chatgpt_account_is_fedramp,
+      root?.chatgptAccountIsFedramp,
+      root?.chatgptAccountIsFedRamp,
+      root?.chatgptAccountIsFedRAMP
+    ]
+      .find((value) => typeof value === 'boolean') as boolean | undefined
+    if (!email || !accountId || !subject || !planType || isFedRamp === undefined) {
       return this.result(
         credential,
         'endpoint_incompatible',
@@ -562,13 +658,16 @@ export class CredentialTester {
     const updated: NormalizedCredential = {
       ...credential,
       authKind: 'personal_access_token',
-      email: stringOrNull(root?.email) ?? credential.email,
+      email,
       accountId,
       subject,
       planType,
+      isFedRamp,
       canRefresh: false,
       refreshToken: null,
-      idToken: null
+      idToken: null,
+      accessExpiresAt: null,
+      idExpiresAt: null
     }
     await this.options.onCredentialUpdated?.(updated)
     return { credential: updated }
@@ -585,7 +684,7 @@ export class CredentialTester {
 
     const usageResponse = await this.request(
       this.usageUrl,
-      { method: 'GET', headers: headersFor(credential, sessionId) },
+      { method: 'GET', headers: usageHeaders(credential) },
       signal,
       credential
     )
@@ -604,6 +703,18 @@ export class CredentialTester {
         usageQuota = { detail: usageDetail, httpStatus: usageResponse.status }
       } else if (usageResponse.ok) {
         usage = parseUsageResponse(usagePayload, this.now().toISOString())
+        if (this.queryResetCredits) {
+          const resetCreditsResponse = await this.request(
+            this.resetCreditsUrl,
+            { method: 'GET', headers: usageHeaders(credential) },
+            signal,
+            credential
+          )
+          if (!('networkError' in resetCreditsResponse) && resetCreditsResponse.ok) {
+            const count = parseResetCreditCount(await responsePayload(resetCreditsResponse))
+            if (count !== null) usage.resetCreditsAvailable = count
+          }
+        }
         const exhaustedQuota = exhaustedCodexQuota(usage)
         if (exhaustedQuota) {
           return this.stage(
@@ -892,6 +1003,7 @@ export class CredentialTester {
 
 export const detectorEndpoints = {
   usage: USAGE_URL,
+  resetCredits: RESET_CREDITS_URL,
   compact: COMPACT_URL,
   refresh: REFRESH_URL,
   personalAccessTokenWhoami: PERSONAL_ACCESS_TOKEN_WHOAMI_URL

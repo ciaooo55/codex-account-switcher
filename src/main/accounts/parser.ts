@@ -174,6 +174,16 @@ function normalizeCredential(
 
   const refreshToken = tokenFrom(record, tokens, REFRESH_TOKEN_KEYS)
   const oauthClientId = firstString(record.client_id, record.clientId, tokens?.client_id, tokens?.clientId)
+  const declaredFedRamp = [
+    record.chatgpt_account_is_fedramp,
+    record.chatgptAccountIsFedramp,
+    record.chatgptAccountIsFedRamp,
+    record.chatgptAccountIsFedRAMP,
+    tokens?.chatgpt_account_is_fedramp,
+    tokens?.chatgptAccountIsFedramp,
+    tokens?.chatgptAccountIsFedRamp,
+    tokens?.chatgptAccountIsFedRAMP
+  ].find((value) => typeof value === 'boolean') as boolean | undefined
   const idToken = tokenFrom(record, tokens, ID_TOKEN_KEYS)
   const declaredAuthMode = firstString(
     record.auth_mode,
@@ -200,6 +210,13 @@ function normalizeCredential(
   ) return null
   const accessAuth = claimRecord(accessPayload, 'https://api.openai.com/auth', 'auth')
   const idAuth = claimRecord(idPayload, 'https://api.openai.com/auth', 'auth')
+  const isFedRamp = [
+    declaredFedRamp,
+    accessAuth?.chatgpt_account_is_fedramp,
+    accessAuth?.chatgptAccountIsFedramp,
+    idAuth?.chatgpt_account_is_fedramp,
+    idAuth?.chatgptAccountIsFedramp
+  ].find((value) => typeof value === 'boolean') as boolean | undefined
   const accessProfile = claimRecord(
     accessPayload,
     'https://api.openai.com/profile',
@@ -224,6 +241,8 @@ function normalizeCredential(
     record.chatgptAccountId,
     record.organization_id,
     record.organizationId,
+    record.org_id,
+    record.orgId,
     account?.id,
     account?.account_id,
     account?.accountId,
@@ -290,13 +309,20 @@ function normalizeCredential(
     accessToken,
     refreshToken,
     oauthClientId,
+    isFedRamp: isFedRamp ?? null,
     idToken,
     authKind,
     planType,
     lastRefresh,
     accessExpiresAt:
       expiryFrom(accessPayload) ??
-      timestampFrom(record.expires_at, record.expiresAt, record.expired),
+      timestampFrom(
+        tokens?.expires_at,
+        tokens?.expiresAt,
+        record.expires_at,
+        record.expiresAt,
+        record.expired
+      ),
     idExpiresAt: expiryFrom(idPayload),
     canRefresh: refreshToken !== null,
     sourcePath: options.sourcePath,
@@ -796,10 +822,7 @@ export function extractCredentialValues(text: string, options: CredentialParseOp
 
   if (options.format === 'js') return tryStaticJavaScript(normalizedText) ?? []
 
-  const jsonLines = tryJsonLines(normalizedText)
-  if (jsonLines !== undefined) return jsonLines
-
-  return []
+  return pastedValues(normalizedText)
 }
 
 export function parseCredentialText(
@@ -880,6 +903,7 @@ function mergedCredential(
     subject: preferred.subject ?? fallback.subject,
     refreshToken: preferred.refreshToken ?? fallback.refreshToken,
     oauthClientId: preferred.oauthClientId ?? fallback.oauthClientId,
+    isFedRamp: preferred.isFedRamp ?? fallback.isFedRamp,
     idToken: preferred.idToken ?? fallback.idToken,
     planType: preferred.planType ?? fallback.planType,
     idExpiresAt: preferred.idExpiresAt ?? fallback.idExpiresAt

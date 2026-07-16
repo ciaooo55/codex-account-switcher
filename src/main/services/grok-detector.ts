@@ -9,6 +9,7 @@ import type {
 const CLI_BASE = 'https://cli-chat-proxy.grok.com/v1'
 const CLIENT_VERSION = '0.2.93'
 const CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
+const BILLING_USER_AGENT = `grok-pager/${CLIENT_VERSION} grok-shell/${CLIENT_VERSION} (macos; aarch64)`
 
 interface GrokDetectorOptions {
   timeoutMs: number
@@ -228,7 +229,7 @@ export class GrokCredentialTester {
   }
 
   private async check(credential: GrokCredential, signal?: AbortSignal): Promise<GrokTestResult> {
-    const headers = this.headers(credential.accessToken, false)
+    const headers = this.billingHeaders(credential.accessToken)
     const [weekly, monthly] = await Promise.all([
       this.fetchJson(`${this.cliBase}/billing?format=credits`, { headers, signal }),
       this.fetchJson(`${this.cliBase}/billing`, { headers, signal })
@@ -260,14 +261,12 @@ export class GrokCredentialTester {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       probe = await this.fetchJson(`${this.cliBase}/responses`, {
         method: 'POST',
-        headers: this.headers(credential.accessToken, true),
+        headers: this.responseHeaders(credential.accessToken),
         body: JSON.stringify({
           model: 'grok-4.5',
-          stream: true,
+          input: '.',
+          max_output_tokens: 1,
           store: false,
-          input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply OK.' }] }],
-          tools: [{ type: 'x_search' }],
-          tool_choice: 'auto'
         }),
         signal
       })
@@ -343,10 +342,22 @@ export class GrokCredentialTester {
     return parsed.toString()
   }
 
-  private headers(token: string, stream: boolean): Record<string, string> {
+  private billingHeaders(token: string): Record<string, string> {
     return {
       Authorization: `Bearer ${token}`,
-      Accept: stream ? 'text/event-stream' : 'application/json',
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Connection: 'Keep-Alive',
+      'X-XAI-Token-Auth': 'xai-grok-cli',
+      'X-Grok-Client-Version': CLIENT_VERSION,
+      'User-Agent': BILLING_USER_AGENT
+    }
+  }
+
+  private responseHeaders(token: string): Record<string, string> {
+    return {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json, text/event-stream',
       'Content-Type': 'application/json',
       Connection: 'Keep-Alive',
       'X-XAI-Token-Auth': 'xai-grok-cli',

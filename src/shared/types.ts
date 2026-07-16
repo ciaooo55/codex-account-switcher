@@ -17,6 +17,7 @@ export interface NormalizedCredential {
   accessToken: string
   refreshToken: string | null
   oauthClientId?: string | null
+  isFedRamp?: boolean | null
   idToken: string | null
   authKind: CredentialAuthKind
   planType: string | null

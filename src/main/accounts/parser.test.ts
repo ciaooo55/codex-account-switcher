@@ -190,6 +190,7 @@ describe('parseCredentialText', () => {
             refresh_token: 'refresh-sub-1',
             chatgpt_account_id: 'sub-workspace-1',
             chatgpt_user_id: 'sub-user-1',
+            chatgpt_account_is_fedramp: true,
             plan_type: 'plus'
           },
           extra: {
@@ -223,6 +224,7 @@ describe('parseCredentialText', () => {
       email: 'first@example.com',
       accountId: 'sub-workspace-1',
       subject: 'sub-user-1',
+      isFedRamp: true,
       planType: 'plus',
       lastRefresh: '2026-07-14T08:00:00Z',
       accessExpiresAt: '2030-03-17T17:46:40.000Z',
@@ -302,6 +304,30 @@ describe('parseCredentialText', () => {
       planType: 'team',
       sourceDialect: 'sub2api'
     })
+  })
+
+  it('accepts Sub2API JSON streams and legacy organization/expiry aliases', () => {
+    const first = JSON.stringify({
+      accessToken: jwt({ sub: 'stream-user-1' }),
+      orgId: 'stream-org-1',
+      tokens: { expiresAt: 1_900_000_000 }
+    })
+    const second = JSON.stringify({
+      access_token: jwt({ sub: 'stream-user-2' }),
+      organization_id: 'stream-org-2'
+    })
+
+    const result = parseCredentialText(`${first} ${second}`, {
+      sourcePath: 'sub2api-stream.json',
+      format: 'json'
+    })
+
+    expect(result.credentials).toHaveLength(2)
+    expect(result.credentials[0]).toMatchObject({
+      accountId: 'stream-org-1',
+      accessExpiresAt: '2030-03-17T17:46:40.000Z'
+    })
+    expect(result.credentials[1].accountId).toBe('stream-org-2')
   })
 
   it('rejects non-OpenAI Sub2API accounts even when their type is oauth', () => {

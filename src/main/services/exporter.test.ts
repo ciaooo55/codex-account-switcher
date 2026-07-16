@@ -59,6 +59,17 @@ describe('credential serializers', () => {
     })
   })
 
+  it('preserves Sub2API FedRAMP metadata in CPA and Sub2API exports', () => {
+    const fedRamp = credential({ isFedRamp: true })
+
+    expect(serializeCpaCredential(fedRamp)).toMatchObject({
+      chatgpt_account_is_fedramp: true
+    })
+    expect(serializeSub2ApiBundle([fedRamp]).accounts[0].credentials).toMatchObject({
+      chatgpt_account_is_fedramp: true
+    })
+  })
+
   it('converts a Sub2API personal access token to official Codex and flat CPA shapes', () => {
     const personal = credential({
       authKind: 'personal_access_token',
