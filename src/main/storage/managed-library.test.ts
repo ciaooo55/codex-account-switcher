@@ -40,9 +40,15 @@ describe('ManagedCredentialLibrary', () => {
     expect(stored).toHaveLength(1)
     expect(await readdir(directory)).toEqual(['person@example.com_plus.json'])
     expect(JSON.parse(await readFile(stored[0].sourcePath, 'utf8'))).toMatchObject({
-      schema: 'codex-account-switcher/account-v1',
+      type: 'codex',
       email: 'person@example.com',
+      auth_mode: 'chatgpt',
       plan_type: 'plus',
+      chatgpt_plan_type: 'plus',
+      account_id: 'workspace-a',
+      chatgpt_account_id: 'workspace-a',
+      subject: 'user-a',
+      chatgpt_user_id: 'user-a',
       access_token: 'newer-access'
     })
   })
@@ -82,10 +88,19 @@ describe('ManagedCredentialLibrary', () => {
       planType: 'team'
     })])
 
-    expect(JSON.parse(await readFile(stored[0].sourcePath, 'utf8'))).toMatchObject({
+    expect(JSON.parse(await readFile(stored[0].sourcePath, 'utf8'))).toEqual({
+      type: 'codex',
+      email: 'person@example.com',
       auth_mode: 'personalAccessToken',
+      openai_auth_mode: 'personal_access_token',
+      personal_access_token: 'at-personal-token',
       access_token: 'at-personal-token',
-      personal_access_token: 'at-personal-token'
+      account_id: 'workspace-a',
+      chatgpt_account_id: 'workspace-a',
+      subject: 'user-a',
+      chatgpt_user_id: 'user-a',
+      plan_type: 'team',
+      chatgpt_plan_type: 'team'
     })
   })
 })

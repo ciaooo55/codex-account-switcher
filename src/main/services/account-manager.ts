@@ -9,6 +9,8 @@ import type {
   CredentialSourceFormat,
   DeleteAccountsResult,
   NormalizedCredential,
+  OAuthAuthorizationSession,
+  RefreshTokenClientMode,
   ScanResult,
   SwitchResult,
   TestResult
@@ -35,6 +37,20 @@ interface AccountManagerOptions {
   tester: TesterLike
   switcher: SwitcherLike
   managedImportDirectory?: string
+  refreshTokenImporter?: {
+    resolve(
+      text: string,
+      mode: RefreshTokenClientMode,
+      source?: { sourcePath: string; format: CredentialSourceFormat }
+    ): Promise<{ credentials: NormalizedCredential[]; errors: string[]; total: number }>
+  }
+  oauthAuthorizationImporter?: {
+    start(): OAuthAuthorizationSession
+    complete(
+      sessionId: string,
+      callbackInput: string
+    ): Promise<{ credentials: NormalizedCredential[]; errors: string[]; total: number }>
+  }
   deletedStore?: {
     list(): Promise<Set<string>>
     addMany(ids: string[]): Promise<void>
@@ -186,18 +202,44 @@ export class AccountManager {
     if (Buffer.byteLength(text, 'utf8') > MAX_SOURCE_FILE_BYTES) {
       throw new Error('粘贴内容超过安全限制')
     }
-    const parsed = parseCredentialText(text, {
+    let parsed = parseCredentialText(text, {
       sourcePath: 'pasted-credential.json',
       format: 'paste'
     })
-    const credentials = dedupeCredentials(parsed.credentials)
+    if (parsed.credentials.length === 0 && this.options.refreshTokenImporter) {
+      const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto')
+      if (refreshed.total > 0) parsed = refreshed
+    }
+    return this.importResolvedCredentials(parsed.credentials, parsed.errors)
+  }
+
+  async importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult> {
+    if (Buffer.byteLength(text, 'utf8') > MAX_SOURCE_FILE_BYTES) {
+      throw new Error('粘贴内容超过安全限制')
+    }
+    if (!this.options.refreshTokenImporter) throw new Error('Refresh Token 导入器不可用')
+    const parsed = await this.options.refreshTokenImporter.resolve(text, mode)
+    return this.importResolvedCredentials(parsed.credentials, parsed.errors)
+  }
+
+  startOAuthAuthorization(): OAuthAuthorizationSession {
+    if (!this.options.oauthAuthorizationImporter) throw new Error('OAuth 授权导入器不可用')
+    return this.options.oauthAuthorizationImporter.start()
+  }
+
+  async completeOAuthAuthorization(sessionId: string, callbackInput: string): Promise<ScanResult> {
+    if (!this.options.oauthAuthorizationImporter) throw new Error('OAuth 授权导入器不可用')
+    const parsed = await this.options.oauthAuthorizationImporter.complete(sessionId, callbackInput)
+    return this.importResolvedCredentials(parsed.credentials, parsed.errors)
+  }
+
+  private async importResolvedCredentials(
+    input: readonly NormalizedCredential[],
+    errors: readonly string[]
+  ): Promise<ScanResult> {
+    const credentials = dedupeCredentials(input)
     if (credentials.length === 0) {
-      return {
-        imported: 0,
-        skipped: 0,
-        errors: parsed.errors,
-        accounts: await this.listAccounts()
-      }
+      return { imported: 0, skipped: 0, errors: [...errors], accounts: await this.listAccounts() }
     }
     await this.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
     const existing = dedupeCredentials(await this.options.vault.list())
@@ -209,7 +251,7 @@ export class AccountManager {
     return {
       imported,
       skipped: credentials.length - imported,
-      errors: [],
+      errors: [...errors],
       accounts: await this.listAccounts()
     }
   }
@@ -480,7 +522,14 @@ export class AccountManager {
       const metadata = await stat(path)
       if (!metadata.isFile()) throw new Error('账号来源不是文件')
       if (metadata.size > MAX_SOURCE_FILE_BYTES) throw new Error('账号文件超过 100MB 安全限制')
-      return parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
+      const text = await readFile(path, 'utf8')
+      const parsed = parseCredentialText(text, { sourcePath: path, format })
+      if (parsed.credentials.length > 0 || !this.options.refreshTokenImporter) return parsed
+      const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto', {
+        sourcePath: path,
+        format
+      })
+      return refreshed.total > 0 ? refreshed : parsed
     }
 
     const archive = await readFile(path)
@@ -514,14 +563,20 @@ export class AccountManager {
         sourcePath: `${path}::${entryName}`,
         format: entryFormat
       })
+      const resolved = parsed.credentials.length > 0 || !this.options.refreshTokenImporter
+        ? parsed
+        : await this.options.refreshTokenImporter.resolve(strFromU8(bytes), 'auto', {
+            sourcePath: `${path}::${entryName}`,
+            format: entryFormat
+          })
       credentials.push(
-        ...parsed.credentials.map((credential) => ({
+        ...resolved.credentials.map((credential) => ({
           ...credential,
           sourcePath: path,
           sourceFormat: 'zip' as const
         }))
       )
-      errors.push(...parsed.errors)
+      errors.push(...resolved.errors)
     }
     return { credentials, errors }
   }

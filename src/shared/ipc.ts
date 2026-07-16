@@ -16,7 +16,9 @@ import type {
   GrokBatchTestResult,
   GrokScanResult,
   ManagedFileStateResult,
+  OAuthAuthorizationSession,
   ScanResult,
+  RefreshTokenClientMode,
   SessionRepairPreview,
   SessionRepairResult,
   SwitchResult
@@ -92,6 +94,9 @@ export interface CodexSwitcherApi {
   importAnyFiles(): Promise<ScanResult | null>
   importAnyDirectory(): Promise<ScanResult | null>
   importAnyPasted(text: string): Promise<ScanResult>
+  importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult>
+  startOAuthAuthorization(): Promise<OAuthAuthorizationSession>
+  completeOAuthAuthorization(sessionId: string, callbackInput: string): Promise<ScanResult>
   deleteAccounts(ids: string[]): Promise<DeleteAccountsResult>
   exportAccounts(request: CredentialExportRequest): Promise<CredentialExportResult>
   exportAccountsToCpa(ids: string[]): Promise<CpaCodexScanResult>
@@ -144,6 +149,9 @@ export const ipcChannels = {
   importAny: 'accounts:import-any',
   importAnyDirectory: 'accounts:import-any-directory',
   importAnyPasted: 'accounts:import-any-pasted',
+  importRefreshTokens: 'accounts:import-refresh-tokens',
+  oauthStart: 'accounts:oauth-start',
+  oauthComplete: 'accounts:oauth-complete',
   deleteAccounts: 'accounts:delete',
   exportAccounts: 'accounts:export',
   exportAccountsToCpa: 'accounts:export-to-cpa',

@@ -734,7 +734,7 @@ export class CredentialTester {
           'Content-Type': 'application/x-www-form-urlencoded'
         },
         body: new URLSearchParams({
-          client_id: CODEX_CLIENT_ID,
+          client_id: credential.oauthClientId ?? CODEX_CLIENT_ID,
           grant_type: 'refresh_token',
           refresh_token: credential.refreshToken,
           scope: 'openid profile email'
@@ -787,6 +787,7 @@ export class CredentialTester {
       JSON.stringify({
         access_token: accessToken,
         refresh_token: stringOrNull(root?.refresh_token) ?? credential.refreshToken,
+        client_id: credential.oauthClientId ?? CODEX_CLIENT_ID,
         id_token: stringOrNull(root?.id_token) ?? credential.idToken,
         account_id: stringOrNull(root?.account_id) ?? credential.accountId,
         email: credential.email,

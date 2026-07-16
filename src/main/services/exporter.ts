@@ -9,6 +9,12 @@ import type {
   CredentialExportResult,
   NormalizedCredential
 } from '../../shared/types'
+import {
+  serializeCodexCredential as codexCredentialDocument,
+  serializeCpaCredential
+} from '../accounts/credential-formats'
+
+export { serializeCpaCredential } from '../accounts/credential-formats'
 
 interface VaultReader {
   list(): Promise<NormalizedCredential[]>
@@ -56,59 +62,10 @@ function unixSeconds(value: string | null): number | null {
   return Number.isFinite(timestamp) ? Math.floor(timestamp / 1_000) : null
 }
 
-export function serializeCpaCredential(
-  credential: NormalizedCredential
-): Record<string, string> {
-  return {
-    type: 'codex',
-    ...(credential.email ? { email: credential.email } : {}),
-    ...(credential.authKind === 'personal_access_token'
-      ? {
-          auth_mode: 'personalAccessToken',
-          openai_auth_mode: 'personal_access_token',
-          personal_access_token: credential.accessToken
-        }
-      : {}),
-    access_token: credential.accessToken,
-    ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
-    ...(credential.idToken ? { id_token: credential.idToken } : {}),
-    ...(credential.accountId
-      ? {
-          account_id: credential.accountId,
-          chatgpt_account_id: credential.accountId
-        }
-      : {}),
-    ...(credential.planType
-      ? {
-          plan_type: credential.planType,
-          chatgpt_plan_type: credential.planType
-        }
-      : {}),
-    ...(credential.lastRefresh ? { last_refresh: credential.lastRefresh } : {}),
-    ...(credential.accessExpiresAt ? { expired: credential.accessExpiresAt } : {})
-  }
-}
-
 export function serializeCodexCredential(
   credential: NormalizedCredential
 ): Record<string, unknown> {
-  if (credential.authKind === 'personal_access_token') {
-    return {
-      OPENAI_API_KEY: null,
-      personal_access_token: credential.accessToken
-    }
-  }
-  return {
-    auth_mode: 'chatgpt',
-    OPENAI_API_KEY: null,
-    tokens: {
-      id_token: credential.idToken,
-      access_token: credential.accessToken,
-      refresh_token: credential.refreshToken,
-      account_id: credential.accountId
-    },
-    ...(credential.lastRefresh ? { last_refresh: credential.lastRefresh } : {})
-  }
+  return codexCredentialDocument(credential).value
 }
 
 function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
@@ -129,6 +86,7 @@ function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
         : {}),
       access_token: credential.accessToken,
       ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
+      ...(credential.oauthClientId ? { client_id: credential.oauthClientId } : {}),
       ...(credential.idToken ? { id_token: credential.idToken } : {}),
       ...(credential.accountId ? { chatgpt_account_id: credential.accountId } : {}),
       ...(credential.subject ? { chatgpt_user_id: credential.subject } : {}),
@@ -226,11 +184,14 @@ async function atomicCreate(path: string, data: Uint8Array): Promise<void> {
   }
 }
 
-function archiveEntries(credentials: readonly NormalizedCredential[]): Record<string, Uint8Array> {
+function archiveEntries(
+  credentials: readonly NormalizedCredential[],
+  format: 'cpa' | 'codex'
+): Record<string, Uint8Array> {
   const entries: Record<string, Uint8Array> = {}
   const used = new Set<string>()
   for (const credential of credentials) {
-    const base = `codex-${safeStem(credential)}.json`
+    const base = `${format === 'codex' ? 'auth' : 'codex'}-${safeStem(credential)}.json`
     let suffix = 1
     let name = base
     while (used.has(name.toLowerCase())) {
@@ -238,7 +199,9 @@ function archiveEntries(credentials: readonly NormalizedCredential[]): Record<st
       name = suffixedName(base, suffix)
     }
     used.add(name.toLowerCase())
-    entries[name] = jsonBytes(serializeCpaCredential(credential))
+    entries[name] = jsonBytes(
+      format === 'codex' ? serializeCodexCredential(credential) : serializeCpaCredential(credential)
+    )
   }
   return entries
 }
@@ -273,23 +236,30 @@ export class CredentialExportService {
       const filename =
         options.format === 'cpa'
           ? `codex-accounts-${timestampStem(now)}.zip`
-          : `sub2api-account-${timestampStem(now)}.json`
+          : options.format === 'codex'
+            ? `codex-auth-files-${timestampStem(now)}.zip`
+            : `sub2api-account-${timestampStem(now)}.json`
       const path = await availablePath(options.outputDirectory, filename)
       const data =
         options.format === 'cpa'
-          ? zipSync(archiveEntries(credentials), { level: 6 })
-          : jsonBytes(serializeSub2ApiBundle(credentials, now))
+          ? zipSync(archiveEntries(credentials, 'cpa'), { level: 6 })
+          : options.format === 'codex'
+            ? zipSync(archiveEntries(credentials, 'codex'), { level: 6 })
+            : jsonBytes(serializeSub2ApiBundle(credentials, now))
       await atomicCreate(path, data)
       files.push(path)
     } else {
       for (const credential of credentials) {
-        const filename = `${options.format === 'cpa' ? 'codex' : 'sub2api'}-${safeStem(credential)}.json`
+        const prefix = options.format === 'cpa' ? 'codex' : options.format === 'codex' ? 'auth' : 'sub2api'
+        const filename = `${prefix}-${safeStem(credential)}.json`
         try {
           const path = await availablePath(options.outputDirectory, filename)
           const value =
             options.format === 'cpa'
               ? serializeCpaCredential(credential)
-              : serializeSub2ApiBundle([credential], this.now())
+              : options.format === 'codex'
+                ? serializeCodexCredential(credential)
+                : serializeSub2ApiBundle([credential], this.now())
           await atomicCreate(path, jsonBytes(value))
           files.push(path)
         } catch {

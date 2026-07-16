@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NormalizedCredential } from '../../shared/types'
 import { CredentialTester, parseUsageResponse } from './detector'
+import { MOBILE_OAUTH_CLIENT_ID } from './refresh-token-importer'
 
 function jwt(payload: Record<string, unknown>): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`
@@ -281,6 +282,33 @@ describe('CredentialTester', () => {
       expect.objectContaining({ accessToken: refreshedAccess, refreshToken: 'refresh-b' })
     )
     expect(fetchImpl).toHaveBeenCalledTimes(4)
+  })
+
+  it('keeps a mobile OAuth client id when refreshing an imported mobile RT', async () => {
+    const refreshedAccess = jwt({ sub: 'mobile-user', exp: 1_910_000_000 })
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(401, { error: { message: 'expired' } }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        access_token: refreshedAccess,
+        refresh_token: 'mobile-refresh-rotated'
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { plan_type: 'plus', rate_limit: {} }))
+      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
+    const onCredentialUpdated = vi.fn()
+    const tester = new CredentialTester({ fetchImpl, onCredentialUpdated })
+
+    await expect(tester.test(credential({
+      oauthClientId: MOBILE_OAUTH_CLIENT_ID,
+      refreshToken: 'mobile-refresh-original'
+    }))).resolves.toMatchObject({ status: 'valid', refreshed: true })
+
+    const refreshBody = fetchImpl.mock.calls[1][1]?.body as URLSearchParams
+    expect(refreshBody.get('client_id')).toBe(MOBILE_OAUTH_CLIENT_ID)
+    expect(onCredentialUpdated).toHaveBeenCalledWith(expect.objectContaining({
+      oauthClientId: MOBILE_OAUTH_CLIENT_ID,
+      refreshToken: 'mobile-refresh-rotated'
+    }))
   })
 
   it('marks a reused refresh token as invalid instead of an incompatible endpoint', async () => {

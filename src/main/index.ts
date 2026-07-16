@@ -27,6 +27,8 @@ import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
 import { GrokAccountManager } from './services/grok-account-manager'
 import { GrokCredentialTester } from './services/grok-detector'
+import { OpenAIRefreshTokenImporter } from './services/refresh-token-importer'
+import { OpenAIOAuthImporter } from './services/openai-oauth-importer'
 import { SessionRepairService } from './services/session-repair'
 import {
   cleanupLegacyUpdateCache,
@@ -321,7 +323,21 @@ async function main(): Promise<void> {
     tester,
     switcher,
     managedImportDirectory: importDirectory,
-    deletedStore
+    deletedStore,
+    refreshTokenImporter: new OpenAIRefreshTokenImporter({
+      fetchImpl: (input, init) => net.fetch(
+        input instanceof URL ? input.toString() : input,
+        init
+      ),
+      ...(testApiBase ? { tokenUrl: `${testApiBase}/oauth/token` } : {})
+    }),
+    oauthAuthorizationImporter: new OpenAIOAuthImporter({
+      fetchImpl: (input, init) => net.fetch(
+        input instanceof URL ? input.toString() : input,
+        init
+      ),
+      ...(testApiBase ? { tokenUrl: `${testApiBase}/oauth/token` } : {})
+    })
   })
   const exporter = new CredentialExportService({ vault })
   let cpaCodexManager: CpaCodexManager
@@ -690,6 +706,26 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.importAnyPasted, (_event, input: unknown) =>
     importAnyPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input)))
+  ipcMain.handle(ipcChannels.importRefreshTokens, (_event, input: unknown) => {
+    const payload = z.object({
+      text: z.string().min(1).max(100 * 1024 * 1024),
+      mode: z.enum(['auto', 'codex', 'mobile'])
+    }).parse(input)
+    return runAccountLibraryMutation(() => manager.importRefreshTokens(payload.text, payload.mode))
+  })
+  ipcMain.handle(ipcChannels.oauthStart, async () => {
+    const session = manager.startOAuthAuthorization()
+    await shell.openExternal(session.authUrl)
+    return session
+  })
+  ipcMain.handle(ipcChannels.oauthComplete, (_event, input: unknown) => {
+    const payload = z.object({
+      sessionId: z.string().length(32),
+      callbackInput: z.string().min(1).max(16 * 1024)
+    }).parse(input)
+    return runAccountLibraryMutation(() =>
+      manager.completeOAuthAuthorization(payload.sessionId, payload.callbackInput))
+  })
   ipcMain.handle(ipcChannels.deleteAccounts, async (_event, input: unknown) => {
     const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
     const result = await runAccountLibraryMutation(() => manager.deleteAccounts(ids))
@@ -700,7 +736,7 @@ async function main(): Promise<void> {
     const payload = z
       .object({
         accountIds: z.array(z.string().min(1)).min(1).max(20_000),
-        format: z.enum(['cpa', 'sub2api']),
+        format: z.enum(['cpa', 'sub2api', 'codex']),
         layout: z.enum(['separate', 'bundle'])
       })
       .parse(input)

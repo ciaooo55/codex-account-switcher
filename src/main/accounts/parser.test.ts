@@ -497,6 +497,25 @@ describe('parseCredentialText', () => {
     expect(array.credentials).toHaveLength(2)
   })
 
+  it('parses bare Sub2API personal access tokens and preserves an OAuth client id', () => {
+    const personal = parseCredentialText('at-first-personal-token\nat-second-personal-token', {
+      sourcePath: 'personal-tokens.txt',
+      format: 'txt'
+    })
+    const oauth = parseCredentialText(JSON.stringify({
+      access_token: jwt({ sub: 'mobile-user' }),
+      refresh_token: 'mobile-refresh',
+      client_id: 'mobile-client-id'
+    }), { sourcePath: 'mobile.json', format: 'json' })
+
+    expect(personal.credentials).toHaveLength(2)
+    expect(personal.credentials.every((item) => item.authKind === 'personal_access_token')).toBe(true)
+    expect(oauth.credentials[0]).toMatchObject({
+      refreshToken: 'mobile-refresh',
+      oauthClientId: 'mobile-client-id'
+    })
+  })
+
   it('extracts an email from a Markdown filename', () => {
     const result = parseCredentialText(
       `\`\`\`json\n${JSON.stringify({ access_token: jwt({ sub: 'md-name' }) })}\n\`\`\``,

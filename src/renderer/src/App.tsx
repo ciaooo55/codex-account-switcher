@@ -13,6 +13,7 @@ import {
   ListChecks,
   LoaderCircle,
   MoreHorizontal,
+  Moon,
   PackageOpen,
   Play,
   RefreshCw,
@@ -20,6 +21,7 @@ import {
   Search,
   Settings,
   Square,
+  Sun,
   TestTube2,
   TimerReset,
   Trash2,
@@ -36,6 +38,8 @@ import type {
   DisplayAccountStatus,
   CredentialExportFormat,
   CredentialExportLayout,
+  OAuthAuthorizationSession,
+  RefreshTokenClientMode,
   ScanResult,
   SessionRepairPreview,
   UsageWindow
@@ -50,6 +54,18 @@ const STATUS_LABELS: Record<DisplayAccountStatus, string> = {
   quota_exhausted_weekly: '周额度耗尽',
   invalid: '已失效',
   unknown_error: '未知错误'
+}
+
+type ThemeMode = 'light' | 'dark'
+type PasteImportMode = RefreshTokenClientMode | 'oauth'
+const THEME_STORAGE_KEY = 'codex-account-switcher/theme'
+
+function initialTheme(): ThemeMode {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
+  } catch {
+    return 'light'
+  }
 }
 
 function displayStatus(status: AccountStatus): DisplayAccountStatus {
@@ -164,6 +180,11 @@ function Quota({
 }
 
 export function App(): React.JSX.Element {
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const value = initialTheme()
+    document.documentElement.dataset.theme = value
+    return value
+  })
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [keyword, setKeyword] = useState('')
@@ -180,6 +201,8 @@ export function App(): React.JSX.Element {
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [pasteText, setPasteText] = useState('')
+  const [pasteImportMode, setPasteImportMode] = useState<PasteImportMode>('auto')
+  const [oauthSession, setOauthSession] = useState<OAuthAuthorizationSession | null>(null)
   const [exportDialog, setExportDialog] = useState<{
     accountIds: string[]
     format: CredentialExportFormat
@@ -193,6 +216,15 @@ export function App(): React.JSX.Element {
   } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const [clock, setClock] = useState(() => Date.now())
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+    } catch {
+      // The selected theme still applies for this session when storage is unavailable.
+    }
+  }, [theme])
 
   const reload = async (preserveSettingsDraft = false): Promise<void> => {
     const next = await window.codexSwitcher.getSnapshot()
@@ -364,8 +396,38 @@ export function App(): React.JSX.Element {
 
   const submitPaste = async (): Promise<void> => {
     if (!pasteText.trim()) return
-    if (await runAccountImport(() => window.codexSwitcher.importAnyPasted(pasteText), '粘贴导入完成')) {
+    const action = pasteImportMode === 'oauth'
+      ? () => {
+          if (!oauthSession) throw new Error('请先打开官方授权页')
+          return window.codexSwitcher.completeOAuthAuthorization(oauthSession.sessionId, pasteText)
+        }
+      : pasteImportMode === 'auto'
+        ? () => window.codexSwitcher.importAnyPasted(pasteText)
+        : () => window.codexSwitcher.importRefreshTokens(pasteText, pasteImportMode)
+    const source = pasteImportMode === 'oauth'
+      ? 'OpenAI OAuth 授权完成'
+      : pasteImportMode === 'mobile'
+      ? '移动端 RT 导入完成'
+      : pasteImportMode === 'codex'
+        ? 'Codex RT 导入完成'
+        : '粘贴导入完成'
+    if (await runAccountImport(action, source)) {
       setPasteText('')
+      setOauthSession(null)
+    }
+  }
+
+  const startOAuthAuthorization = async (): Promise<void> => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      const session = await window.codexSwitcher.startOAuthAuthorization()
+      setOauthSession(session)
+      setMessage({ kind: 'ok', text: '已打开 OpenAI 官方授权页，登录后将浏览器地址粘贴回来' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -657,6 +719,14 @@ export function App(): React.JSX.Element {
         <button className="header-import-button" aria-label="导入账号" onClick={() => setImportOpen(true)} disabled={busy}>
           <Import size={17} />导入账号
         </button>
+        <button
+          className="icon-button"
+          title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
+          aria-label={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
+          onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}
+        >
+          {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+        </button>
         <button className="icon-button" title="设置" aria-label="设置" onClick={() => setSettingsOpen(true)} disabled={busy}>
           <Settings size={19} />
         </button>
@@ -912,19 +982,38 @@ export function App(): React.JSX.Element {
               <button aria-label="导入文件夹" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归保存到 aa</small></span></button>
             </div>
             <div className="import-divider"><span>或粘贴凭据</span></div>
+            <div className="option-group import-method-group">
+              <span>识别方式</span>
+              <div className="segmented-control import-mode-control">
+                <button className={pasteImportMode === 'auto' ? 'selected' : ''} onClick={() => setPasteImportMode('auto')}>智能识别</button>
+                <button className={pasteImportMode === 'oauth' ? 'selected' : ''} onClick={() => setPasteImportMode('oauth')}>浏览器授权</button>
+                <button className={pasteImportMode === 'codex' ? 'selected' : ''} onClick={() => setPasteImportMode('codex')}>Codex RT</button>
+                <button className={pasteImportMode === 'mobile' ? 'selected' : ''} onClick={() => setPasteImportMode('mobile')}>移动端 RT</button>
+              </div>
+              <small>{pasteImportMode === 'auto' ? 'JSON、JSONL、CPA、Sub2API、裸 AT/PAT；发现 RT 时自动尝试匹配客户端' : pasteImportMode === 'oauth' ? '使用 Codex CLI 的 PKCE 参数打开 OpenAI 官方授权页，token 仅在主进程中交换' : pasteImportMode === 'codex' ? '每行一个 rt.1...，使用 Codex CLI 客户端刷新并保存旋转后的新 RT' : '每行一个 rt.1...，使用 OpenAI 移动端客户端刷新并保存对应 client_id'}</small>
+            </div>
+            {pasteImportMode === 'oauth' && (
+              <div className="oauth-import-step">
+                <button onClick={() => void startOAuthAuthorization()} disabled={busy}>
+                  {busy ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+                  {oauthSession ? '重新打开授权页' : '打开 OpenAI 授权页'}
+                </button>
+                <span>{oauthSession ? '授权会话已就绪，粘贴回调 URL 后完成导入' : '授权会话保留 30 分钟'}</span>
+              </div>
+            )}
             <label className="paste-field">
               <textarea
                 aria-label="凭据文本"
                 value={pasteText}
                 onChange={(event) => setPasteText(event.target.value)}
-                placeholder="粘贴 Codex JSON、JSONL、CPA、SubAPI、键值文本或静态 JS"
+                placeholder={pasteImportMode === 'auto' ? '粘贴 Codex JSON、JSONL、CPA、SubAPI、裸 AT/PAT/RT、键值文本或静态 JS' : pasteImportMode === 'oauth' ? '粘贴浏览器最后的 http://localhost:1455/auth/callback?code=...&state=... 地址' : '每行粘贴一个 OpenAI Refresh Token（rt.1...）'}
               />
             </label>
             <div className="panel-actions">
               <button onClick={() => setImportOpen(false)} disabled={busy}>取消</button>
-              <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim()}>
+              <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim() || (pasteImportMode === 'oauth' && !oauthSession)}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
-                清洗并导入
+                {pasteImportMode === 'oauth' ? '完成授权并导入' : '清洗并导入'}
               </button>
             </div>
           </section>
@@ -942,27 +1031,28 @@ export function App(): React.JSX.Element {
             </div>
             <div className="option-group">
               <span>目标格式</span>
-              <div className="segmented-control">
+              <div className="segmented-control format-control">
                 <button className={exportDialog.format === 'cpa' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'cpa' })}>CPA</button>
                 <button className={exportDialog.format === 'sub2api' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'sub2api' })}>SubAPI</button>
+                <button className={exportDialog.format === 'codex' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'codex' })}>Codex auth.json</button>
               </div>
             </div>
             <div className="option-group">
               <span>文件布局</span>
               <div className="segmented-control">
                 <button className={exportDialog.layout === 'separate' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'separate' })}>每账号一文件</button>
-                <button className={exportDialog.layout === 'bundle' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'bundle' })}>合并单文件</button>
+                <button className={exportDialog.layout === 'bundle' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'bundle' })}>{exportDialog.format === 'sub2api' ? '合并单文件' : '合并 ZIP'}</button>
               </div>
             </div>
             <div className="export-warning">
               <CircleAlert size={17} />
-              <span>普通导出可选择任意目录；“直接导出到 CPA”仅写入设置中的 CPA 共享目录，并按账号稳定身份跳过重复。</span>
+              <span>{exportDialog.format === 'codex' ? 'Codex 格式会按账号认证类型生成官方 auth.json 结构；多账号只能打包为 ZIP。' : '普通导出可选择任意目录；“直接导出到 CPA”仅写入设置中的 CPA 共享目录，并按账号稳定身份跳过重复。'}</span>
             </div>
             <div className="panel-actions">
               <button onClick={() => setExportDialog(null)} disabled={busy}>取消</button>
-              <button onClick={() => void submitExportToCpa()} disabled={busy}>
+              {exportDialog.format === 'cpa' && <button onClick={() => void submitExportToCpa()} disabled={busy}>
                 <Zap size={16} />直接导出到 CPA
-              </button>
+              </button>}
               <button className="primary-button" onClick={() => void submitExport()} disabled={busy}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={16} />}
                 选择目录并导出

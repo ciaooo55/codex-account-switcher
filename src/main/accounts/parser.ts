@@ -173,6 +173,7 @@ function normalizeCredential(
   if (!accessToken) return null
 
   const refreshToken = tokenFrom(record, tokens, REFRESH_TOKEN_KEYS)
+  const oauthClientId = firstString(record.client_id, record.clientId, tokens?.client_id, tokens?.clientId)
   const idToken = tokenFrom(record, tokens, ID_TOKEN_KEYS)
   const declaredAuthMode = firstString(
     record.auth_mode,
@@ -288,6 +289,7 @@ function normalizeCredential(
     subject,
     accessToken,
     refreshToken,
+    oauthClientId,
     idToken,
     authKind,
     planType,
@@ -379,7 +381,9 @@ function credentialRecords(value: unknown, depth = 0): CredentialCandidate[] {
   if (depth > MAX_PARSE_DEPTH) throw new RangeError('Credential data exceeds maximum depth')
   if (typeof value === 'string') {
     const token = value.trim().replace(/^Bearer\s+/i, '')
-    return decodeJwtPayload(token) ? [{ record: { access_token: token }, dialect: 'sub2api' }] : []
+    return token.startsWith('at-') || decodeJwtPayload(token)
+      ? [{ record: { access_token: token }, dialect: 'sub2api' }]
+      : []
   }
   if (Array.isArray(value)) {
     return value.flatMap((item) => credentialRecords(item, depth + 1))
@@ -543,7 +547,8 @@ function bareTokenValues(text: string): string[] {
   return text
     .split(/[\r\n,]+/)
     .map((line) => line.trim().replace(/^Bearer\s+/i, ''))
-    .filter((value) => decodeJwtPayload(value) !== null)
+    .map((line) => line.match(/(?:at-[A-Za-z0-9_-]+|[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)?.[0] ?? '')
+    .filter((value) => value.startsWith('at-') || decodeJwtPayload(value) !== null)
 }
 
 function parseKeyValueValue(raw: string): StaticScalar {
@@ -874,6 +879,7 @@ function mergedCredential(
     accountId: preferred.accountId ?? fallback.accountId,
     subject: preferred.subject ?? fallback.subject,
     refreshToken: preferred.refreshToken ?? fallback.refreshToken,
+    oauthClientId: preferred.oauthClientId ?? fallback.oauthClientId,
     idToken: preferred.idToken ?? fallback.idToken,
     planType: preferred.planType ?? fallback.planType,
     idExpiresAt: preferred.idExpiresAt ?? fallback.idExpiresAt

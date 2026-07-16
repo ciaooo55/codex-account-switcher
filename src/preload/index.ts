@@ -12,6 +12,10 @@ const api: CodexSwitcherApi = {
   importAnyFiles: () => ipcRenderer.invoke(ipcChannels.importAny),
   importAnyDirectory: () => ipcRenderer.invoke(ipcChannels.importAnyDirectory),
   importAnyPasted: (text) => ipcRenderer.invoke(ipcChannels.importAnyPasted, text),
+  importRefreshTokens: (text, mode) => ipcRenderer.invoke(ipcChannels.importRefreshTokens, { text, mode }),
+  startOAuthAuthorization: () => ipcRenderer.invoke(ipcChannels.oauthStart),
+  completeOAuthAuthorization: (sessionId, callbackInput) =>
+    ipcRenderer.invoke(ipcChannels.oauthComplete, { sessionId, callbackInput }),
   deleteAccounts: (ids) => ipcRenderer.invoke(ipcChannels.deleteAccounts, ids),
   exportAccounts: (request) => ipcRenderer.invoke(ipcChannels.exportAccounts, request),
   exportAccountsToCpa: (ids) => ipcRenderer.invoke(ipcChannels.exportAccountsToCpa, ids),

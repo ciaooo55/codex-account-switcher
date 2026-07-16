@@ -4,8 +4,9 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 
 ## 主要功能
 
-- Codex 账号库可导入单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、嵌套 Codex、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录。
+- Codex 账号库可导入单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、嵌套 Codex、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录；`aa` 中统一保存为每账号一个无私有 schema、无空字段的 CPA 兼容 JSON。
 - 支持直接粘贴混有 Markdown 代码块或说明文字的凭据内容，清洗后提取有效账号。
+- 对齐 Sub2API 的 OpenAI 导入方式：浏览器 PKCE 授权、Codex CLI Refresh Token、OpenAI 移动端 Refresh Token、Codex JSON / 裸 Access Token 批量、Personal Access Token（`at-...`）。RT 支持每行一个、带等级标签、Markdown 转义字符和重复项；兑换后保存旋转的新 RT 及对应 `client_id`。
 - 所有成功导入或粘贴的凭据都会清洗为统一的一账号一 JSON，保存到程序所在目录的 `aa`；文件名为 `邮箱_等级.json`，无等级时使用 `unknown`。外部源文件只参与一次导入，删除或移动源文件不影响账号库。
 - 从 JWT 与文件字段提取邮箱、workspace 和过期时间；每个账号库内部按“提供商 + 规范化邮箱”保持唯一，重复项自动选择 token 更完整、刷新时间更新的凭据。Codex 与 Grok 使用独立命名空间，不会互相覆盖。
 - 按 CPA 流程先读取 `wham/usage` 的完整额度与重置时间；额度可用时再调用 Codex compact 做真实验证，已明确耗尽时直接保留准确的 5h/周状态；401 时刷新并完整重试。
@@ -17,10 +18,11 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - Codex 账号库、CPA Codex、CPA Grok 和定时切换候选列表支持按可用性/恢复时间、账号等级、状态或邮箱排序；默认把可用账号聚合在前，额度耗尽账号按最早恢复时间排列。
 - 支持单击账号行直接累加多选，再次点击取消选择，复选框仍可用于全选和多选，并提供明确的整行选中高亮；删除前二次确认，删除会同步删除或重写 `aa` 中的托管文件，一文件多账号时只移除选中的账号，外部原始文件不受影响。
 - Codex 页面统一显示“未测试、有效、已失效、5 小时额度耗尽、周额度耗尽、未知错误”六类状态；只有明确的授权失败才判定为失效，网络、模型和接口异常归入未知错误并保留诊断详情。
-- 一键导出 CPA 或 SubAPI：每账号一个文件，或 CPA 多账号 ZIP / SubAPI 原生多账号 JSON。
+- 一键导出 CPA、SubAPI 或官方 Codex `auth.json`：支持每账号一个文件；CPA/Codex 多账号使用 ZIP，SubAPI 使用原生多账号 JSON。
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
 - 完整 OAuth 账号使用标准 `chatgpt` 登录；只有 access token 的 CPA Team/K12 账号使用官方 Codex 源码定义的 `chatgptAuthTokens` 外部凭据结构，切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
+- 顶部可在浅色和深色工作台主题之间切换，选择保存在本机并在下次启动时恢复。
 - 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 点击最小化会保留窗口并正常缩到任务栏；点击关闭才会释放主界面并转入系统托盘，只保留主进程定时任务。托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出。
@@ -49,8 +51,11 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 | --- | --- | --- |
 | CPA / CLIProxyAPI | 标准扁平 `type: "codex"` JSON | ZIP，内部每账号一个标准 CPA JSON |
 | SubAPI / Sub2API | 每个文件均为有效 `sub2api-data` v1 | 原生 `accounts[]` 合并 JSON |
+| Codex | 每账号一个官方 `auth.json` 结构 | ZIP，内部每账号一个独立 auth JSON |
 
 CPA 本身不接受顶层账号数组，因此合并导出使用 ZIP，避免生成看似可用但 CPA 无法导入的非标准 JSON。
+
+Sub2API 导出保留 `accounts[].credentials` 嵌套结构；CPA 导出转为一账号一个扁平 `type: "codex"` 文件；Codex 导出根据 OAuth、PAT 或外部 access-only Team/K12 账号生成对应认证结构。
 
 ## 开发与验证
 
@@ -64,8 +69,8 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.9.7.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.9.7.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.10.0.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.10.0.exe`：便携版
 
 ## 默认路径
 

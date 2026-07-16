@@ -1,6 +1,13 @@
 export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'md' | 'zip' | 'paste'
 export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'generic'
 export type CredentialAuthKind = 'oauth' | 'personal_access_token'
+export type RefreshTokenClientMode = 'auto' | 'codex' | 'mobile'
+
+export interface OAuthAuthorizationSession {
+  sessionId: string
+  authUrl: string
+  expiresAt: string
+}
 
 export interface NormalizedCredential {
   id: string
@@ -9,6 +16,7 @@ export interface NormalizedCredential {
   subject: string | null
   accessToken: string
   refreshToken: string | null
+  oauthClientId?: string | null
   idToken: string | null
   authKind: CredentialAuthKind
   planType: string | null
@@ -302,7 +310,7 @@ export interface BatchTestResult {
   cancelled: boolean
 }
 
-export type CredentialExportFormat = 'cpa' | 'sub2api'
+export type CredentialExportFormat = 'cpa' | 'sub2api' | 'codex'
 export type CredentialExportLayout = 'separate' | 'bundle'
 
 export interface CredentialExportRequest {

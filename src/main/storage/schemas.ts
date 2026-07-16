@@ -9,6 +9,7 @@ export const normalizedCredentialSchema = z.object({
   subject: nullableString,
   accessToken: z.string().min(1),
   refreshToken: nullableString,
+  oauthClientId: nullableString.optional().default(null),
   idToken: nullableString,
   authKind: z.enum(['oauth', 'personal_access_token']).default('oauth'),
   planType: nullableString,

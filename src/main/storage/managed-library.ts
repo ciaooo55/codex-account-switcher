@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import type { NormalizedCredential } from '../../shared/types'
 import { dedupeCredentials } from '../accounts/parser'
+import { serializeCpaCredential } from '../accounts/credential-formats'
 import { atomicWriteFile } from './atomic-file'
 
 const MANAGED_EXTENSIONS = new Set(['.json', '.jsonl', '.txt', '.md', '.js', '.mjs', '.cjs', '.zip'])
@@ -15,26 +16,6 @@ function safePart(value: string, fallback: string): string {
     .replace(/[. -]+$/g, '')
     .slice(0, 110)
   return cleaned || fallback
-}
-
-function managedDocument(credential: NormalizedCredential): Record<string, unknown> {
-  return {
-    schema: 'codex-account-switcher/account-v1',
-    type: 'codex',
-    email: credential.email,
-    plan_type: credential.planType,
-    account_id: credential.accountId,
-    subject: credential.subject,
-    auth_mode: credential.authKind === 'personal_access_token' ? 'personalAccessToken' : 'chatgpt',
-    access_token: credential.accessToken,
-    ...(credential.authKind === 'personal_access_token'
-      ? { personal_access_token: credential.accessToken }
-      : {}),
-    refresh_token: credential.refreshToken,
-    id_token: credential.idToken,
-    last_refresh: credential.lastRefresh,
-    expired: credential.accessExpiresAt
-  }
 }
 
 async function collectManagedFiles(directory: string): Promise<string[]> {
@@ -112,7 +93,7 @@ export class ManagedCredentialLibrary {
     for (const credential of stored) {
       await writeIfChanged(
         credential.sourcePath,
-        `${JSON.stringify(managedDocument(credential), null, 2)}\n`
+        `${JSON.stringify(serializeCpaCredential(credential), null, 2)}\n`
       )
     }
 

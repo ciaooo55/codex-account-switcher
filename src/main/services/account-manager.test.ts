@@ -227,7 +227,8 @@ describe('AccountManager', () => {
 
     expect(archived).toEqual(['managed@example.com_unknown.json'])
     expect(JSON.parse(await readFile(join(managedImportDirectory, archived[0]), 'utf8'))).toMatchObject({
-      schema: 'codex-account-switcher/account-v1',
+      type: 'codex',
+      auth_mode: 'chatgpt',
       email: 'managed@example.com'
     })
     expect(await readFile(externalPath, 'utf8')).toBe(source)
@@ -235,6 +236,60 @@ describe('AccountManager', () => {
     const duplicate = await manager.importFiles([externalPath], { archiveSources: true })
     expect(duplicate).toMatchObject({ imported: 0, skipped: 1 })
     expect(await readdir(managedImportDirectory)).toEqual(archived)
+  })
+
+  it('converts a Sub2API Team PAT bundle into one reusable CPA-compatible aa file', async () => {
+    const fixture = await setup()
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    const sourcePath = join(fixture.root, 'sub2api-team.json')
+    await writeFile(sourcePath, JSON.stringify({
+      exported_at: '2026-07-16T13:32:05Z',
+      proxies: [],
+      accounts: [{
+        name: 'Team account',
+        type: 'oauth',
+        platform: 'openai',
+        credentials: {
+          email: 'team@example.com',
+          auth_mode: 'personalAccessToken',
+          openai_auth_mode: 'personal_access_token',
+          plan_type: 'team',
+          access_token: 'at-personal-token',
+          chatgpt_user_id: 'user-team',
+          chatgpt_account_id: 'workspace-team'
+        }
+      }]
+    }))
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.importFiles([sourcePath], { archiveSources: true })
+    const files = await readdir(managedImportDirectory)
+    const stored = JSON.parse(await readFile(join(managedImportDirectory, files[0]), 'utf8'))
+
+    expect(result.accounts).toHaveLength(1)
+    expect(files).toEqual(['team@example.com_team.json'])
+    expect(stored).toEqual({
+      type: 'codex',
+      email: 'team@example.com',
+      auth_mode: 'personalAccessToken',
+      openai_auth_mode: 'personal_access_token',
+      personal_access_token: 'at-personal-token',
+      access_token: 'at-personal-token',
+      account_id: 'workspace-team',
+      chatgpt_account_id: 'workspace-team',
+      subject: 'user-team',
+      chatgpt_user_id: 'user-team',
+      plan_type: 'team',
+      chatgpt_plan_type: 'team'
+    })
+    expect(await readFile(sourcePath, 'utf8')).toContain('"accounts"')
   })
 
   it('recursively imports a folder with Markdown and multi-account files into app storage', async () => {
@@ -340,9 +395,66 @@ describe('AccountManager', () => {
 
     expect(result.accounts[0].email).toBe('pasted@example.com')
     expect(stored).toMatchObject({
-      schema: 'codex-account-switcher/account-v1',
       type: 'codex',
+      auth_mode: 'chatgpt',
       email: 'pasted@example.com'
+    })
+  })
+
+  it('exchanges pasted refresh tokens and persists the rotated credential in aa', async () => {
+    const fixture = await setup()
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    const resolved: NormalizedCredential = {
+      id: 'rt-account',
+      email: 'rt-import@example.com',
+      accountId: 'rt-workspace',
+      subject: 'rt-user',
+      accessToken: jwt({ sub: 'rt-user' }),
+      refreshToken: 'rotated-refresh-token',
+      idToken: jwt({ sub: 'rt-user', email: 'rt-import@example.com' }),
+      authKind: 'oauth',
+      oauthClientId: 'mobile-client-id',
+      planType: 'plus',
+      lastRefresh: '2026-07-16T00:00:00.000Z',
+      accessExpiresAt: null,
+      idExpiresAt: null,
+      canRefresh: true,
+      sourcePath: 'pasted-refresh-token.txt',
+      sourceFormat: 'paste',
+      sourceDialect: 'sub2api'
+    }
+    const refreshTokenImporter = {
+      resolve: vi.fn().mockResolvedValue({ credentials: [resolved], errors: [], total: 1 })
+    }
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      refreshTokenImporter,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.importPasted('plus rt.1.temporary-refresh-token-value')
+    const stored = JSON.parse(await readFile(
+      join(managedImportDirectory, 'rt-import@example.com_plus.json'),
+      'utf8'
+    ))
+
+    expect(result.imported).toBe(1)
+    expect(refreshTokenImporter.resolve).toHaveBeenCalledWith(
+      'plus rt.1.temporary-refresh-token-value',
+      'auto'
+    )
+    expect(stored).toMatchObject({
+      email: 'rt-import@example.com',
+      refresh_token: 'rotated-refresh-token',
+      client_id: 'mobile-client-id'
+    })
+    expect((await fixture.vault.list())[0]).toMatchObject({
+      refreshToken: 'rotated-refresh-token',
+      oauthClientId: 'mobile-client-id'
     })
   })
 

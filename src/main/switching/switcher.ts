@@ -14,6 +14,7 @@ import type {
   SecretCipher,
   SwitchResult
 } from '../../shared/types'
+import { serializeCodexCredential } from '../accounts/credential-formats'
 import {
   applyChatGptConfig,
   applyCustomApiConfig,
@@ -92,36 +93,10 @@ interface AuthDocument {
 }
 
 function authDocument(credential: NormalizedCredential): AuthDocument {
-  if (credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')) {
-    return {
-      text: `${JSON.stringify({
-        OPENAI_API_KEY: null,
-        personal_access_token: credential.accessToken
-      }, null, 2)}\n`,
-      mode: 'personal_access_token'
-    }
-  }
-  const externallyManaged = !credential.idToken || !credential.refreshToken
-  if (externallyManaged && !credential.accountId) {
-    throw new Error(
-      '该账号只有 access token 且缺少 Team/K12 workspace ID，无法生成 Codex 外部认证配置'
-    )
-  }
-
-  const document = {
-    auth_mode: externallyManaged ? 'chatgptAuthTokens' : 'chatgpt',
-    OPENAI_API_KEY: null,
-    tokens: {
-      id_token: externallyManaged ? credential.accessToken : credential.idToken,
-      access_token: credential.accessToken,
-      refresh_token: externallyManaged ? '' : credential.refreshToken,
-      account_id: credential.accountId
-    },
-    last_refresh: credential.lastRefresh ?? new Date().toISOString()
-  }
+  const document = serializeCodexCredential(credential)
   return {
-    text: `${JSON.stringify(document, null, 2)}\n`,
-    mode: externallyManaged ? 'external' : 'oauth'
+    text: `${JSON.stringify(document.value, null, 2)}\n`,
+    mode: document.mode
   }
 }
 

@@ -102,6 +102,16 @@ const snapshot: AppSnapshot = {
 }
 
 let progressListener: ((progress: TestProgress) => void) | null = null
+const browserStorage = new Map<string, string>()
+
+const localStorageMock: Storage = {
+  get length() { return browserStorage.size },
+  clear: () => browserStorage.clear(),
+  getItem: (key) => browserStorage.get(key) ?? null,
+  key: (index) => [...browserStorage.keys()][index] ?? null,
+  removeItem: (key) => { browserStorage.delete(key) },
+  setItem: (key, value) => { browserStorage.set(key, value) }
+}
 
 function api(): CodexSwitcherApi {
   return {
@@ -130,6 +140,17 @@ function api(): CodexSwitcherApi {
       imported: 2, skipped: 0, errors: [], accounts: snapshot.accounts
     }),
     importAnyPasted: vi.fn().mockResolvedValue({
+      imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts
+    }),
+    importRefreshTokens: vi.fn().mockResolvedValue({
+      imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts
+    }),
+    startOAuthAuthorization: vi.fn().mockResolvedValue({
+      sessionId: '0123456789abcdef0123456789abcdef',
+      authUrl: 'https://auth.openai.com/oauth/authorize?state=test',
+      expiresAt: '2026-07-16T00:30:00.000Z'
+    }),
+    completeOAuthAuthorization: vi.fn().mockResolvedValue({
       imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts
     }),
     deleteAccounts: vi.fn().mockResolvedValue({
@@ -239,6 +260,11 @@ function api(): CodexSwitcherApi {
 describe('App', () => {
   beforeEach(() => {
     progressListener = null
+    browserStorage.clear()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: localStorageMock
+    })
     window.codexSwitcher = api()
   })
 
@@ -586,6 +612,43 @@ describe('App', () => {
     )
   })
 
+  it('imports mobile refresh tokens using the explicit Sub2API client mode', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '移动端 RT' }))
+    fireEvent.change(screen.getByLabelText('凭据文本'), {
+      target: { value: 'rt.1.temporary-refresh-token-value' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '清洗并导入' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.importRefreshTokens).toHaveBeenCalledWith(
+        'rt.1.temporary-refresh-token-value',
+        'mobile'
+      )
+    )
+  })
+
+  it('completes the Sub2API-style browser OAuth flow from a pasted callback URL', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器授权' }))
+    fireEvent.click(screen.getByRole('button', { name: '打开 OpenAI 授权页' }))
+    await waitFor(() => expect(window.codexSwitcher.startOAuthAuthorization).toHaveBeenCalled())
+    const callback = 'http://localhost:1455/auth/callback?code=test-code&state=test-state'
+    fireEvent.change(screen.getByLabelText('凭据文本'), { target: { value: callback } })
+    fireEvent.click(screen.getByRole('button', { name: '完成授权并导入' }))
+
+    await waitFor(() => expect(window.codexSwitcher.completeOAuthAuthorization).toHaveBeenCalledWith(
+      '0123456789abcdef0123456789abcdef',
+      callback
+    ))
+  })
+
   it('exports selected accounts using the chosen native format and layout', async () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
@@ -603,6 +666,36 @@ describe('App', () => {
         layout: 'bundle'
       })
     )
+  })
+
+  it('exports selected accounts as official Codex auth documents', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.click(screen.getByLabelText('选择 person@example.com'))
+
+    fireEvent.click(screen.getByRole('button', { name: '导出账号' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Codex auth.json' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择目录并导出' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.exportAccounts).toHaveBeenCalledWith({
+        accountIds: ['account-a'],
+        format: 'codex',
+        layout: 'separate'
+      })
+    )
+  })
+
+  it('persists and applies the light and dark themes', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    expect(document.documentElement.dataset.theme).toBe('light')
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到深色模式' }))
+
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(window.localStorage.getItem('codex-account-switcher/theme')).toBe('dark')
+    expect(screen.getByRole('button', { name: '切换到浅色模式' })).toBeInTheDocument()
   })
 
   it('shows a running row immediately and applies each completed account update', async () => {

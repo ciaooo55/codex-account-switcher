@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { NormalizedCredential } from '../../shared/types'
 import {
   CredentialExportService,
+  serializeCodexCredential,
   serializeCpaCredential,
   serializeSub2ApiBundle
 } from './exporter'
@@ -43,15 +44,66 @@ describe('credential serializers', () => {
     expect(serializeCpaCredential(credential())).toEqual({
       type: 'codex',
       email: 'person@example.com',
+      auth_mode: 'chatgpt',
       access_token: 'access-secret-a',
       refresh_token: 'refresh-secret-a',
       id_token: 'id-secret-a',
       account_id: 'workspace-a',
       chatgpt_account_id: 'workspace-a',
+      subject: 'user-a',
+      chatgpt_user_id: 'user-a',
       plan_type: 'plus',
       chatgpt_plan_type: 'plus',
       last_refresh: '2026-07-15T00:00:00Z',
       expired: '2026-10-14T12:00:00Z'
+    })
+  })
+
+  it('converts a Sub2API personal access token to official Codex and flat CPA shapes', () => {
+    const personal = credential({
+      authKind: 'personal_access_token',
+      accessToken: 'at-personal-token',
+      refreshToken: null,
+      idToken: null,
+      planType: 'team',
+      canRefresh: false
+    })
+
+    expect(serializeCpaCredential(personal)).toEqual({
+      type: 'codex',
+      email: 'person@example.com',
+      auth_mode: 'personalAccessToken',
+      openai_auth_mode: 'personal_access_token',
+      personal_access_token: 'at-personal-token',
+      access_token: 'at-personal-token',
+      account_id: 'workspace-a',
+      chatgpt_account_id: 'workspace-a',
+      subject: 'user-a',
+      chatgpt_user_id: 'user-a',
+      plan_type: 'team',
+      chatgpt_plan_type: 'team',
+      last_refresh: '2026-07-15T00:00:00Z',
+      expired: '2026-10-14T12:00:00Z'
+    })
+    expect(serializeCodexCredential(personal)).toEqual({
+      OPENAI_API_KEY: null,
+      personal_access_token: 'at-personal-token'
+    })
+  })
+
+  it('writes access-only Team accounts using the official external auth mode', () => {
+    expect(serializeCodexCredential(credential({
+      refreshToken: null,
+      idToken: null,
+      canRefresh: false
+    }))).toMatchObject({
+      auth_mode: 'chatgptAuthTokens',
+      tokens: {
+        id_token: 'access-secret-a',
+        access_token: 'access-secret-a',
+        refresh_token: '',
+        account_id: 'workspace-a'
+      }
     })
   })
 
@@ -194,5 +246,35 @@ describe('CredentialExportService', () => {
         outputDirectory: fixture.outputDirectory
       })
     ).rejects.toThrow('账号不存在')
+  })
+
+  it('exports official Codex auth documents separately or as a multi-account ZIP', async () => {
+    const fixture = await setup()
+    const separate = await fixture.service.exportAccounts({
+      accountIds: ['account-a'],
+      format: 'codex',
+      layout: 'separate',
+      outputDirectory: fixture.outputDirectory
+    })
+    const bundle = await fixture.service.exportAccounts({
+      accountIds: ['account-a', 'account-b'],
+      format: 'codex',
+      layout: 'bundle',
+      outputDirectory: fixture.outputDirectory
+    })
+
+    expect(separate.files[0]).toMatch(/auth-person@example\.com\.json$/)
+    expect(JSON.parse(await readFile(separate.files[0], 'utf8'))).toMatchObject({
+      auth_mode: 'chatgpt',
+      tokens: { access_token: 'access-secret-a' }
+    })
+    const entries = unzipSync(new Uint8Array(await readFile(bundle.files[0])))
+    expect(Object.keys(entries).sort()).toEqual([
+      'auth-person@example.com.json',
+      'auth-second@example.com.json'
+    ])
+    expect(JSON.parse(strFromU8(entries['auth-second@example.com.json']))).toMatchObject({
+      auth_mode: 'chatgptAuthTokens'
+    })
   })
 })
