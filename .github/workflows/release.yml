@@ -51,18 +51,30 @@ jobs:
         shell: pwsh
         run: |
           $setup = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/Codex-Account-Switcher-Setup-*.exe").Path
-          $testInstall = Join-Path $env:RUNNER_TEMP "codex-switcher-install"
+          $testInstall = Join-Path $env:RUNNER_TEMP "Codex Account Switcher"
           $exe = Join-Path $testInstall "Codex Account Switcher.exe"
 
           function Get-PackagedSwitcherProcess {
             @(Get-Process | Where-Object { $_.Path -eq $exe })
           }
 
-          try {
-            $initialInstaller = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
-            if ($initialInstaller.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
-              throw "Initial silent installation failed with code $($initialInstaller.ExitCode)."
+          function Invoke-SilentInstaller([string] $stage) {
+            Write-Host "Starting $stage installer..."
+            $process = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -PassThru
+            if (-not $process.WaitForExit(90000)) {
+              & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F | Out-Host
+              throw "$stage installer did not exit within 90 seconds."
             }
+            $process.Refresh()
+            if ($process.ExitCode -ne 0) {
+              throw "$stage installer exited with code $($process.ExitCode)."
+            }
+            Write-Host "$stage installer completed."
+          }
+
+          try {
+            Invoke-SilentInstaller "Initial"
+            if (-not (Test-Path -LiteralPath $exe)) { throw "Initial installation did not create the application executable." }
             Start-Process -FilePath $exe
             Start-Sleep -Seconds 6
             Start-Process -FilePath $exe
@@ -77,10 +89,7 @@ jobs:
             New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
             $sentinel = Join-Path $managedLibrary "update-preservation-test.json"
             Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
-            $updateInstaller = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
-            if ($updateInstaller.ExitCode -ne 0) {
-              throw "Silent update installer exited with code $($updateInstaller.ExitCode)."
-            }
+            Invoke-SilentInstaller "Update"
             Start-Sleep -Seconds 2
             if ((Get-PackagedSwitcherProcess).Count -ne 0) {
               throw "Installer did not close the running packaged application."
