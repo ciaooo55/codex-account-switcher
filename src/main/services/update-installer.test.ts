@@ -50,9 +50,16 @@ describe('update installer', () => {
   })
 
   it('builds a silent install command that removes only the downloaded installer', () => {
-    const script = buildInstallAndCleanupScript("D:\\Profiles\\Example User\\Downloads\\it's-setup.exe")
+    const script = buildInstallAndCleanupScript(
+      "D:\\Profiles\\Example User\\Downloads\\it's-setup.exe",
+      'E:\\Apps\\Codex Account Switcher'
+    )
     expect(script).toContain("$installer = 'D:\\Profiles\\Example User\\Downloads\\it''s-setup.exe'")
-    expect(script).toContain("-ArgumentList '/S'")
+    expect(script).toContain("$installDirectory = 'E:\\Apps\\Codex Account Switcher'")
+    expect(script).toContain("@('/S', '/allusers'")
+    expect(script).toContain("@('/S', '/currentuser'")
+    expect(script).toContain("$start['Verb'] = 'RunAs'")
+    expect(script).toContain('Installer exited with code')
     expect(script).toContain('Remove-Item -LiteralPath $installer')
   })
 

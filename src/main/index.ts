@@ -958,7 +958,7 @@ async function main(): Promise<void> {
     if (updateState.status !== 'downloaded' || !downloadedInstallerPath) {
       throw new Error('安装包尚未下载完成')
     }
-    launchInstallerAndDelete(downloadedInstallerPath)
+    launchInstallerAndDelete(downloadedInstallerPath, dirname(process.execPath))
     isQuitting = true
     app.quit()
   })

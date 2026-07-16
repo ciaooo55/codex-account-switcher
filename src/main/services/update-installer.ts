@@ -79,25 +79,32 @@ export async function downloadInstaller(options: DownloadInstallerOptions): Prom
   return options.targetPath
 }
 
-export function buildInstallAndCleanupScript(installerPath: string): string {
+export function buildInstallAndCleanupScript(
+  installerPath: string,
+  installDirectory: string
+): string {
   const escapedPath = installerPath.replaceAll("'", "''")
+  const escapedDirectory = installDirectory.replaceAll("'", "''")
   return [
     "$ErrorActionPreference = 'Stop'",
     `$installer = '${escapedPath}'`,
-    'try {',
-    "  $process = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru",
-    '  $process.WaitForExit()',
-    '} finally {',
-    '  Start-Sleep -Seconds 2',
-    '  Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue',
-    '}'
+    `$installDirectory = '${escapedDirectory}'`,
+    "$machineKey = 'Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ca637cc9-81db-5210-aea1-8b5539723f26'",
+    '$machineInstall = Test-Path -LiteralPath $machineKey',
+    "$arguments = if ($machineInstall) { @('/S', '/allusers', \"/D=$installDirectory\") } else { @('/S', '/currentuser', \"/D=$installDirectory\") }",
+    '$start = @{ FilePath = $installer; ArgumentList = $arguments; PassThru = $true; Wait = $true }',
+    "if ($machineInstall) { $start['Verb'] = 'RunAs' }",
+    '$process = Start-Process @start',
+    "if ($process.ExitCode -ne 0) { throw \"Installer exited with code $($process.ExitCode)\" }",
+    'Start-Sleep -Seconds 2',
+    'Remove-Item -LiteralPath $installer -Force -ErrorAction Stop'
   ].join('; ')
 }
 
-export function launchInstallerAndDelete(installerPath: string): void {
+export function launchInstallerAndDelete(installerPath: string, installDirectory: string): void {
   const powershell = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
   const encodedCommand = Buffer.from(
-    buildInstallAndCleanupScript(installerPath),
+    buildInstallAndCleanupScript(installerPath, installDirectory),
     'utf16le'
   ).toString('base64')
   const child = spawn(
