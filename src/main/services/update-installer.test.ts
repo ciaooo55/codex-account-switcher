@@ -8,7 +8,8 @@ import {
   buildInstallAndCleanupScript,
   cleanupLegacyUpdateCache,
   consumeInstallerResult,
-  downloadInstaller
+  downloadInstaller,
+  launchInstallerAndDelete
 } from './update-installer'
 
 const roots: string[] = []
@@ -77,7 +78,7 @@ describe('update installer', () => {
     expect(script).toContain("status = 'succeeded'")
     expect(script).toContain("status = 'failed'")
     expect(script).toContain('Start-Process -FilePath $application')
-    expect(script).toContain('Remove-Item -LiteralPath $readyPath')
+    expect(script).toContain('Remove-Item -LiteralPath $helperPath')
   })
 
   it.runIf(process.platform === 'win32')('produces a script accepted by Windows PowerShell', () => {
@@ -126,28 +127,26 @@ describe('update installer', () => {
     execFileSync(compiler, ['/nologo', '/target:winexe', `/out:${installerPath}`, sourcePath], { stdio: 'pipe' })
     await copyFile(installerPath, applicationPath)
 
-    const script = buildInstallAndCleanupScript(
-      installerPath,
-      installDirectory,
+    await launchInstallerAndDelete(installerPath, installDirectory, {
+      helperDirectory: root,
       readyPath,
       logPath,
       resultPath,
-      false
-    )
-    const encodedCommand = Buffer.from(script, 'utf16le').toString('base64')
-    const powershell = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-    execFileSync(powershell, [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-EncodedCommand',
-      encodedCommand
-    ], { stdio: 'pipe', timeout: 15_000 })
+      timeoutMs: 10_000,
+      machineInstallOverride: false
+    })
+
+    let installerResult: Awaited<ReturnType<typeof consumeInstallerResult>> = null
+    const resultDeadline = Date.now() + 15_000
+    while (!installerResult && Date.now() < resultDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      installerResult = await consumeInstallerResult(resultPath)
+    }
 
     await expect(stat(installerPath)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(applicationPath)).resolves.toBeDefined()
     await expect(stat(readyPath)).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(consumeInstallerResult(resultPath)).resolves.toMatchObject({
+    expect(installerResult).toMatchObject({
       status: 'succeeded',
       message: '更新安装成功'
     })

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 interface FetchResponse {
   ok: boolean
@@ -95,13 +95,15 @@ export function buildInstallAndCleanupScript(
   readyPath = `${installerPath}.update-ready`,
   logPath = `${process.env.TEMP ?? dirname(installerPath)}\\CodexAccountSwitcher-update.log`,
   resultPath = getInstallerResultPath(),
-  machineInstallOverride?: boolean
+  machineInstallOverride?: boolean,
+  helperPath?: string
 ): string {
   const escapedPath = installerPath.replaceAll("'", "''")
   const escapedDirectory = installDirectory.replaceAll("'", "''")
   const escapedReadyPath = readyPath.replaceAll("'", "''")
   const escapedLogPath = logPath.replaceAll("'", "''")
   const escapedResultPath = resultPath.replaceAll("'", "''")
+  const escapedHelperPath = helperPath?.replaceAll("'", "''") ?? ''
   const machineInstallLine = machineInstallOverride === undefined
     ? '  $machineInstall = Test-Path -LiteralPath $machineKey'
     : `  $machineInstall = $${machineInstallOverride ? 'true' : 'false'}`
@@ -112,6 +114,7 @@ export function buildInstallAndCleanupScript(
     `$readyPath = '${escapedReadyPath}'`,
     `$logPath = '${escapedLogPath}'`,
     `$resultPath = '${escapedResultPath}'`,
+    `$helperPath = '${escapedHelperPath}'`,
     "$application = Join-Path $installDirectory 'Codex Account Switcher.exe'",
     'try {',
     "  Set-Content -LiteralPath $readyPath -Value 'ready' -Encoding ascii -Force",
@@ -146,12 +149,12 @@ export function buildInstallAndCleanupScript(
     '  if (Test-Path -LiteralPath $application) { Start-Process -FilePath $application }',
     '  exit 1',
     '} finally {',
-    '  Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue',
+    "  if ($helperPath) { Remove-Item -LiteralPath $helperPath -Force -ErrorAction SilentlyContinue }",
     '}'
   ].join('\r\n')
 }
 
-async function waitForInstallerHelper(readyPath: string, timeoutMs = 5_000): Promise<void> {
+async function waitForInstallerHelper(readyPath: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
@@ -165,24 +168,103 @@ async function waitForInstallerHelper(readyPath: string, timeoutMs = 5_000): Pro
   throw new Error('更新安装助手未能启动，应用将保持运行')
 }
 
-export async function launchInstallerAndDelete(installerPath: string, installDirectory: string): Promise<void> {
+interface LaunchInstallerOptions {
+  helperDirectory?: string
+  readyPath?: string
+  logPath?: string
+  resultPath?: string
+  timeoutMs?: number
+  machineInstallOverride?: boolean
+}
+
+export async function launchInstallerAndDelete(
+  installerPath: string,
+  installDirectory: string,
+  options: LaunchInstallerOptions = {}
+): Promise<void> {
   const powershell = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-  const readyPath = `${installerPath}.update-ready`
-  const logPath = `${process.env.TEMP ?? dirname(installerPath)}\\CodexAccountSwitcher-update.log`
-  const resultPath = getInstallerResultPath()
-  await Promise.all([rm(readyPath, { force: true }), rm(resultPath, { force: true })])
-  const encodedCommand = Buffer.from(
-    buildInstallAndCleanupScript(installerPath, installDirectory, readyPath, logPath, resultPath),
-    'utf16le'
-  ).toString('base64')
-  const child = spawn(
-    powershell,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand],
-    { detached: true, windowsHide: true, stdio: 'ignore' }
+  const helperDirectory = options.helperDirectory ?? process.env.TEMP ?? dirname(installerPath)
+  const nonce = `${process.pid}-${Date.now()}`
+  const helperPath = join(helperDirectory, `CodexAccountSwitcher-update-${nonce}.ps1`)
+  const launcherPath = join(helperDirectory, `CodexAccountSwitcher-launch-${nonce}.ps1`)
+  const readyPath = options.readyPath ?? join(helperDirectory, `CodexAccountSwitcher-update-${nonce}.ready`)
+  const logPath = options.logPath ?? join(helperDirectory, 'CodexAccountSwitcher-update.log')
+  const resultPath = options.resultPath ?? getInstallerResultPath()
+  await mkdir(helperDirectory, { recursive: true })
+  await Promise.all([
+    rm(readyPath, { force: true }),
+    rm(resultPath, { force: true }),
+    rm(helperPath, { force: true }),
+    rm(launcherPath, { force: true })
+  ])
+  const script = buildInstallAndCleanupScript(
+    installerPath,
+    installDirectory,
+    readyPath,
+    logPath,
+    resultPath,
+    options.machineInstallOverride,
+    helperPath
   )
-  const spawnError = new Promise<never>((_resolve, reject) => child.once('error', reject))
-  child.unref()
-  await Promise.race([waitForInstallerHelper(readyPath), spawnError])
+  // The BOM keeps non-ASCII paths and diagnostics intact in Windows PowerShell 5.1.
+  await writeFile(helperPath, `\uFEFF${script}`, 'utf8')
+  const quotedHelperPath = `"${helperPath}"`.replaceAll("'", "''")
+  const escapedPowerShell = powershell.replaceAll("'", "''")
+  const launcherScript = [
+    "$ErrorActionPreference = 'Stop'",
+    `$arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', '${quotedHelperPath}')`,
+    `Start-Process -FilePath '${escapedPowerShell}' -ArgumentList $arguments -WindowStyle Hidden`
+  ].join('\r\n')
+  await writeFile(launcherPath, `\uFEFF${launcherScript}`, 'utf8')
+  const launcher = spawn(
+    powershell,
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-WindowStyle',
+      'Hidden',
+      '-File',
+      launcherPath
+    ],
+    { windowsHide: true, stdio: 'ignore' }
+  )
+  const launcherExit = new Promise<void>((resolve, reject) => {
+    launcher.once('error', (error) => reject(error))
+    launcher.once('exit', (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(
+        `更新安装启动器退出（${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}）`
+      ))
+    })
+  })
+  let launcherTimeout: ReturnType<typeof setTimeout> | null = null
+  try {
+    await Promise.race([
+      launcherExit,
+      new Promise<never>((_resolve, reject) => {
+        launcherTimeout = setTimeout(
+          () => reject(new Error('更新安装启动器超时')),
+          options.timeoutMs ?? 10_000
+        )
+      })
+    ])
+    if (launcherTimeout) clearTimeout(launcherTimeout)
+    await rm(launcherPath, { force: true })
+    await waitForInstallerHelper(readyPath, options.timeoutMs ?? 10_000)
+    await rm(readyPath, { force: true })
+  } catch (error) {
+    if (launcherTimeout) clearTimeout(launcherTimeout)
+    await Promise.all([
+      rm(helperPath, { force: true }),
+      rm(launcherPath, { force: true }),
+      rm(readyPath, { force: true })
+    ])
+    const detail = error instanceof Error ? error.message : '未知错误'
+    throw new Error(`${detail}；请查看日志 ${logPath}，应用将保持运行`)
+  }
 }
 
 export async function consumeInstallerResult(resultPath = getInstallerResultPath()): Promise<InstallerResult | null> {

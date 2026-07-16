@@ -244,7 +244,10 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await unlink(join(importSourceDirectory, 'folder-accounts.md'))
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
 
-    await page.getByRole('row', { name: /folder-e2e@example\.com/ }).click()
+    const selectAllAccounts = page.getByLabel('选择全部')
+    await selectAllAccounts.check()
+    await selectAllAccounts.uncheck()
+    await page.getByLabel('选择 folder-e2e@example.com', { exact: true }).check()
     await page.getByRole('button', { name: '导出账号' }).click()
     await page.getByRole('button', { name: '直接导出到 CPA' }).click()
     await expect(page.getByText('已导出 1 个到 CPA，重复跳过 0 个')).toBeVisible()
