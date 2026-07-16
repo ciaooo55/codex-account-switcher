@@ -40,7 +40,8 @@ import type {
   UnifiedImportResult,
   UsageWindow
 } from '../../shared/types'
-import { GrokPage } from './GrokPage'
+import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
+import { CpaPage } from './GrokPage'
 
 const STATUS_LABELS: Record<DisplayAccountStatus, string> = {
   untested: '未测试',
@@ -138,8 +139,10 @@ export function App(): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
-  const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'automation'>('accounts')
+  const [accountSort, setAccountSort] = useState<AccountSortMode>('quota_desc')
+  const [activeView, setActiveView] = useState<'accounts' | 'cpa' | 'automation'>('accounts')
   const [automationKeyword, setAutomationKeyword] = useState('')
+  const [automationSort, setAutomationSort] = useState<AccountSortMode>('quota_desc')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null)
   const [customApiKey, setCustomApiKey] = useState('')
@@ -191,6 +194,15 @@ export function App(): React.JSX.Element {
         return { ...current, grokAccounts, grokTesting }
       })
     )
+    const stopCpaCodexTesting = window.codexSwitcher.onCpaCodexTestProgress((cpaCodexTesting) =>
+      setSnapshot((current) => {
+        if (!current) return current
+        const cpaCodexAccounts = cpaCodexTesting.updatedAccount
+          ? current.cpaCodexAccounts.map((account) => account.id === cpaCodexTesting.updatedAccount?.id ? cpaCodexTesting.updatedAccount : account)
+          : current.cpaCodexAccounts
+        return { ...current, cpaCodexAccounts, cpaCodexTesting }
+      })
+    )
     const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
       if (!autoSwitch.running) void reload(true)
@@ -199,6 +211,7 @@ export function App(): React.JSX.Element {
       stopTesting()
       stopUpdates()
       stopGrokTesting()
+      stopCpaCodexTesting()
       stopAutoSwitch()
     }
   }, [])
@@ -244,8 +257,8 @@ export function App(): React.JSX.Element {
       return `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.sourceDialect} ${account.sourcePath} ${account.detail}`
         .toLowerCase()
         .includes(query)
-    })
-  }, [keyword, snapshot, statusFilter])
+    }).sort(compareAccounts(accountSort))
+  }, [accountSort, keyword, snapshot, statusFilter])
 
   const openExport = (ids?: string[]): void => {
     const accountIds = ids ?? (selected.size > 0 ? [...selected] : accounts.map((item) => item.id))
@@ -544,7 +557,7 @@ export function App(): React.JSX.Element {
   const automationAccounts = snapshot.accounts.filter((account) => {
     const query = automationKeyword.trim().toLowerCase()
     return !query || `${account.email ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
-  })
+  }).sort(compareAccounts(automationSort))
   const switchCapability = (account: AccountSummary): string => {
     if (!account.switchable) return '仅用于检测'
     const mode = account.switchMode ?? (account.canRefresh ? 'oauth' : 'external')
@@ -558,14 +571,14 @@ export function App(): React.JSX.Element {
       <header className="app-header">
         <div className="app-identity">
           <div className="identity-title"><span className="product-mark"><Code2 size={17} /></span><h1>Codex Account Switcher</h1></div>
-          <p>{activeView === 'grok' ? snapshot.grokDirectory : snapshot.importDirectory}</p>
+          <p>{activeView === 'cpa' ? snapshot.grokDirectory : snapshot.importDirectory}</p>
         </div>
         <nav className="view-tabs" aria-label="主页面">
           <button className={activeView === 'accounts' ? 'active' : ''} onClick={() => setActiveView('accounts')}>
             <ListChecks size={16} />Codex 账号库 <span className="tab-count">{snapshot.accounts.length}</span>
           </button>
-          <button className={activeView === 'grok' ? 'active' : ''} onClick={() => setActiveView('grok')}>
-            <Zap size={16} />Grok 账号库 <span className="tab-count grok">{snapshot.grokAccounts.length}</span>
+          <button className={activeView === 'cpa' ? 'active' : ''} onClick={() => setActiveView('cpa')}>
+            <Zap size={16} />CPA 账号管理 <span className="tab-count grok">{snapshot.cpaCodexAccounts.length + snapshot.grokAccounts.length}</span>
           </button>
           <button className={activeView === 'automation' ? 'active' : ''} onClick={() => setActiveView('automation')}>
             <TimerReset size={16} />定时切换
@@ -664,9 +677,12 @@ export function App(): React.JSX.Element {
           <Search size={16} />
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、文件或错误" />
         </label>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
+        <select aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
           <option value="">全部状态</option>
           {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+        <select aria-label="Codex 账号排序" value={accountSort} onChange={(event) => setAccountSort(event.target.value as AccountSortMode)}>
+          {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
         <span className="selection-count">显示 {accounts.length} / {snapshot.accounts.length} · 已选 {selected.size}</span>
       </div>
@@ -714,8 +730,8 @@ export function App(): React.JSX.Element {
           </tbody>
         </table>
       </div>
-      </div> : activeView === 'grok' ? (
-        <GrokPage
+      </div> : activeView === 'cpa' ? (
+        <CpaPage
           snapshot={snapshot}
           onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
           notify={(kind, text) => setMessage({ kind, text })}
@@ -756,6 +772,9 @@ export function App(): React.JSX.Element {
 
           <div className="automation-filter-row">
             <label className="search-field"><Search size={16} /><input value={automationKeyword} onChange={(event) => setAutomationKeyword(event.target.value)} placeholder="搜索候选账号" /></label>
+            <select aria-label="定时切换账号排序" value={automationSort} onChange={(event) => setAutomationSort(event.target.value as AccountSortMode)}>
+              {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
             <span>候选 {settingsDraft.autoSwitchAccountIds.length} / {snapshot.accounts.filter((account) => account.switchable).length}</span>
             <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: snapshot.accounts.filter((account) => account.switchable).map((account) => account.id) })}>全选可切换</button>
             <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</button>
@@ -985,7 +1004,7 @@ export function App(): React.JSX.Element {
             <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" onClick={() => setSettingsOpen(false)}><X size={18} /></button></div>
             <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
             <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
-            <label>Grok 账号目录<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><button title="选择 Grok 目录" onClick={async () => { const path = await window.codexSwitcher.chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
+            <label>CPA 共享账号目录（Codex + Grok）<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><button title="选择 CPA 共享目录" onClick={async () => { const path = await window.codexSwitcher.chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
             <label>auth.json 路径<input value={settingsDraft.authPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, authPath: event.target.value })} /></label>
             <label>config.toml 路径<input value={settingsDraft.configPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, configPath: event.target.value })} /></label>
             <div className="settings-grid">

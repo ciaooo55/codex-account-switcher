@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { CodexSwitcherApi, GrokTestProgress, TestProgress, UpdateState } from '../shared/ipc'
+import type { CodexSwitcherApi, CpaCodexTestProgress, GrokTestProgress, TestProgress, UpdateState } from '../shared/ipc'
 import type { AutoSwitchState } from '../shared/types'
 import { ipcChannels } from '../shared/ipc'
 
@@ -30,6 +30,12 @@ const api: CodexSwitcherApi = {
   testGrokAccounts: (ids) => ipcRenderer.invoke(ipcChannels.grokTest, ids),
   cancelGrokTests: () => ipcRenderer.invoke(ipcChannels.grokCancelTest),
   exportGrokAccounts: (ids, layout) => ipcRenderer.invoke(ipcChannels.grokExport, { ids, layout }),
+  scanCpaCodexDirectory: () => ipcRenderer.invoke(ipcChannels.cpaCodexScan),
+  testCpaCodexAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaCodexTest, ids),
+  cancelCpaCodexTests: () => ipcRenderer.invoke(ipcChannels.cpaCodexCancelTest),
+  deleteCpaCodexAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaCodexDelete, ids),
+  setCpaCodexEnabled: (ids, enabled) => ipcRenderer.invoke(ipcChannels.cpaCodexSetEnabled, { ids, enabled }),
+  setGrokEnabled: (ids, enabled) => ipcRenderer.invoke(ipcChannels.grokSetEnabled, { ids, enabled }),
   restartCodex: () => ipcRenderer.invoke(ipcChannels.restart),
   updateSettings: (patch) => ipcRenderer.invoke(ipcChannels.settingsUpdate, patch),
   chooseAccountDirectory: () => ipcRenderer.invoke(ipcChannels.settingsChooseDirectory),
@@ -53,6 +59,11 @@ const api: CodexSwitcherApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: GrokTestProgress): void => listener(progress)
     ipcRenderer.on(ipcChannels.grokTestProgress, wrapped)
     return () => ipcRenderer.removeListener(ipcChannels.grokTestProgress, wrapped)
+  },
+  onCpaCodexTestProgress: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: CpaCodexTestProgress): void => listener(progress)
+    ipcRenderer.on(ipcChannels.cpaCodexTestProgress, wrapped)
+    return () => ipcRenderer.removeListener(ipcChannels.cpaCodexTestProgress, wrapped)
   },
   onUpdateState: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, state: UpdateState): void => listener(state)

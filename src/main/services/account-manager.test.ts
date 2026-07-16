@@ -628,6 +628,32 @@ describe('AccountManager', () => {
     expect(await readFile(externalPath, 'utf8')).toContain('authoritative@example.com')
   })
 
+  it('rebuilds a missing aa directory from the encrypted vault after reinstall', async () => {
+    const fixture = await setup()
+    const externalPath = join(fixture.root, 'reinstall.json')
+    const managedImportDirectory = join(fixture.root, 'app', 'aa')
+    await writeFile(externalPath, JSON.stringify({
+      access_token: jwt({ sub: 'reinstall-user' }),
+      email: 'reinstall@example.com'
+    }))
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    await manager.importFiles([externalPath], { archiveSources: true })
+    await rm(managedImportDirectory, { recursive: true, force: true })
+
+    await manager.rebuildManagedLibraryFromVault()
+    const scanned = await manager.scanDirectory()
+
+    expect(scanned.accounts.map((account) => account.email)).toEqual(['reinstall@example.com'])
+    expect(await readdir(managedImportDirectory)).toEqual(['reinstall@example.com_unknown.json'])
+  })
+
   it('does not drop vault accounts when a managed aa file is temporarily malformed', async () => {
     const fixture = await setup()
     const externalPath = join(fixture.root, 'malformed-managed.json')

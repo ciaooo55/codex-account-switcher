@@ -286,13 +286,24 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.keyboard.press('Escape')
     expect(requests.slice(0, 4).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
 
-    await page.getByRole('button', { name: /^Grok 账号库/ }).click()
+    await page.getByRole('button', { name: /^CPA 账号管理/ }).click()
+    const cpaCodexRow = page.getByRole('row', { name: /cpa codex folder-e2e@example\.com/i })
+    await expect(cpaCodexRow).toBeVisible()
+    await cpaCodexRow.click()
+    await page.getByRole('button', { name: '停用 .json.0' }).click()
+    await expect.poll(async () => (await readdir(join(userData, 'grok-accounts'))).some((name) => name.startsWith('codex-') && name.endsWith('.json.0'))).toBe(true)
+    await page.getByRole('button', { name: '启用 .json' }).click()
+    await expect.poll(async () => (await readdir(join(userData, 'grok-accounts'))).some((name) => name.startsWith('codex-') && name.endsWith('.json.0'))).toBe(false)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'cpa-codex-ui.png'), fullPage: true })
+
+    await page.getByRole('button', { name: /^Grok/ }).click()
     const grokRow = page.getByRole('row', { name: /grok-e2e@example\.com/ })
     await expect(grokRow).toBeVisible()
     const beforeGrok = requests.length
     await page.getByRole('button', { name: '测试全部' }).click()
     await expect(grokRow).toHaveClass(/status-row-valid/)
     await expect(grokRow).toContainText('周额度75%')
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'cpa-grok-ui.png'), fullPage: true })
     expect(requests.slice(beforeGrok).sort()).toEqual(['/grok/billing', '/grok/billing?format=credits', '/grok/responses'].sort())
     await page.getByRole('button', { name: /^Codex 账号库/ }).click()
 

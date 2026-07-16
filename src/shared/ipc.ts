@@ -4,6 +4,8 @@ import type {
   AutoSwitchRunResult,
   AutoSwitchState,
   BatchTestResult,
+  CpaCodexAccountSummary,
+  CpaCodexScanResult,
   CredentialExportRequest,
   CredentialExportResult,
   DeleteAccountsResult,
@@ -12,6 +14,7 @@ import type {
   GrokAccountSummary,
   GrokBatchTestResult,
   GrokScanResult,
+  ManagedFileStateResult,
   UnifiedImportResult,
   ScanResult,
   SessionRepairPreview,
@@ -33,6 +36,14 @@ export interface GrokTestProgress {
   total: number
   runningIds: string[]
   updatedAccount: GrokAccountSummary | null
+}
+
+export interface CpaCodexTestProgress {
+  active: boolean
+  done: number
+  total: number
+  runningIds: string[]
+  updatedAccount: CpaCodexAccountSummary | null
 }
 
 export type UpdateStatus =
@@ -61,6 +72,8 @@ export interface AppSnapshot {
   grokAccounts: GrokAccountSummary[]
   grokDirectory: string
   grokTesting: GrokTestProgress
+  cpaCodexAccounts: CpaCodexAccountSummary[]
+  cpaCodexTesting: CpaCodexTestProgress
   customApi: CustomApiProfileSummary
 }
 
@@ -95,6 +108,12 @@ export interface CodexSwitcherApi {
   testGrokAccounts(ids?: string[]): Promise<GrokBatchTestResult>
   cancelGrokTests(): Promise<void>
   exportGrokAccounts(ids: string[], layout: 'separate' | 'bundle'): Promise<string[] | null>
+  scanCpaCodexDirectory(): Promise<CpaCodexScanResult>
+  testCpaCodexAccounts(ids?: string[]): Promise<BatchTestResult>
+  cancelCpaCodexTests(): Promise<void>
+  deleteCpaCodexAccounts(ids: string[]): Promise<DeleteAccountsResult>
+  setCpaCodexEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult>
+  setGrokEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult>
   restartCodex(): Promise<RestartResult>
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   chooseAccountDirectory(): Promise<string | null>
@@ -109,6 +128,7 @@ export interface CodexSwitcherApi {
   runAutoSwitchNow(): Promise<AutoSwitchRunResult>
   onTestProgress(listener: (progress: TestProgress) => void): () => void
   onGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
+  onCpaCodexTestProgress(listener: (progress: CpaCodexTestProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
   onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
 }
@@ -140,6 +160,13 @@ export const ipcChannels = {
   grokCancelTest: 'grok:test-cancel',
   grokExport: 'grok:export',
   grokTestProgress: 'grok:test-progress',
+  cpaCodexScan: 'cpa-codex:scan',
+  cpaCodexTest: 'cpa-codex:test',
+  cpaCodexCancelTest: 'cpa-codex:test-cancel',
+  cpaCodexDelete: 'cpa-codex:delete',
+  cpaCodexSetEnabled: 'cpa-codex:set-enabled',
+  cpaCodexTestProgress: 'cpa-codex:test-progress',
+  grokSetEnabled: 'grok:set-enabled',
   restart: 'codex:restart',
   settingsUpdate: 'settings:update',
   settingsChooseDirectory: 'settings:choose-directory',

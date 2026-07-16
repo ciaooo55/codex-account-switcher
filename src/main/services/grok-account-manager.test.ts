@@ -142,4 +142,49 @@ describe('GrokAccountManager', () => {
     expect(await readFile(prefixedSource, 'utf8')).toBe(prefixedContent)
     expect((await readdir(library)).filter((name) => name !== 'grok-user-backup.json')).toEqual([])
   })
+
+  it('uses json.0 for weekly exhaustion and restores json after a valid retest', async () => {
+    const { library, source, manager, tester } = await setup()
+    await writeFile(source, JSON.stringify({
+      type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'quota-grok' }),
+      refresh_token: 'refresh', email: 'quota-grok@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+    const id = imported.accounts[0].id
+    tester.test
+      .mockResolvedValueOnce({
+        accountId: id, status: 'quota_exhausted_weekly', detail: 'weekly exhausted',
+        checkedAt: new Date().toISOString(), httpStatus: 429, refreshed: false, usage: null
+      })
+      .mockResolvedValueOnce({
+        accountId: id, status: 'valid', detail: 'valid', checkedAt: new Date().toISOString(),
+        httpStatus: 200, refreshed: false, usage: null
+      })
+
+    await manager.testAccounts([id])
+    expect((await readdir(library)).some((name) => name.endsWith('.json.0'))).toBe(true)
+    expect((await manager.listAccounts())[0].disabled).toBe(true)
+
+    await manager.testAccounts([id])
+    expect((await readdir(library)).some((name) => name.endsWith('.json.0'))).toBe(false)
+    expect((await manager.listAccounts())[0].disabled).toBe(false)
+  })
+
+  it('reconciles enabled and disabled canonical duplicates into one requested file', async () => {
+    const { library, source, manager } = await setup()
+    await writeFile(source, JSON.stringify({
+      type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'duplicate-state' }),
+      refresh_token: 'refresh', email: 'duplicate-state@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+    const id = imported.accounts[0].id
+    const [enabled] = await readdir(library)
+    await writeFile(join(library, `${enabled}.0`), await readFile(join(library, enabled), 'utf8'))
+
+    const toggled = await manager.setEnabled([id], false)
+
+    expect(toggled.changed).toBeGreaterThan(0)
+    expect(await readdir(library)).toEqual([`${enabled}.0`])
+    expect((await manager.listAccounts())[0].disabled).toBe(true)
+  })
 })

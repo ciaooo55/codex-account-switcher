@@ -89,6 +89,8 @@ const snapshot: AppSnapshot = {
   grokAccounts: [],
   grokDirectory: 'E:\\home\\lee\\.cli-proxy-api',
   grokTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
+  cpaCodexAccounts: [],
+  cpaCodexTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
   customApi: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', hasApiKey: false }
 }
 
@@ -152,6 +154,12 @@ function api(): CodexSwitcherApi {
     testGrokAccounts: vi.fn().mockResolvedValue({ tested: 0, results: [], cancelled: false }),
     cancelGrokTests: vi.fn().mockResolvedValue(undefined),
     exportGrokAccounts: vi.fn().mockResolvedValue([]),
+    scanCpaCodexDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
+    testCpaCodexAccounts: vi.fn().mockResolvedValue({ tested: 0, results: [], cancelled: false }),
+    cancelCpaCodexTests: vi.fn().mockResolvedValue(undefined),
+    deleteCpaCodexAccounts: vi.fn().mockResolvedValue({ deleted: 0, message: 'ok' }),
+    setCpaCodexEnabled: vi.fn().mockResolvedValue({ changed: 0, skipped: 0, message: 'ok' }),
+    setGrokEnabled: vi.fn().mockResolvedValue({ changed: 0, skipped: 0, message: 'ok' }),
     restartCodex: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     updateSettings: vi.fn().mockResolvedValue(snapshot.settings),
     chooseAccountDirectory: vi.fn().mockResolvedValue(null),
@@ -206,6 +214,7 @@ function api(): CodexSwitcherApi {
     }),
     onUpdateState: vi.fn().mockImplementation(() => () => undefined),
     onGrokTestProgress: vi.fn().mockImplementation(() => () => undefined),
+    onCpaCodexTestProgress: vi.fn().mockImplementation(() => () => undefined),
     onAutoSwitchState: vi.fn().mockImplementation(() => () => undefined),
     onTestProgress: vi.fn().mockImplementation((listener) => {
       progressListener = listener
@@ -273,14 +282,16 @@ describe('App', () => {
         status: 'untested',
         detail: '未测试',
         lastCheckedAt: null,
-        usage: null
+        usage: null,
+        disabled: false
       }]
     }
     vi.mocked(bridge.getSnapshot).mockResolvedValue(grokSnapshot)
     window.codexSwitcher = bridge
     render(<App />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /^Grok 账号库/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Grok/ }))
     const grokRow = await screen.findByRole('row', { name: /grok@example\.com/ })
     fireEvent.click(grokRow)
     expect(screen.getByLabelText('选择 Grok grok@example.com')).toBeChecked()
@@ -289,6 +300,41 @@ describe('App', () => {
 
     await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith())
     expect(bridge.testAccounts).not.toHaveBeenCalled()
+  })
+
+  it('manages CPA Codex files independently and supports additive row selection', async () => {
+    const bridge = api()
+    const cpaSnapshot: AppSnapshot = {
+      ...snapshot,
+      cpaCodexAccounts: [{
+        id: 'c'.repeat(64),
+        email: 'cpa-codex@example.com',
+        workspaceId: 'workspace-cpa',
+        planType: 'team',
+        sourcePath: 'E:\\cpa\\codex-cpa.json',
+        sourceDialect: 'cpa',
+        canRefresh: true,
+        accessExpiresAt: '2030-01-01T00:00:00Z',
+        lastRefresh: '2026-07-16T00:00:00Z',
+        status: 'valid',
+        detail: '有效',
+        lastCheckedAt: '2026-07-16T01:00:00Z',
+        usage: null,
+        disabled: false
+      }]
+    }
+    vi.mocked(bridge.getSnapshot).mockResolvedValue(cpaSnapshot)
+    window.codexSwitcher = bridge
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
+    const row = await screen.findByRole('row', { name: /cpa-codex@example\.com/ })
+    fireEvent.click(row)
+    expect(screen.getByLabelText('选择 CPA Codex cpa-codex@example.com')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: '停用 .json.0' }))
+
+    await waitFor(() => expect(bridge.setCpaCodexEnabled).toHaveBeenCalledWith(['c'.repeat(64)], false))
+    expect(bridge.setGrokEnabled).not.toHaveBeenCalled()
   })
 
   it('imports every supported file from a selected folder', async () => {
@@ -332,11 +378,11 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'valid' } })
+    fireEvent.change(screen.getByLabelText('Codex 状态筛选'), { target: { value: 'valid' } })
     expect(screen.getByRole('row', { name: /person@example\.com/ })).toBeInTheDocument()
     expect(screen.queryByRole('row', { name: /second@example\.com/ })).not.toBeInTheDocument()
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('Codex 状态筛选'), { target: { value: '' } })
     fireEvent.change(screen.getByPlaceholderText('搜索邮箱、文件或错误'), {
       target: { value: 'workspace-b' }
     })

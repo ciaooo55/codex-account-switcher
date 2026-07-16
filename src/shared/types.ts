@@ -189,6 +189,37 @@ export interface GrokAccountSummary {
   detail: string
   lastCheckedAt: string | null
   usage: UsageSummary | null
+  disabled: boolean
+}
+
+export interface CpaCodexAccountSummary {
+  id: string
+  email: string | null
+  workspaceId: string | null
+  planType: string | null
+  sourcePath: string
+  sourceDialect: CredentialDialect
+  canRefresh: boolean
+  accessExpiresAt: string | null
+  lastRefresh: string | null
+  status: AccountStatus
+  detail: string
+  lastCheckedAt: string | null
+  usage: UsageSummary | null
+  disabled: boolean
+}
+
+export interface CpaCodexScanResult {
+  imported: number
+  skipped: number
+  errors: string[]
+  accounts: CpaCodexAccountSummary[]
+}
+
+export interface ManagedFileStateResult {
+  changed: number
+  skipped: number
+  message: string
 }
 
 export interface GrokTestResult {

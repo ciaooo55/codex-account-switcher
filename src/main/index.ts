@@ -16,12 +16,13 @@ import {
 } from 'electron'
 import electronUpdater from 'electron-updater'
 import { z } from 'zod'
-import { ipcChannels, type GrokTestProgress, type TestProgress, type UpdateState } from '../shared/ipc'
+import { ipcChannels, type CpaCodexTestProgress, type GrokTestProgress, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { AutoSwitchScheduler } from './services/auto-switch'
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { CodexProcessManager } from './services/codex-process'
+import { CpaCodexManager } from './services/cpa-codex-manager'
 import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
 import { GrokAccountManager } from './services/grok-account-manager'
@@ -56,6 +57,7 @@ let accountLibraryOperationActive = false
 let autoSwitchOperationActive = false
 let testController: AbortController | null = null
 let grokTestController: AbortController | null = null
+let cpaCodexTestController: AbortController | null = null
 let progress: TestProgress = {
   active: false,
   done: 0,
@@ -64,6 +66,13 @@ let progress: TestProgress = {
   updatedAccount: null
 }
 let grokProgress: GrokTestProgress = {
+  active: false,
+  done: 0,
+  total: 0,
+  runningIds: [],
+  updatedAccount: null
+}
+let cpaCodexProgress: CpaCodexTestProgress = {
   active: false,
   done: 0,
   total: 0,
@@ -299,6 +308,29 @@ async function main(): Promise<void> {
     deletedStore
   })
   const exporter = new CredentialExportService({ vault })
+  let cpaCodexManager: CpaCodexManager
+  cpaCodexManager = new CpaCodexManager({
+    directory: async () => (await settingsStore.get()).grokDirectory,
+    concurrency: async () => (await settingsStore.get()).concurrency,
+    statusStore,
+    tester: {
+      test: async (credential, signal) => {
+        const settings = await settingsStore.get()
+        return new CredentialTester({
+          timeoutMs: settings.timeoutMs,
+          deepTestModel: settings.deepTestModel,
+          ...(testApiBase
+            ? {
+                compactUrl: `${testApiBase}/compact`,
+                usageUrl: `${testApiBase}/usage`,
+                refreshUrl: `${testApiBase}/oauth/token`
+              }
+            : {}),
+          onCredentialUpdated: (updated) => cpaCodexManager.upsertRefreshed(updated)
+        }).test(credential, signal)
+      }
+    }
+  })
   let grokManager: GrokAccountManager
   grokManager = new GrokAccountManager({
     directory: async () => (await settingsStore.get()).grokDirectory,
@@ -364,10 +396,17 @@ async function main(): Promise<void> {
       for (const directory of legacyImportDirectories) {
         await manager.migrateManagedDirectory(directory)
       }
+      try {
+        managedLibraryExists = (await stat(importDirectory)).isDirectory()
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      if (!managedLibraryExists) await manager.rebuildManagedLibraryFromVault()
     }
     return manager.scanDirectory()
   })
   const initialGrokScan = grokManager.scanDirectory().catch(() => null)
+  const initialCpaCodexScan = cpaCodexManager.scanDirectory().catch(() => null)
 
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()
@@ -385,6 +424,11 @@ async function main(): Promise<void> {
   const sendGrokProgress = (next: GrokTestProgress): void => {
     grokProgress = next
     mainWindow?.webContents.send(ipcChannels.grokTestProgress, grokProgress)
+  }
+
+  const sendCpaCodexProgress = (next: CpaCodexTestProgress): void => {
+    cpaCodexProgress = next
+    mainWindow?.webContents.send(ipcChannels.cpaCodexTestProgress, cpaCodexProgress)
   }
 
   const sendUpdateState = (next: UpdateState): void => {
@@ -505,7 +549,7 @@ async function main(): Promise<void> {
   }
 
   ipcMain.handle(ipcChannels.snapshot, async () => {
-    await Promise.all([initialScan, initialGrokScan])
+    await Promise.all([initialScan, initialGrokScan, initialCpaCodexScan])
     const settings = await settingsStore.get()
     return {
       accounts: await manager.listAccounts(),
@@ -516,6 +560,8 @@ async function main(): Promise<void> {
       grokAccounts: await grokManager.listAccounts(),
       grokDirectory: settings.grokDirectory,
       grokTesting: grokProgress,
+      cpaCodexAccounts: await cpaCodexManager.listAccounts(),
+      cpaCodexTesting: cpaCodexProgress,
       customApi: await customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
     }
   })
@@ -556,25 +602,37 @@ async function main(): Promise<void> {
     return runAccountLibraryMutation(() => manager.importPasted(text))
   })
   const importAnyFiles = async (paths: string[]) => {
-    if (grokTestController) throw new Error('Grok 检测正在运行')
-    return runAccountLibraryMutation(async () => ({
-      codex: await manager.importFiles(paths, { archiveSources: true }),
-      grok: await grokManager.importFiles(paths)
-    }))
+    if (grokTestController || cpaCodexTestController) throw new Error('CPA 检测正在运行')
+    return runAccountLibraryMutation(async () => {
+      const [codex, grok] = await Promise.all([
+        manager.importFiles(paths, { archiveSources: true }),
+        grokManager.importFiles(paths),
+        cpaCodexManager.importFiles(paths)
+      ])
+      return { codex, grok }
+    })
   }
   const importAnyDirectory = async (directory: string) => {
-    if (grokTestController) throw new Error('Grok 检测正在运行')
-    return runAccountLibraryMutation(async () => ({
-      codex: await manager.importDirectory(directory),
-      grok: await grokManager.importDirectory(directory)
-    }))
+    if (grokTestController || cpaCodexTestController) throw new Error('CPA 检测正在运行')
+    return runAccountLibraryMutation(async () => {
+      const [codex, grok] = await Promise.all([
+        manager.importDirectory(directory),
+        grokManager.importDirectory(directory),
+        cpaCodexManager.importDirectory(directory)
+      ])
+      return { codex, grok }
+    })
   }
   const importAnyPasted = async (text: string) => {
-    if (grokTestController) throw new Error('Grok 检测正在运行')
-    return runAccountLibraryMutation(async () => ({
-      codex: await manager.importPasted(text),
-      grok: await grokManager.importPasted(text)
-    }))
+    if (grokTestController || cpaCodexTestController) throw new Error('CPA 检测正在运行')
+    return runAccountLibraryMutation(async () => {
+      const [codex, grok] = await Promise.all([
+        manager.importPasted(text),
+        grokManager.importPasted(text),
+        cpaCodexManager.importPasted(text)
+      ])
+      return { codex, grok }
+    })
   }
   ipcMain.handle(ipcChannels.importAny, async () => {
     const result = await dialog.showOpenDialog({
@@ -822,6 +880,14 @@ async function main(): Promise<void> {
     if (grokTestController) throw new Error('Grok 检测正在运行')
     return grokManager.deleteAccounts(z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input))
   })
+  ipcMain.handle(ipcChannels.grokSetEnabled, (_event, input: unknown) => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    const payload = z.object({
+      ids: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000),
+      enabled: z.boolean()
+    }).parse(input)
+    return grokManager.setEnabled(payload.ids, payload.enabled)
+  })
   ipcMain.handle(ipcChannels.grokTest, async (_event, input: unknown) => {
     if (grokTestController) throw new Error('已有 Grok 检测任务正在运行')
     const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional().parse(input)
@@ -853,9 +919,55 @@ async function main(): Promise<void> {
     })
     return selected.canceled ? null : grokManager.exportAccounts(payload.ids, payload.layout, selected.filePaths[0])
   })
+  ipcMain.handle(ipcChannels.cpaCodexScan, () => {
+    if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
+    return cpaCodexManager.scanDirectory()
+  })
+  ipcMain.handle(ipcChannels.cpaCodexDelete, (_event, input: unknown) => {
+    if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
+    return cpaCodexManager.deleteAccounts(
+      z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input)
+    )
+  })
+  ipcMain.handle(ipcChannels.cpaCodexSetEnabled, (_event, input: unknown) => {
+    if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
+    const payload = z.object({
+      ids: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000),
+      enabled: z.boolean()
+    }).parse(input)
+    return cpaCodexManager.setEnabled(payload.ids, payload.enabled)
+  })
+  ipcMain.handle(ipcChannels.cpaCodexTest, async (_event, input: unknown) => {
+    if (cpaCodexTestController) throw new Error('已有 CPA Codex 检测任务正在运行')
+    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional().parse(input)
+    cpaCodexTestController = new AbortController()
+    sendCpaCodexProgress({
+      active: true,
+      done: 0,
+      total: ids?.length ?? (await cpaCodexManager.listAccounts()).length,
+      runningIds: [],
+      updatedAccount: null
+    })
+    try {
+      return await cpaCodexManager.testAccounts(ids, {
+        signal: cpaCodexTestController.signal,
+        onProgress: ({ done, total, runningIds, updatedAccount }) => sendCpaCodexProgress({
+          active: true,
+          done,
+          total,
+          runningIds,
+          updatedAccount: updatedAccount ?? null
+        })
+      })
+    } finally {
+      cpaCodexTestController = null
+      sendCpaCodexProgress({ ...cpaCodexProgress, active: false, runningIds: [], updatedAccount: null })
+    }
+  })
+  ipcMain.handle(ipcChannels.cpaCodexCancelTest, () => cpaCodexTestController?.abort())
   ipcMain.handle(ipcChannels.restart, () => processManager.restart())
   ipcMain.handle(ipcChannels.settingsUpdate, async (_event, input: unknown) => {
-    if (testController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
+    if (testController || grokTestController || cpaCodexTestController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
       throw new Error('账号任务正在运行，暂时不能修改设置')
     }
     let patch = z
@@ -906,7 +1018,7 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.settingsChooseGrokDirectory, async () => {
     const current = await settingsStore.get()
     const result = await dialog.showOpenDialog({
-      title: '选择 Grok 账号目录',
+      title: '选择 CPA 共享账号目录（Codex + Grok）',
       defaultPath: current.grokDirectory,
       properties: ['openDirectory', 'createDirectory']
     })
@@ -1110,9 +1222,9 @@ async function main(): Promise<void> {
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!hasSingleInstanceLock) {
-  app.quit()
+  app.exit(0)
 } else if (process.argv.includes(INSTALL_QUIT_ARGUMENT)) {
-  app.quit()
+  app.exit(0)
 } else {
   app.on('second-instance', (_event, commandLine) => {
     if (commandLine.includes(INSTALL_QUIT_ARGUMENT)) {

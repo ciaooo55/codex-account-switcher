@@ -2,39 +2,51 @@ import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { basename, extname, join, resolve } from 'node:path'
 import { strFromU8, unzipSync } from 'fflate'
 import type {
-  CredentialExportLayout,
+  AccountStatus,
+  BatchTestResult,
+  CpaCodexAccountSummary,
+  CpaCodexScanResult,
   CredentialSourceFormat,
   DeleteAccountsResult,
-  GrokAccountSummary,
-  GrokBatchTestResult,
-  GrokCredential,
-  GrokScanResult,
-  GrokTestResult,
-  ManagedFileStateResult
+  ManagedFileStateResult,
+  NormalizedCredential,
+  TestResult
 } from '../../shared/types'
-import { dedupeGrokCredentials, parseGrokCredentialText } from '../accounts/grok-parser'
+import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
 import { atomicWriteFile } from '../storage/atomic-file'
-import type { GrokStatusStore } from '../storage/grok-status-store'
+import type { StatusStore } from '../storage/status-store'
+import { serializeCpaCredential } from './exporter'
 
 const FORMATS: Record<string, CredentialSourceFormat | undefined> = {
   '.json': 'json', '.jsonl': 'jsonl', '.txt': 'txt', '.md': 'md',
   '.js': 'js', '.mjs': 'js', '.cjs': 'js', '.zip': 'zip'
 }
 const MAX_FILE_BYTES = 100 * 1024 * 1024
-const MANAGED_PREFIX = 'grok-'
+const MANAGED_PREFIX = 'codex-'
 
-interface GrokManagerOptions {
+interface Options {
   directory: () => string | Promise<string>
   concurrency: () => number | Promise<number>
-  statusStore: GrokStatusStore
+  statusStore: StatusStore
   tester: {
-    test(credential: GrokCredential, signal?: AbortSignal): Promise<GrokTestResult>
+    test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult>
   }
 }
 
 interface TestOptions {
   signal?: AbortSignal
-  onProgress?: (progress: { done: number; total: number; runningIds: string[]; updatedAccount?: GrokAccountSummary }) => void
+  onProgress?: (progress: {
+    done: number
+    total: number
+    runningIds: string[]
+    updatedAccount?: CpaCodexAccountSummary
+  }) => void
+}
+
+interface ManagedRecord {
+  path: string
+  credential: NormalizedCredential
+  disabled: boolean
 }
 
 function safePart(value: string): string {
@@ -42,7 +54,7 @@ function safePart(value: string): string {
   return cleaned.slice(0, 80) || 'unknown'
 }
 
-function managedName(credential: GrokCredential): string {
+function managedName(credential: NormalizedCredential): string {
   return `${MANAGED_PREFIX}${safePart(credential.email ?? credential.subject ?? 'unknown')}-${safePart(credential.planType ?? 'unknown')}-${credential.id.slice(0, 10)}.json`
 }
 
@@ -64,28 +76,8 @@ function formatForPath(path: string): CredentialSourceFormat | undefined {
   return FORMATS[extname(path).toLowerCase()]
 }
 
-function serialized(credential: GrokCredential): string {
-  return `${JSON.stringify({
-    access_token: credential.accessToken,
-    auth_kind: 'oauth',
-    base_url: credential.baseUrl,
-    disabled: false,
-    email: credential.email,
-    expired: credential.expiresAt,
-    id_token: credential.idToken,
-    last_refresh: credential.lastRefresh,
-    refresh_token: credential.refreshToken,
-    sub: credential.subject,
-    team_id: credential.teamId,
-    client_id: credential.clientId,
-    scope: credential.scope,
-    token_endpoint: credential.tokenEndpoint,
-    token_type: credential.tokenType,
-    type: 'xai',
-    plan_type: credential.planType,
-    ...(credential.billingSnapshot ? { grok_billing_snapshot: credential.billingSnapshot } : {}),
-    ...(credential.usageSnapshot ? { grok_usage_snapshot: credential.usageSnapshot } : {})
-  }, null, 2)}\n`
+function serialized(credential: NormalizedCredential): string {
+  return `${JSON.stringify({ ...serializeCpaCredential(credential), disabled: false }, null, 2)}\n`
 }
 
 async function files(directory: string): Promise<string[]> {
@@ -94,7 +86,9 @@ async function files(directory: string): Promise<string[]> {
   while (stack.length) {
     const current = stack.pop()!
     let entries
-    try { entries = await readdir(current, { withFileTypes: true }) } catch (error) {
+    try {
+      entries = await readdir(current, { withFileTypes: true })
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       throw error
     }
@@ -107,46 +101,44 @@ async function files(directory: string): Promise<string[]> {
   return result.sort()
 }
 
-export class GrokAccountManager {
-  constructor(private readonly options: GrokManagerOptions) {}
+export class CpaCodexManager {
+  constructor(private readonly options: Options) {}
 
-  async scanDirectory(): Promise<GrokScanResult> {
+  async scanDirectory(): Promise<CpaCodexScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     return this.importPaths(await files(directory))
   }
 
-  async importDirectory(directory: string): Promise<GrokScanResult> {
+  async importFiles(paths: string[]): Promise<CpaCodexScanResult> {
+    return this.importPaths(paths)
+  }
+
+  async importDirectory(directory: string): Promise<CpaCodexScanResult> {
     if (!(await stat(directory)).isDirectory()) throw new Error('选择的路径不是文件夹')
     return this.importPaths(await files(directory))
   }
 
-  async importFiles(paths: string[]): Promise<GrokScanResult> {
-    return this.importPaths(paths)
-  }
-
-  async importPasted(text: string): Promise<GrokScanResult> {
+  async importPasted(text: string): Promise<CpaCodexScanResult> {
     if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error('粘贴内容超过安全限制')
-    const parsed = parseGrokCredentialText(text, { sourcePath: 'pasted-grok.json', format: 'paste' })
+    const parsed = parseCredentialText(text, { sourcePath: 'pasted-cpa-codex.json', format: 'paste' })
     return this.mergeImported(parsed.credentials, parsed.errors)
   }
 
-  async listAccounts(): Promise<GrokAccountSummary[]> {
-    const records = this.dedupeRecords(await this.managedCredentialRecords())
+  async listAccounts(): Promise<CpaCodexAccountSummary[]> {
+    const records = this.dedupeRecords(await this.managedRecords())
     const statuses = await this.options.statusStore.getAll()
     return records.map(({ credential, path, disabled }) => {
       const status = statuses[credential.id]
       return {
         id: credential.id,
         email: credential.email,
-        subject: credential.subject,
-        teamId: credential.teamId,
+        workspaceId: credential.accountId,
         planType: status?.usage?.planType ?? credential.planType,
         sourcePath: path,
-        sourceFormat: credential.sourceFormat,
         sourceDialect: credential.sourceDialect,
-        canRefresh: Boolean(credential.refreshToken),
-        expiresAt: credential.expiresAt,
+        canRefresh: credential.canRefresh,
+        accessExpiresAt: credential.accessExpiresAt,
         lastRefresh: credential.lastRefresh,
         status: status?.status ?? 'untested',
         detail: status?.detail ?? '未测试',
@@ -154,23 +146,21 @@ export class GrokAccountManager {
         usage: status?.usage ?? null,
         disabled
       }
-    }).sort((a, b) => (a.email ?? a.subject ?? '').localeCompare(b.email ?? b.subject ?? ''))
+    }).sort((a, b) => (a.email ?? a.sourcePath).localeCompare(b.email ?? b.sourcePath))
   }
 
   async deleteAccounts(ids: string[]): Promise<DeleteAccountsResult> {
     const selected = new Set(ids)
-    const records = await this.managedCredentialRecords()
-    const removed = records.filter((item) => selected.has(item.credential.id))
-    await Promise.all(removed.map((item) => rm(item.path, { force: true })))
-    const removedIds = [...new Set(removed.map((item) => item.credential.id))]
-    await this.options.statusStore.removeMany(removedIds)
-    return { deleted: removedIds.length, message: `已删除 ${removedIds.length} 个 Grok 账号和对应的托管凭证文件` }
+    const records = (await this.managedRecords()).filter((item) => selected.has(item.credential.id))
+    await Promise.all(records.map((item) => rm(item.path, { force: true })))
+    const removed = new Set(records.map((item) => item.credential.id)).size
+    return { deleted: removed, message: `已删除 ${removed} 个 CPA Codex 账号文件` }
   }
 
   async setEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult> {
     const selected = new Set(ids)
-    const records = (await this.managedCredentialRecords()).filter((item) => selected.has(item.credential.id))
-    const recordsById = new Map<string, typeof records>()
+    const records = (await this.managedRecords()).filter((item) => selected.has(item.credential.id))
+    const recordsById = new Map<string, ManagedRecord[]>()
     for (const record of records) {
       const group = recordsById.get(record.credential.id) ?? []
       group.push(record)
@@ -205,89 +195,70 @@ export class GrokAccountManager {
     return {
       changed,
       skipped,
-      message: `${enabled ? '启用' : '停用'} ${changed} 个 Grok 文件${skipped ? `，跳过 ${skipped}` : ''}`
+      message: `${enabled ? '启用' : '停用'} ${changed} 个 CPA Codex 文件${skipped ? `，跳过 ${skipped}` : ''}`
     }
   }
 
-  async testAccounts(ids?: string[], options: TestOptions = {}): Promise<GrokBatchTestResult> {
+  async testAccounts(ids?: string[], options: TestOptions = {}): Promise<BatchTestResult> {
     const wanted = ids ? new Set(ids) : null
-    const credentials = (await this.listCredentials()).filter((item) => !wanted || wanted.has(item.id))
-    const results: GrokTestResult[] = []
+    const records = this.dedupeRecords(await this.managedRecords())
+      .filter((item) => !wanted || wanted.has(item.credential.id))
+    const results: TestResult[] = []
     const running = new Set<string>()
     let cursor = 0
     let done = 0
-    options.onProgress?.({ done, total: credentials.length, runningIds: [] })
+    options.onProgress?.({ done, total: records.length, runningIds: [] })
     const worker = async (): Promise<void> => {
       while (!options.signal?.aborted) {
-        const credential = credentials[cursor++]
-        if (!credential) return
-        running.add(credential.id)
-        options.onProgress?.({ done, total: credentials.length, runningIds: [...running] })
-        let tested: GrokTestResult
+        const record = records[cursor++]
+        if (!record) return
+        running.add(record.credential.id)
+        options.onProgress?.({ done, total: records.length, runningIds: [...running] })
+        let tested: TestResult
         try {
-          tested = await this.options.tester.test(credential, options.signal)
+          tested = await this.options.tester.test(record.credential, options.signal)
         } catch {
           tested = {
-            accountId: credential.id,
-            status: 'unknown_error',
+            accountId: record.credential.id,
+            status: 'network_error',
             detail: '检测任务异常终止',
             checkedAt: new Date().toISOString(),
             httpStatus: null,
+            stage: 'local',
             refreshed: false,
             usage: null
           }
         }
         results.push(tested)
         await this.options.statusStore.set(tested)
-        if (tested.status === 'quota_exhausted_weekly') await this.setEnabled([credential.id], false)
-        else if (tested.status === 'valid') await this.setEnabled([credential.id], true)
-        running.delete(credential.id)
+        await this.applyQuotaFileState(record.credential.id, tested.status)
+        running.delete(record.credential.id)
         done += 1
-        const updatedAccount = (await this.listAccounts()).find((item) => item.id === credential.id)
-        options.onProgress?.({ done, total: credentials.length, runningIds: [...running], ...(updatedAccount ? { updatedAccount } : {}) })
+        const updatedAccount = (await this.listAccounts()).find((item) => item.id === record.credential.id)
+        options.onProgress?.({ done, total: records.length, runningIds: [...running], ...(updatedAccount ? { updatedAccount } : {}) })
       }
     }
     const concurrency = Math.max(1, Math.min(12, await this.options.concurrency()))
-    await Promise.all(Array.from({ length: Math.min(concurrency, credentials.length) }, worker))
+    await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, worker))
     return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
   }
 
-  async upsertRefreshed(credential: GrokCredential): Promise<void> {
-    const directory = await this.directory()
-    const records = (await this.managedCredentialRecords()).filter((item) => item.credential.id === credential.id)
+  async upsertRefreshed(credential: NormalizedCredential): Promise<void> {
+    const records = (await this.managedRecords()).filter((item) => item.credential.id === credential.id)
     const record = this.dedupeRecords(records)[0]
+    const directory = await this.directory()
     const path = statePath(join(directory, managedName(credential)), !record?.disabled)
     await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
     await Promise.all(records.filter((item) => resolve(item.path).toLowerCase() !== resolve(path).toLowerCase()).map((item) => rm(item.path, { force: true })))
   }
 
-  async exportAccounts(ids: string[], layout: CredentialExportLayout, directory: string): Promise<string[]> {
-    const selected = new Set(ids)
-    const credentials = (await this.listCredentials()).filter((item) => selected.has(item.id))
-    await mkdir(directory, { recursive: true })
-    if (layout === 'bundle') {
-      const path = join(directory, `grok-sub2api-${Date.now()}.json`)
-      const accounts = credentials.map((item) => ({
-        name: item.email ?? item.subject ?? item.id.slice(0, 10), platform: 'grok', type: 'oauth',
-        credentials: JSON.parse(serialized(item)), extra: {
-          ...(item.billingSnapshot ? { grok_billing_snapshot: item.billingSnapshot } : {}),
-          ...(item.usageSnapshot ? { grok_usage_snapshot: item.usageSnapshot } : {})
-        }
-      }))
-      await atomicWriteFile(path, `${JSON.stringify({ exported_at: new Date().toISOString(), proxies: [], accounts }, null, 2)}\n`)
-      return [path]
-    }
-    const paths: string[] = []
-    for (const item of credentials) {
-      const path = join(directory, managedName(item))
-      await atomicWriteFile(path, serialized(item))
-      paths.push(path)
-    }
-    return paths
+  private async applyQuotaFileState(id: string, status: AccountStatus): Promise<void> {
+    if (status === 'quota_exhausted_weekly') await this.setEnabled([id], false)
+    else if (status === 'valid') await this.setEnabled([id], true)
   }
 
-  private async importPaths(paths: string[]): Promise<GrokScanResult> {
-    const credentials: GrokCredential[] = []
+  private async importPaths(paths: string[]): Promise<CpaCodexScanResult> {
+    const credentials: NormalizedCredential[] = []
     const errors: string[] = []
     for (const path of paths) {
       const format = formatForPath(path)
@@ -300,11 +271,11 @@ export class GrokAccountManager {
           for (const [name, data] of Object.entries(archive)) {
             const nested = formatForPath(name)
             if (!nested || nested === 'zip') continue
-            const parsed = parseGrokCredentialText(strFromU8(data), { sourcePath: `${path}#${name}`, format: nested })
+            const parsed = parseCredentialText(strFromU8(data), { sourcePath: `${path}#${name}`, format: nested })
             credentials.push(...parsed.credentials)
           }
         } else {
-          const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
+          const parsed = parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
           credentials.push(...parsed.credentials)
         }
       } catch (error) {
@@ -314,16 +285,13 @@ export class GrokAccountManager {
     return this.mergeImported(credentials, errors)
   }
 
-  private async mergeImported(
-    importedValues: GrokCredential[],
-    errors: string[]
-  ): Promise<GrokScanResult> {
-    const existingRecords = this.dedupeRecords(await this.managedCredentialRecords())
+  private async mergeImported(values: NormalizedCredential[], errors: string[]): Promise<CpaCodexScanResult> {
+    const existingRecords = this.dedupeRecords(await this.managedRecords())
     const existing = existingRecords.map((item) => item.credential)
-    const imported = dedupeGrokCredentials(importedValues)
+    const imported = dedupeCredentials(values)
     const existingIds = new Set(existing.map((item) => item.id))
     const importedCount = imported.filter((item) => !existingIds.has(item.id)).length
-    const merged = dedupeGrokCredentials([...existing, ...imported])
+    const merged = dedupeCredentials([...existing, ...imported])
     const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.disabled]))
     for (const credential of imported) {
       if (!stateById.has(credential.id)) stateById.set(credential.id, isDisabled(credential.sourcePath))
@@ -337,7 +305,7 @@ export class GrokAccountManager {
       targets.set(credential.id, path)
     }
     const normalizedTargets = new Map([...targets].map(([id, path]) => [id, resolve(path).toLowerCase()]))
-    const duplicates = (await this.managedCredentialRecords()).filter((item) => {
+    const duplicates = (await this.managedRecords()).filter((item) => {
       const target = normalizedTargets.get(item.credential.id)
       return target !== undefined && resolve(item.path).toLowerCase() !== target
     })
@@ -350,28 +318,8 @@ export class GrokAccountManager {
     }
   }
 
-  private async listCredentials(managedOnly = true): Promise<GrokCredential[]> {
-    if (managedOnly) {
-      return dedupeGrokCredentials(this.dedupeRecords(await this.managedCredentialRecords()).map((item) => item.credential))
-    }
-    const directory = await this.directory()
-    await mkdir(directory, { recursive: true })
-    const result: GrokCredential[] = []
-    for (const path of await files(directory)) {
-      const format = formatForPath(path)
-      if (!format || format === 'zip') continue
-      try {
-        const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
-        result.push(...parsed.credentials)
-      } catch {
-        // Non-Grok CPA files in the shared directory are intentionally ignored.
-      }
-    }
-    return dedupeGrokCredentials(result)
-  }
-
-  private dedupeRecords(records: Array<{ path: string; credential: GrokCredential; disabled: boolean }>): Array<{ path: string; credential: GrokCredential; disabled: boolean }> {
-    const preferred = new Map<string, { path: string; credential: GrokCredential; disabled: boolean }>()
+  private dedupeRecords(records: ManagedRecord[]): ManagedRecord[] {
+    const preferred = new Map<string, ManagedRecord>()
     for (const record of records) {
       const current = preferred.get(record.credential.id)
       if (!current || (current.disabled && !record.disabled)) preferred.set(record.credential.id, record)
@@ -379,20 +327,20 @@ export class GrokAccountManager {
     return [...preferred.values()]
   }
 
-  private async managedCredentialRecords(): Promise<Array<{ path: string; credential: GrokCredential; disabled: boolean }>> {
+  private async managedRecords(): Promise<ManagedRecord[]> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    const result: Array<{ path: string; credential: GrokCredential; disabled: boolean }> = []
+    const result: ManagedRecord[] = []
     for (const path of await files(directory)) {
-      if (formatForPath(path) !== 'json' || !basename(enabledPath(path)).startsWith(MANAGED_PREFIX)) continue
+      if (!basename(enabledPath(path)).startsWith(MANAGED_PREFIX) || formatForPath(path) !== 'json') continue
       try {
-        const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
+        const parsed = parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
         if (parsed.credentials.length !== 1) continue
         const credential = parsed.credentials[0]
         if (basename(enabledPath(path)).toLowerCase() !== managedName(credential).toLowerCase()) continue
         result.push({ path, credential, disabled: isDisabled(path) })
       } catch {
-        // A similarly named user source file is not an application-managed credential.
+        // Similar user filenames are not treated as managed CPA files.
       }
     }
     return result

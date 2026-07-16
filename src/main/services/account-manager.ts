@@ -248,6 +248,10 @@ export class AccountManager {
     await this.importFiles(paths, { archiveSources: true, restoreDeleted: false })
   }
 
+  async rebuildManagedLibraryFromVault(): Promise<void> {
+    await this.persistVaultLibrary()
+  }
+
   async listAccounts(): Promise<AccountSummary[]> {
     const settings = await this.options.settings()
     const credentials = await this.options.vault.list()
