@@ -28,6 +28,11 @@ interface GrokManagerOptions {
   directory: () => string | Promise<string>
   concurrency: () => number | Promise<number>
   statusStore: GrokStatusStore
+  deletedStore?: {
+    list(): Promise<Set<string>>
+    addMany(ids: string[]): Promise<void>
+    removeMany(ids: string[]): Promise<void>
+  }
   tester: {
     test(credential: GrokCredential, signal?: AbortSignal): Promise<GrokTestResult>
   }
@@ -89,6 +94,15 @@ function serialized(credential: GrokCredential): string {
   }, null, 2)}\n`
 }
 
+async function writeIfChanged(path: string, text: string): Promise<void> {
+  try {
+    if (await readFile(path, 'utf8') === text) return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await atomicWriteFile(path, text)
+}
+
 async function files(directory: string): Promise<string[]> {
   const result: string[] = []
   const stack = [directory]
@@ -114,7 +128,7 @@ export class GrokAccountManager {
   async scanDirectory(): Promise<GrokScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    return this.importPaths(await files(directory), true)
+    return this.importPaths(await files(directory), true, false)
   }
 
   async importDirectory(directory: string): Promise<GrokScanResult> {
@@ -129,6 +143,7 @@ export class GrokAccountManager {
   async importPasted(text: string): Promise<GrokScanResult> {
     if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error('粘贴内容超过安全限制')
     const parsed = parseGrokCredentialText(text, { sourcePath: 'pasted-grok.json', format: 'paste' })
+    await this.options.deletedStore?.removeMany(parsed.credentials.map((credential) => credential.id))
     return this.mergeImported(parsed.credentials, parsed.errors)
   }
 
@@ -162,9 +177,15 @@ export class GrokAccountManager {
     const selected = new Set(ids)
     const records = await this.managedCredentialRecords()
     const removed = records.filter((item) => selected.has(item.credential.id))
-    await Promise.all(removed.map((item) => rm(item.path, { force: true })))
     const removedIds = [...new Set(removed.map((item) => item.credential.id))]
-    await this.options.statusStore.removeMany(removedIds)
+    await this.options.deletedStore?.addMany(removedIds)
+    try {
+      await Promise.all(removed.map((item) => rm(item.path, { force: true })))
+      await this.options.statusStore.removeMany(removedIds)
+    } catch (error) {
+      await this.options.deletedStore?.removeMany(removedIds).catch(() => undefined)
+      throw error
+    }
     return { deleted: removedIds.length, message: `已删除 ${removedIds.length} 个 Grok 账号和对应的托管凭证文件` }
   }
 
@@ -287,7 +308,11 @@ export class GrokAccountManager {
     return paths
   }
 
-  private async importPaths(paths: string[], normalizeDirectorySources = false): Promise<GrokScanResult> {
+  private async importPaths(
+    paths: string[],
+    normalizeDirectorySources = false,
+    restoreDeleted = true
+  ): Promise<GrokScanResult> {
     const credentials: GrokCredential[] = []
     const errors: string[] = []
     for (const path of paths) {
@@ -310,6 +335,18 @@ export class GrokAccountManager {
         }
       } catch (error) {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
+      }
+    }
+    if (this.options.deletedStore) {
+      if (restoreDeleted) {
+        await this.options.deletedStore.removeMany(credentials.map((credential) => credential.id))
+      } else {
+        const deleted = await this.options.deletedStore.list()
+        return this.mergeImported(
+          credentials.filter((credential) => !deleted.has(credential.id)),
+          errors,
+          normalizeDirectorySources
+        )
       }
     }
     return this.mergeImported(credentials, errors, normalizeDirectorySources)
@@ -335,7 +372,7 @@ export class GrokAccountManager {
     const targets = new Map<string, string>()
     for (const credential of merged) {
       const path = statePath(join(directory, managedName(credential)), !stateById.get(credential.id))
-      await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
+      await writeIfChanged(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
       targets.set(credential.id, path)
     }
     const normalizedTargets = new Map([...targets].map(([id, path]) => [id, resolve(path).toLowerCase()]))

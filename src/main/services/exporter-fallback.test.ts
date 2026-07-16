@@ -33,6 +33,7 @@ describe('CredentialExportService filesystem fallback', () => {
       accessToken: 'access-a',
       refreshToken: 'refresh-a',
       idToken: 'id-a',
+      authKind: 'oauth',
       planType: 'plus',
       lastRefresh: null,
       accessExpiresAt: null,

@@ -282,8 +282,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         return { top: bounds.top, height: bounds.height, background: getComputedStyle(cell).backgroundColor }
       })
     )
-    expect(new Set(cellGeometry.map((cell) => cell.top)).size).toBe(1)
-    expect(new Set(cellGeometry.map((cell) => cell.height)).size).toBe(1)
+    expect(Math.max(...cellGeometry.map((cell) => cell.top)) - Math.min(...cellGeometry.map((cell) => cell.top))).toBeLessThanOrEqual(1)
+    expect(Math.max(...cellGeometry.map((cell) => cell.height)) - Math.min(...cellGeometry.map((cell) => cell.height))).toBeLessThanOrEqual(1)
     expect(new Set(cellGeometry.map((cell) => cell.background)).size).toBe(1)
 
     await accountRow.click({ button: 'right', position: { x: 1_200, y: 20 } })

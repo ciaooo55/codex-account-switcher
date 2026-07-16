@@ -321,6 +321,42 @@ describe('parseCredentialText', () => {
     expect(result.credentials).toEqual([])
   })
 
+  it('parses a Sub2API Team personal access token without treating it as an OAuth JWT', () => {
+    const result = parseCredentialText(
+      JSON.stringify({
+        exported_at: '2026-07-16T13:32:05Z',
+        accounts: [{
+          name: 'team account',
+          platform: 'openai',
+          type: 'oauth',
+          credentials: {
+            email: 'team@example.com',
+            auth_mode: 'personalAccessToken',
+            openai_auth_mode: 'personal_access_token',
+            plan_type: 'team',
+            access_token: 'at-personal-token',
+            chatgpt_user_id: 'user-team',
+            chatgpt_account_id: 'workspace-team'
+          }
+        }]
+      }),
+      { sourcePath: 'sub-team.json', format: 'json' }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      email: 'team@example.com',
+      authKind: 'personal_access_token',
+      accessToken: 'at-personal-token',
+      accountId: 'workspace-team',
+      subject: 'user-team',
+      planType: 'team',
+      canRefresh: false,
+      sourceDialect: 'sub2api'
+    })
+  })
+
   it('does not mistake a Sub2API display name for an email address', () => {
     const result = parseCredentialText(
       JSON.stringify({

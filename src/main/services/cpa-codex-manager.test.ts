@@ -173,19 +173,19 @@ describe('CpaCodexManager', () => {
     await mkdir(library, { recursive: true })
     const raw = JSON.stringify({
       type: 'codex',
-      access_token: token({ sub: 'duplicate-user', email: 'truelyse4863+c2api4@outlook.com' }),
+      access_token: token({ sub: 'duplicate-user', email: 'duplicate-delete@example.com' }),
       account_id: 'team-workspace',
-      email: 'truelyse4863+c2api4@outlook.com',
+      email: 'duplicate-delete@example.com',
       plan_type: 'k12'
     })
-    await writeFile(join(library, 'codex-truelyse4863+c2api4@outlook.com.json'), raw)
-    await writeFile(join(library, 'codex-truelyse4863+c2api4@outlook.com-k12-copy.json'), raw)
+    await writeFile(join(library, 'codex-duplicate-delete@example.com.json'), raw)
+    await writeFile(join(library, 'codex-duplicate-delete@example.com-k12-copy.json'), raw)
     const parsed = parseCredentialText(raw, { sourcePath: 'duplicate.json', format: 'json' }).credentials[0]
 
     const deleted = await manager.deleteAccounts([parsed.id])
 
     expect(deleted.deleted).toBe(1)
-    expect((await readdir(library)).filter((name) => name.includes('truelyse4863'))).toEqual([])
+    expect((await readdir(library)).filter((name) => name.includes('duplicate-delete'))).toEqual([])
     expect((await manager.scanDirectory()).accounts).toEqual([])
   })
 })

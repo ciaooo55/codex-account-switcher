@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GrokCredential, GrokTestResult } from '../../shared/types'
 import { GrokStatusStore } from '../storage/grok-status-store'
+import { DeletedCredentialStore } from '../storage/deleted-credentials'
 import { GrokAccountManager } from './grok-account-manager'
 
 const roots: string[] = []
@@ -29,6 +30,7 @@ async function setup() {
     directory: () => library,
     concurrency: () => 2,
     statusStore: new GrokStatusStore(join(root, 'status.json')),
+    deletedStore: new DeletedCredentialStore(join(root, 'deleted.json')),
     tester
   })
   return { library, source, manager, tester }
@@ -109,6 +111,39 @@ describe('GrokAccountManager', () => {
     expect(removed.deleted).toBe(1)
     expect(await readdir(library)).toEqual([])
     expect(await manager.listAccounts()).toEqual([])
+  })
+
+  it('keeps an explicitly deleted Grok account hidden when a mixed source remains', async () => {
+    const { library, source, manager } = await setup()
+    await writeFile(source, JSON.stringify({
+      accounts: [{
+        platform: 'grok',
+        type: 'oauth',
+        credentials: {
+          access_token: token({ iss: 'https://auth.x.ai', sub: 'deleted-grok' }),
+          refresh_token: 'refresh',
+          email: 'deleted-grok@example.com'
+        }
+      }, {
+        platform: 'openai',
+        type: 'oauth',
+        credentials: {
+          access_token: token({ iss: 'https://auth.openai.com', sub: 'codex-neighbor' }),
+          email: 'codex-neighbor@example.com'
+        }
+      }]
+    }))
+    await mkdir(library, { recursive: true })
+    const mixedSource = join(library, 'mixed-source.json')
+    await writeFile(mixedSource, await readFile(source, 'utf8'))
+    const imported = await manager.scanDirectory()
+    const id = imported.accounts[0].id
+
+    await manager.deleteAccounts([id])
+    const rescanned = await manager.scanDirectory()
+
+    expect(await readFile(mixedSource, 'utf8')).toContain('codex-neighbor@example.com')
+    expect(rescanned.accounts).toEqual([])
   })
 
   it('deletes every canonical duplicate only after an explicit delete and preserves prefixed source files', async () => {

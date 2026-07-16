@@ -20,7 +20,14 @@ interface CredentialCandidate {
   dialect: CredentialDialect
 }
 
-const ACCESS_TOKEN_KEYS = ['access_token', 'accessToken', 'OPENAI_ACCESS_TOKEN', 'token'] as const
+const ACCESS_TOKEN_KEYS = [
+  'access_token',
+  'accessToken',
+  'personal_access_token',
+  'personalAccessToken',
+  'OPENAI_ACCESS_TOKEN',
+  'token'
+] as const
 const REFRESH_TOKEN_KEYS = ['refresh_token', 'refreshToken'] as const
 const ID_TOKEN_KEYS = ['id_token', 'idToken'] as const
 const MAX_PARSE_DEPTH = 64
@@ -167,6 +174,16 @@ function normalizeCredential(
 
   const refreshToken = tokenFrom(record, tokens, REFRESH_TOKEN_KEYS)
   const idToken = tokenFrom(record, tokens, ID_TOKEN_KEYS)
+  const declaredAuthMode = firstString(
+    record.auth_mode,
+    record.authMode,
+    record.openai_auth_mode,
+    record.openaiAuthMode
+  )?.toLowerCase()
+  const authKind = accessToken.startsWith('at-') || declaredAuthMode === 'personalaccesstoken' ||
+    declaredAuthMode === 'personal_access_token'
+    ? 'personal_access_token' as const
+    : 'oauth' as const
   const accessPayload = decodeJwtPayload(accessToken)
   const idPayload = decodeJwtPayload(idToken)
   const credentialType = firstString(record.type, record.platform)?.toLowerCase()
@@ -272,6 +289,7 @@ function normalizeCredential(
     accessToken,
     refreshToken,
     idToken,
+    authKind,
     planType,
     lastRefresh,
     accessExpiresAt:

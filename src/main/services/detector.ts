@@ -11,6 +11,8 @@ import { parseCredentialText } from '../accounts/parser'
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const COMPACT_URL = 'https://chatgpt.com/backend-api/codex/responses/compact'
 const REFRESH_URL = 'https://auth.openai.com/oauth/token'
+const PERSONAL_ACCESS_TOKEN_WHOAMI_URL =
+  'https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami'
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const CODEX_VERSION = '0.135.0'
 const CODEX_USER_AGENT = `codex-tui/${CODEX_VERSION} (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; ${CODEX_VERSION})`
@@ -26,6 +28,7 @@ interface CredentialTesterOptions {
   usageUrl?: string
   compactUrl?: string
   refreshUrl?: string
+  personalAccessTokenWhoamiUrl?: string
 }
 
 interface StageResult {
@@ -436,6 +439,7 @@ export class CredentialTester {
   private readonly usageUrl: string
   private readonly compactUrl: string
   private readonly refreshUrl: string
+  private readonly personalAccessTokenWhoamiUrl: string
 
   constructor(private readonly options: CredentialTesterOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch
@@ -445,12 +449,23 @@ export class CredentialTester {
     this.usageUrl = options.usageUrl ?? USAGE_URL
     this.compactUrl = options.compactUrl ?? COMPACT_URL
     this.refreshUrl = options.refreshUrl ?? REFRESH_URL
+    this.personalAccessTokenWhoamiUrl =
+      options.personalAccessTokenWhoamiUrl ?? PERSONAL_ACCESS_TOKEN_WHOAMI_URL
   }
 
   async test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult> {
     const checkedAt = this.now().toISOString()
     let activeCredential = credential
     let refreshed = false
+
+    if (
+      activeCredential.authKind === 'personal_access_token' ||
+      activeCredential.accessToken.startsWith('at-')
+    ) {
+      const hydrated = await this.hydratePersonalAccessToken(activeCredential, checkedAt, signal)
+      if ('status' in hydrated) return hydrated
+      activeCredential = hydrated.credential
+    }
 
     if (this.isExpired(activeCredential.accessExpiresAt)) {
       if (!activeCredential.refreshToken) {
@@ -487,6 +502,76 @@ export class CredentialTester {
       refreshed,
       usage: stageResult.usage
     }
+  }
+
+  private async hydratePersonalAccessToken(
+    credential: NormalizedCredential,
+    checkedAt: string,
+    signal?: AbortSignal
+  ): Promise<{ credential: NormalizedCredential } | TestResult> {
+    const response = await this.request(
+      this.personalAccessTokenWhoamiUrl,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${credential.accessToken}`,
+          'User-Agent': CODEX_USER_AGENT
+        }
+      },
+      signal,
+      credential
+    )
+    if ('networkError' in response) {
+      return {
+        accountId: credential.id,
+        status: response.networkError.status,
+        detail: response.networkError.detail,
+        checkedAt,
+        httpStatus: response.networkError.httpStatus,
+        stage: 'local',
+        refreshed: false,
+        usage: null
+      }
+    }
+    const payload = await responsePayload(response)
+    if (!response.ok) {
+      return this.result(
+        credential,
+        response.status === 401 || response.status === 403 ? 'invalid' : 'endpoint_incompatible',
+        responseDetail(payload),
+        'local',
+        checkedAt,
+        response.status
+      )
+    }
+    const root = asRecord(payload)
+    const accountId = stringOrNull(root?.chatgpt_account_id ?? root?.chatgptAccountId)
+    const subject = stringOrNull(root?.chatgpt_user_id ?? root?.chatgptUserId)
+    const planType = stringOrNull(root?.chatgpt_plan_type ?? root?.chatgptPlanType)
+    if (!accountId || !subject || !planType) {
+      return this.result(
+        credential,
+        'endpoint_incompatible',
+        'Personal Access Token 元数据响应缺少 workspace、用户或等级字段',
+        'local',
+        checkedAt,
+        response.status
+      )
+    }
+    const updated: NormalizedCredential = {
+      ...credential,
+      authKind: 'personal_access_token',
+      email: stringOrNull(root?.email) ?? credential.email,
+      accountId,
+      subject,
+      planType,
+      canRefresh: false,
+      refreshToken: null,
+      idToken: null
+    }
+    await this.options.onCredentialUpdated?.(updated)
+    return { credential: updated }
   }
 
   private async runStages(
@@ -807,5 +892,6 @@ export class CredentialTester {
 export const detectorEndpoints = {
   usage: USAGE_URL,
   compact: COMPACT_URL,
-  refresh: REFRESH_URL
+  refresh: REFRESH_URL,
+  personalAccessTokenWhoami: PERSONAL_ACCESS_TOKEN_WHOAMI_URL
 } as const

@@ -30,6 +30,11 @@ export class CredentialVault {
         const raw = JSON.parse(this.cipher.decrypt(entry.encrypted)) as Record<string, unknown>
         const parsed = normalizedCredentialSchema.safeParse({
           ...raw,
+          authKind: raw.authKind ?? (
+            typeof raw.accessToken === 'string' && raw.accessToken.startsWith('at-')
+              ? 'personal_access_token'
+              : 'oauth'
+          ),
           sourceDialect: raw.sourceDialect ?? 'generic'
         })
         if (parsed.success && parsed.data.id === entry.id) credentials.push(parsed.data)

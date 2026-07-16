@@ -20,6 +20,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 一键导出 CPA 或 SubAPI：每账号一个文件，或 CPA 多账号 ZIP / SubAPI 原生多账号 JSON。
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
 - 完整 OAuth 账号使用标准 `chatgpt` 登录；只有 access token 的 CPA Team/K12 账号使用官方 Codex 源码定义的 `chatgptAuthTokens` 外部凭据结构，切换后必须重启 Codex，且 token 过期后不能自动刷新。
+- 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
 - 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 点击最小化会保留窗口并正常缩到任务栏；点击关闭才会释放主界面并转入系统托盘，只保留主进程定时任务。托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出。
@@ -63,8 +64,8 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.9.1.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.9.1.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.9.2.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.9.2.exe`：便携版
 
 ## 默认路径
 
@@ -77,6 +78,8 @@ npm run package:win
 找不到 `.codex` 时应用会提示选择或创建目录；目录存在但没有 `auth.json` 时，首次切换会原子创建。所有路径均可在设置中修改。导入目录仅作为文件选择器的默认位置，应用不会删除、重命名或覆盖任何外部源文件。
 
 只有 access token、没有完整 `id_token` 与 `refresh_token` 的 CPA Team/K12 账号仍可检测额度、持久管理、导出和切换。切换器会写入 `auth_mode: "chatgptAuthTokens"`、以 access JWT 作为外部 ID token，并保留 workspace ID；该模式来自官方 Codex 的外部凭据实现，但不会持久刷新，切换后需重启 Codex。标准 OAuth 凭据仍由 Codex 正常自动刷新。
+
+`at-...` Personal Access Token 是另一种认证类型，不使用上面的 OAuth 外部 token 结构。应用会按官方 Codex 当前源码写入 `{ "OPENAI_API_KEY": null, "personal_access_token": "at-..." }`；Codex 通过该字段自动识别 `personalAccessToken` 模式。代理平台能使用这类 token、但把它放进 `tokens.access_token` 后 Codex 显示未登录，正是因为认证类型和持久化字段不匹配。
 
 ## 历史会话修复
 

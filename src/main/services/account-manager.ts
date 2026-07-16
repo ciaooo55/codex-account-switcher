@@ -275,13 +275,18 @@ export class AccountManager {
           sourceDialect: credential.sourceDialect,
           canRefresh: credential.canRefresh,
           switchable: Boolean(
-            (credential.idToken && credential.refreshToken) || credential.accountId
+            credential.authKind === 'personal_access_token' ||
+            credential.accessToken.startsWith('at-') ||
+            (credential.idToken && credential.refreshToken) ||
+            credential.accountId
           ),
-          switchMode: credential.idToken && credential.refreshToken
-            ? 'oauth'
-            : credential.accountId
-              ? 'external'
-              : 'test-only',
+          switchMode: credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')
+            ? 'personal_access_token'
+            : credential.idToken && credential.refreshToken
+              ? 'oauth'
+              : credential.accountId
+                ? 'external'
+                : 'test-only',
           accessExpiresAt: credential.accessExpiresAt,
           lastRefresh: credential.lastRefresh,
           status: status?.status ?? 'untested',
@@ -551,11 +556,17 @@ export class AccountManager {
 
   private async activeCredentialId(authPath: string): Promise<string | null> {
     try {
-      const parsed = parseCredentialText(await readFile(authPath, 'utf8'), {
+      const text = await readFile(authPath, 'utf8')
+      const parsed = parseCredentialText(text, {
         sourcePath: authPath,
         format: 'json'
       })
-      return parsed.credentials[0]?.id ?? null
+      const active = parsed.credentials[0]
+      if (!active) return null
+      const match = (await this.options.vault.list()).find(
+        (credential) => credential.accessToken === active.accessToken
+      )
+      return match?.id ?? active.id
     } catch {
       return null
     }

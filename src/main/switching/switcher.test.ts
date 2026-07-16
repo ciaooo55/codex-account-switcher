@@ -25,6 +25,7 @@ function credential(overrides: Partial<NormalizedCredential> = {}): NormalizedCr
     accessToken: 'access-a',
     refreshToken: 'refresh-a',
     idToken: 'id-a',
+    authKind: 'oauth',
     planType: 'plus',
     lastRefresh: '2026-07-14T12:00:00Z',
     accessExpiresAt: '2026-10-14T12:00:00Z',
@@ -107,6 +108,27 @@ describe('CredentialSwitcher', () => {
     expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toMatchObject({
       auth_mode: 'chatgpt',
       tokens: { access_token: 'access-a' }
+    })
+  })
+
+  it('writes the official persisted auth shape for a personal access token', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
+
+    const result = await switcher.switchTo(credential({
+      accessToken: 'at-personal-token',
+      authKind: 'personal_access_token',
+      refreshToken: null,
+      idToken: null,
+      canRefresh: false,
+      planType: 'team'
+    }))
+
+    expect(result).toMatchObject({ ok: true })
+    expect(result.message).toContain('Personal Access Token')
+    expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toEqual({
+      OPENAI_API_KEY: null,
+      personal_access_token: 'at-personal-token'
     })
   })
 

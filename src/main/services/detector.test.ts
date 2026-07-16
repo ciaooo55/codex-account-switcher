@@ -15,6 +15,7 @@ function credential(overrides: Partial<NormalizedCredential> = {}): NormalizedCr
     accessToken: jwt({ sub: 'user-a', exp: 1_900_000_000 }),
     refreshToken: 'refresh-a',
     idToken: jwt({ sub: 'user-a', email: 'person@example.com', exp: 1_900_000_000 }),
+    authKind: 'oauth',
     planType: null,
     lastRefresh: null,
     accessExpiresAt: '2030-03-17T17:46:40.000Z',
@@ -506,6 +507,73 @@ describe('CredentialTester', () => {
     await expect(tester.test(credential())).resolves.toMatchObject({
       status: 'model_unavailable'
     })
+  })
+
+  it('validates and hydrates personal access tokens through the official whoami endpoint', async () => {
+    const onCredentialUpdated = vi.fn()
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        email: 'team@example.com',
+        chatgpt_user_id: 'user-team',
+        chatgpt_account_id: 'workspace-team',
+        chatgpt_plan_type: 'team',
+        chatgpt_account_is_fedramp: false
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        plan_type: 'team',
+        rate_limit: {
+          primary_window: { used_percent: 20, limit_window_seconds: 18_000 },
+          secondary_window: { used_percent: 40, limit_window_seconds: 604_800 }
+        }
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { output: [] }))
+    const tester = new CredentialTester({ fetchImpl, onCredentialUpdated })
+
+    await expect(tester.test(credential({
+      email: null,
+      accountId: null,
+      subject: null,
+      accessToken: 'at-personal-token',
+      authKind: 'personal_access_token',
+      refreshToken: null,
+      idToken: null,
+      canRefresh: false,
+      accessExpiresAt: null,
+      idExpiresAt: null
+    }))).resolves.toMatchObject({
+      status: 'valid',
+      usage: expect.objectContaining({ planType: 'team' })
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(fetchImpl.mock.calls[0][0]).toContain('/v1/user-auth-credential/whoami')
+    expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
+      Authorization: 'Bearer at-personal-token',
+      'Chatgpt-Account-Id': 'workspace-team'
+    })
+    expect(onCredentialUpdated).toHaveBeenCalledWith(expect.objectContaining({
+      email: 'team@example.com',
+      accountId: 'workspace-team',
+      subject: 'user-team',
+      planType: 'team',
+      authKind: 'personal_access_token'
+    }))
+  })
+
+  it('marks a rejected personal access token invalid without querying usage', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(401, { error: { message: 'invalid token' } }))
+    const tester = new CredentialTester({ fetchImpl })
+
+    await expect(tester.test(credential({
+      accessToken: 'at-invalid',
+      authKind: 'personal_access_token',
+      refreshToken: null,
+      idToken: null,
+      canRefresh: false
+    }))).resolves.toMatchObject({ status: 'invalid', httpStatus: 401, stage: 'local' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
   it('marks expired access-only credentials as non-refreshable without a network call', async () => {

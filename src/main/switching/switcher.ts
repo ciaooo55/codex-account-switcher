@@ -88,10 +88,19 @@ async function exists(path: string): Promise<boolean> {
 
 interface AuthDocument {
   text: string
-  externallyManaged: boolean
+  mode: 'oauth' | 'personal_access_token' | 'external'
 }
 
 function authDocument(credential: NormalizedCredential): AuthDocument {
+  if (credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')) {
+    return {
+      text: `${JSON.stringify({
+        OPENAI_API_KEY: null,
+        personal_access_token: credential.accessToken
+      }, null, 2)}\n`,
+      mode: 'personal_access_token'
+    }
+  }
   const externallyManaged = !credential.idToken || !credential.refreshToken
   if (externallyManaged && !credential.accountId) {
     throw new Error(
@@ -112,7 +121,7 @@ function authDocument(credential: NormalizedCredential): AuthDocument {
   }
   return {
     text: `${JSON.stringify(document, null, 2)}\n`,
-    externallyManaged
+    mode: externallyManaged ? 'external' : 'oauth'
   }
 }
 
@@ -120,6 +129,8 @@ function validAuthDocument(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const auth = value as {
     auth_mode?: unknown
+    OPENAI_API_KEY?: unknown
+    personal_access_token?: unknown
     tokens?: {
       id_token?: unknown
       access_token?: unknown
@@ -127,6 +138,11 @@ function validAuthDocument(value: unknown): boolean {
       account_id?: unknown
     }
   }
+  if (
+    typeof auth.personal_access_token === 'string' &&
+    auth.personal_access_token.startsWith('at-') &&
+    (auth.auth_mode === undefined || auth.auth_mode === 'personalAccessToken')
+  ) return auth.OPENAI_API_KEY === null || auth.OPENAI_API_KEY === undefined
   const tokens = auth.tokens
   if (!tokens || typeof tokens !== 'object') return false
   if (typeof tokens.id_token !== 'string' || !tokens.id_token.trim()) return false
@@ -184,9 +200,11 @@ export class CredentialSwitcher {
       await this.pruneBackups()
       return {
         ok: true,
-        message: nextAuth.externallyManaged
-          ? 'Team/K12 外部凭据已写入，请重启 Codex 后生效；该模式不会自动刷新 token'
-          : '账号切换完成',
+        message: nextAuth.mode === 'personal_access_token'
+          ? 'Personal Access Token 已按官方格式写入，请重启 Codex 后生效'
+          : nextAuth.mode === 'external'
+            ? 'Team/K12 外部凭据已写入，请重启 Codex 后生效；该模式不会自动刷新 token'
+            : '账号切换完成',
         backupPath
       }
     } catch (error) {

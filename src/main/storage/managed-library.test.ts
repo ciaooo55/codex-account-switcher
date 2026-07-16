@@ -14,6 +14,7 @@ function credential(overrides: Partial<NormalizedCredential> = {}): NormalizedCr
     accessToken: 'access-a',
     refreshToken: 'refresh-a',
     idToken: 'id-a',
+    authKind: 'oauth',
     planType: 'plus',
     lastRefresh: null,
     accessExpiresAt: null,
@@ -67,5 +68,24 @@ describe('ManagedCredentialLibrary', () => {
     await library.replace([credential()])
     await library.replace([])
     expect(await readdir(directory)).toEqual([])
+  })
+
+  it('keeps personal access token semantics in the normalized managed file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'managed-library-pat-'))
+    const library = new ManagedCredentialLibrary(directory)
+    const stored = await library.replace([credential({
+      accessToken: 'at-personal-token',
+      authKind: 'personal_access_token',
+      refreshToken: null,
+      idToken: null,
+      canRefresh: false,
+      planType: 'team'
+    })])
+
+    expect(JSON.parse(await readFile(stored[0].sourcePath, 'utf8'))).toMatchObject({
+      auth_mode: 'personalAccessToken',
+      access_token: 'at-personal-token',
+      personal_access_token: 'at-personal-token'
+    })
   })
 })

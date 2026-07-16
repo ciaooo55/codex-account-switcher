@@ -628,10 +628,14 @@ export function App(): React.JSX.Element {
   const switchCapability = (account: AccountSummary): string => {
     if (!account.switchable) return '仅用于检测'
     const mode = account.switchMode ?? (account.canRefresh ? 'oauth' : 'external')
-    return mode === 'oauth' ? '可切换 · 标准 OAuth' : '可切换 · 外部凭据，需重启'
+    if (mode === 'oauth') return '可切换 · 标准 OAuth'
+    if (mode === 'personal_access_token') return '可切换 · Personal Access Token，需重启'
+    return '可切换 · 外部凭据，需重启'
   }
-  const usesExternalAuth = (account: AccountSummary): boolean =>
-    (account.switchMode ?? (account.canRefresh ? 'oauth' : 'external')) === 'external'
+  const requiresRestartAuth = (account: AccountSummary): boolean =>
+    ['external', 'personal_access_token'].includes(
+      account.switchMode ?? (account.canRefresh ? 'oauth' : 'external')
+    )
 
   return (
     <div className="app-shell">
@@ -734,10 +738,10 @@ export function App(): React.JSX.Element {
         <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active}>
           <Play size={16} />测试选中
         </button>
-        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据切换后必须重启 Codex，且 Codex 不会自动刷新' : undefined}>
+        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '该认证模式写入后必须重启 Codex' : undefined}>
           <CheckCircle2 size={16} />切换账号
         </button>
-        <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据会以当前 Codex 支持的临时认证模式启动' : undefined}>
+        <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '按对应认证模式写入并重启 Codex' : undefined}>
           <RotateCcw size={16} />切换并重启
         </button>
         <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active}>
@@ -982,10 +986,10 @@ export function App(): React.JSX.Element {
           <button role="menuitem" onClick={() => contextAction(() => run(() => window.codexSwitcher.testAccounts([contextMenu.account.id]), '账号检测完成'))}>
             <TestTube2 size={15} />检测此账号
           </button>
-          <button role="menuitem" disabled={busy || snapshot.testing.active || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少完整 OAuth 凭据或 Team/K12 workspace ID' : snapshot.testing.active ? '账号检测进行中' : usesExternalAuth(contextMenu.account) ? '外部凭据切换后需重启 Codex' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, false))}>
+          <button role="menuitem" disabled={busy || snapshot.testing.active || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : snapshot.testing.active ? '账号检测进行中' : requiresRestartAuth(contextMenu.account) ? '该认证模式切换后需重启 Codex' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, false))}>
             <CheckCircle2 size={15} />切换到此账号
           </button>
-          <button role="menuitem" disabled={busy || snapshot.testing.active || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少完整 OAuth 凭据或 Team/K12 workspace ID' : snapshot.testing.active ? '账号检测进行中' : usesExternalAuth(contextMenu.account) ? '使用当前 Codex 的外部凭据模式启动' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, true))}>
+          <button role="menuitem" disabled={busy || snapshot.testing.active || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : snapshot.testing.active ? '账号检测进行中' : requiresRestartAuth(contextMenu.account) ? '按对应认证模式写入并重启 Codex' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, true))}>
             <RotateCcw size={15} />切换并重启
           </button>
           <button role="menuitem" onClick={() => contextAction(() => openExport([contextMenu.account.id]))}>

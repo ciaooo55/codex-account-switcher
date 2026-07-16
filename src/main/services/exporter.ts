@@ -62,6 +62,13 @@ export function serializeCpaCredential(
   return {
     type: 'codex',
     ...(credential.email ? { email: credential.email } : {}),
+    ...(credential.authKind === 'personal_access_token'
+      ? {
+          auth_mode: 'personalAccessToken',
+          openai_auth_mode: 'personal_access_token',
+          personal_access_token: credential.accessToken
+        }
+      : {}),
     access_token: credential.accessToken,
     ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
     ...(credential.idToken ? { id_token: credential.idToken } : {}),
@@ -85,6 +92,12 @@ export function serializeCpaCredential(
 export function serializeCodexCredential(
   credential: NormalizedCredential
 ): Record<string, unknown> {
+  if (credential.authKind === 'personal_access_token') {
+    return {
+      OPENAI_API_KEY: null,
+      personal_access_token: credential.accessToken
+    }
+  }
   return {
     auth_mode: 'chatgpt',
     OPENAI_API_KEY: null,
@@ -107,6 +120,13 @@ function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
     platform: 'openai',
     type: 'oauth',
     credentials: {
+      ...(credential.authKind === 'personal_access_token'
+        ? {
+            auth_mode: 'personalAccessToken',
+            openai_auth_mode: 'personal_access_token',
+            personal_access_token: credential.accessToken
+          }
+        : {}),
       access_token: credential.accessToken,
       ...(credential.refreshToken ? { refresh_token: credential.refreshToken } : {}),
       ...(credential.idToken ? { id_token: credential.idToken } : {}),

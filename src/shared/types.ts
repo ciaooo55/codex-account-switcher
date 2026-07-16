@@ -1,5 +1,6 @@
 export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'md' | 'zip' | 'paste'
 export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'generic'
+export type CredentialAuthKind = 'oauth' | 'personal_access_token'
 
 export interface NormalizedCredential {
   id: string
@@ -9,6 +10,7 @@ export interface NormalizedCredential {
   accessToken: string
   refreshToken: string | null
   idToken: string | null
+  authKind: CredentialAuthKind
   planType: string | null
   lastRefresh: string | null
   accessExpiresAt: string | null
@@ -115,7 +117,7 @@ export interface AccountSummary {
   sourceDialect: CredentialDialect
   canRefresh: boolean
   switchable: boolean
-  switchMode?: 'oauth' | 'external' | 'test-only'
+  switchMode?: 'oauth' | 'personal_access_token' | 'external' | 'test-only'
   accessExpiresAt: string | null
   lastRefresh: string | null
   status: AccountStatus

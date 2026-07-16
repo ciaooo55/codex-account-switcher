@@ -86,6 +86,15 @@ function serialized(credential: NormalizedCredential): string {
   return `${JSON.stringify({ ...serializeCpaCredential(credential), disabled: false }, null, 2)}\n`
 }
 
+async function writeIfChanged(path: string, text: string): Promise<void> {
+  try {
+    if (await readFile(path, 'utf8') === text) return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await atomicWriteFile(path, text)
+}
+
 async function files(directory: string): Promise<string[]> {
   const result: string[] = []
   const stack = [directory]
@@ -380,7 +389,7 @@ export class CpaCodexManager {
     const targets = new Map<string, string>()
     for (const credential of merged) {
       const path = statePath(join(directory, managedName(credential)), !stateById.get(credential.id))
-      await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
+      await writeIfChanged(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
       targets.set(credential.id, path)
     }
     const normalizedTargets = new Map([...targets].map(([id, path]) => [id, resolve(path).toLowerCase()]))

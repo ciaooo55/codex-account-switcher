@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import type { NormalizedCredential } from '../../shared/types'
 import { dedupeCredentials } from '../accounts/parser'
@@ -25,7 +25,11 @@ function managedDocument(credential: NormalizedCredential): Record<string, unkno
     plan_type: credential.planType,
     account_id: credential.accountId,
     subject: credential.subject,
+    auth_mode: credential.authKind === 'personal_access_token' ? 'personalAccessToken' : 'chatgpt',
     access_token: credential.accessToken,
+    ...(credential.authKind === 'personal_access_token'
+      ? { personal_access_token: credential.accessToken }
+      : {}),
     refresh_token: credential.refreshToken,
     id_token: credential.idToken,
     last_refresh: credential.lastRefresh,
@@ -54,6 +58,15 @@ async function removeEmptyDirectories(directory: string, root: string): Promise<
   if (resolve(directory) !== resolve(root) && (await readdir(directory)).length === 0) {
     await rm(directory, { recursive: true, force: true })
   }
+}
+
+async function writeIfChanged(path: string, text: string): Promise<void> {
+  try {
+    if (await readFile(path, 'utf8') === text) return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await atomicWriteFile(path, text)
 }
 
 export class ManagedCredentialLibrary {
@@ -97,7 +110,7 @@ export class ManagedCredentialLibrary {
     })
 
     for (const credential of stored) {
-      await atomicWriteFile(
+      await writeIfChanged(
         credential.sourcePath,
         `${JSON.stringify(managedDocument(credential), null, 2)}\n`
       )

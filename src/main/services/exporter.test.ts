@@ -25,6 +25,7 @@ function credential(overrides: Partial<NormalizedCredential> = {}): NormalizedCr
     accessToken: 'access-secret-a',
     refreshToken: 'refresh-secret-a',
     idToken: 'id-secret-a',
+    authKind: 'oauth',
     planType: 'plus',
     lastRefresh: '2026-07-15T00:00:00Z',
     accessExpiresAt: '2026-10-14T12:00:00Z',

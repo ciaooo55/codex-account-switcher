@@ -229,6 +229,7 @@ async function main(): Promise<void> {
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-status.json'))
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
   const deletedCpaCodexStore = new DeletedCredentialStore(join(userData, 'deleted-cpa-codex-accounts.json'))
+  const deletedGrokStore = new DeletedCredentialStore(join(userData, 'deleted-grok-accounts.json'))
   const applicationDirectory = e2eMode
     ? userData
     : app.isPackaged
@@ -352,6 +353,7 @@ async function main(): Promise<void> {
     directory: async () => (await settingsStore.get()).grokDirectory,
     concurrency: async () => (await settingsStore.get()).concurrency,
     statusStore: grokStatusStore,
+    deletedStore: deletedGrokStore,
     tester: {
       test: async (credential, signal) => {
         const settings = await settingsStore.get()
