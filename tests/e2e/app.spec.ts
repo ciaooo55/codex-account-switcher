@@ -221,6 +221,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
   test('scans, tests, switches, repairs sessions and restores API mode', async () => {
     const page = await electronApp.firstWindow()
+    const codexRow = (email: string) => page.getByRole('row').filter({
+      has: page.getByLabel(`选择 ${email}`, { exact: true })
+    })
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
 
     await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.minimize())
@@ -252,16 +255,16 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toHaveCount(0)
     expect(await readdir(join(userData, 'aa'))).not.toContain('folder-e2e@example.com_unknown.json')
 
-    const selectionTeamRow = page.getByRole('row', { name: /选择 team-e2e@example\.com/ })
-    const selectionAccountRow = page.getByRole('row', { name: /选择 e2e@example\.com/ })
+    const selectionTeamRow = codexRow('team-e2e@example.com')
+    const selectionAccountRow = codexRow('e2e@example.com')
     await selectionTeamRow.click()
     await expect(selectionTeamRow).toHaveClass(/selected-row/)
-    await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
+    await expect(page.getByLabel('选择 team-e2e@example.com', { exact: true })).toBeChecked()
     await selectionAccountRow.click()
     await expect(page.getByText('已选择 2 个账号', { exact: true })).toBeVisible()
     await selectionAccountRow.click()
-    await expect(page.getByLabel('选择 e2e@example.com')).not.toBeChecked()
-    await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
+    await expect(page.getByLabel('选择 e2e@example.com', { exact: true })).not.toBeChecked()
+    await expect(page.getByLabel('选择 team-e2e@example.com', { exact: true })).toBeChecked()
     await selectionAccountRow.click()
 
     await page.getByRole('button', { name: '测试当前页面全部' }).click()
@@ -270,7 +273,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('剩余 24 小时').first()).toBeVisible()
     await expect(page.getByText('剩余 30 分钟').first()).toBeVisible()
     await expect(page.getByText('Codex 周额度').first()).toBeVisible()
-    const accountRow = page.getByRole('row', { name: /选择 e2e@example\.com/ })
+    const accountRow = codexRow('e2e@example.com')
     await expect(accountRow).toHaveClass(/status-row-valid/)
     await expect(accountRow).toContainText('额外余额9.99')
     await expect(accountRow).toContainText('支出限额68%')
@@ -320,7 +323,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(requests.slice(beforeGrok).sort()).toEqual(['/grok/billing', '/grok/billing?format=credits', '/grok/responses'].sort())
     await page.getByRole('button', { name: /^Codex 账号库/ }).click()
 
-    const teamRow = page.getByRole('row', { name: /选择 team-e2e@example\.com/ })
+    const teamRow = codexRow('team-e2e@example.com')
     await expect(teamRow).toContainText('外部凭据，需重启')
     await teamRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '切换到此账号' }).click()
@@ -341,7 +344,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-desktop.png'), fullPage: true })
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe('chatgpt')
 
-    await page.getByLabel('选择 e2e@example.com').check()
+    await page.getByLabel('选择 e2e@example.com', { exact: true }).check()
     await page.getByRole('button', { name: '导出账号' }).click()
     await page.getByRole('button', { name: '选择目录并导出' }).click()
     await expect(page.getByText('已导出 1 个账号')).toBeVisible()
