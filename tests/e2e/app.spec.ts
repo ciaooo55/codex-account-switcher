@@ -223,7 +223,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     const page = await electronApp.firstWindow()
     const codexRow = (email: string) => page.getByRole('row').filter({
       has: page.getByLabel(`选择 ${email}`, { exact: true })
-    })
+    }).first()
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
 
     await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.minimize())
