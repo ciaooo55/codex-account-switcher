@@ -297,7 +297,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(Math.max(...visibleCells.map((cell) => cell.height)) - Math.min(...visibleCells.map((cell) => cell.height))).toBeLessThanOrEqual(1)
     expect(new Set(visibleCells.map((cell) => cell.background)).size).toBe(1)
 
-    await accountRow.click({ button: 'right', position: { x: 1_200, y: 20 } })
+    await accountRow.click({ button: 'right', position: { x: 20, y: 20 } })
     const contextMenu = page.getByRole('menu', { name: '账号管理' })
     await expect(contextMenu).toBeVisible()
     const menuBounds = await contextMenu.boundingBox()
