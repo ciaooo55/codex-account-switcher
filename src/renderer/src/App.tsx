@@ -12,6 +12,7 @@ import {
   KeyRound,
   ListChecks,
   LoaderCircle,
+  MoreHorizontal,
   PackageOpen,
   Play,
   RefreshCw,
@@ -405,12 +406,12 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const run = async (action: () => Promise<unknown>, success?: string): Promise<void> => {
+  const run = async (action: () => Promise<unknown>, success?: string, reloadAfter = true): Promise<void> => {
     setBusy(true)
     setMessage(null)
     try {
       await action()
-      await reload()
+      if (reloadAfter) await reload()
       if (success) setMessage({ kind: 'ok', text: success })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
@@ -494,15 +495,27 @@ export function App(): React.JSX.Element {
     if (!window.confirm(`确定删除 ${accountIds.length} 个账号吗？aa 中对应的账号 JSON 会一并删除，外部原始文件不受影响。`)) {
       return
     }
-    await run(async () => {
+    setBusy(true)
+    setMessage(null)
+    try {
       const result = await window.codexSwitcher.deleteAccounts(accountIds)
       if (result.deleted === 0) throw new Error('没有删除任何账号')
+      const removed = new Set(accountIds)
+      setSnapshot((current) => current ? {
+        ...current,
+        accounts: current.accounts.filter((account) => !removed.has(account.id))
+      } : current)
       setSelected((current) => {
         const next = new Set(current)
         for (const id of accountIds) next.delete(id)
         return next
       })
-    }, `已删除 ${accountIds.length} 个账号及对应凭证文件`)
+      setMessage({ kind: 'ok', text: result.message })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const openContextMenu = (event: React.MouseEvent, account: AccountSummary): void => {
@@ -614,15 +627,20 @@ export function App(): React.JSX.Element {
 
       {activeView === 'accounts' ? <div className="page-view accounts-view">
 
-      <section className="summary-band codex-summary">
-        <div><span>账号</span><strong>{snapshot.accounts.length}</strong></div>
-        <div><span>有效</span><strong className="text-ok">{counts.valid ?? 0}</strong></div>
-        <div><span>5h 耗尽</span><strong className="text-warn">{counts.quota_exhausted_5h ?? 0}</strong></div>
-        <div><span>周额度耗尽</span><strong className="text-warn">{counts.quota_exhausted_weekly ?? 0}</strong></div>
-        <div><span>已失效 / 未知</span><strong className="text-error">{(counts.invalid ?? 0) + (counts.unknown_error ?? 0)}</strong></div>
-        <div className="current-summary"><span>当前正在使用</span><strong><BadgeCheck size={15} />{snapshot.accounts.find((item) => item.active)?.email ?? '未知 / API 模式'}</strong></div>
+      <section className="library-overview codex-overview">
+        <div><span>账号库</span><strong>{snapshot.accounts.length} 个账号</strong></div>
+        <div className="current-summary library-path"><span>当前正在使用</span><strong><BadgeCheck size={14} />{snapshot.accounts.find((item) => item.active)?.email ?? '未知 / API 模式'}</strong></div>
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
+        <div className="library-path"><span>本地账号目录</span><strong title={snapshot.importDirectory}>{snapshot.importDirectory}</strong></div>
       </section>
+      <div className="status-filter-strip" aria-label="Codex 账号状态">
+        <button className={statusFilter === '' ? 'active' : ''} onClick={() => setStatusFilter('')}><span>全部</span><strong>{snapshot.accounts.length}</strong></button>
+        {Object.entries(STATUS_LABELS).map(([value, label]) => <button
+          key={value}
+          className={`${statusFilter === value ? 'active ' : ''}filter-${value}`}
+          onClick={() => setStatusFilter(value as DisplayAccountStatus)}
+        ><span>{label}</span><strong>{counts[value] ?? 0}</strong></button>)}
+      </div>
 
       <div className="toolbar codex-toolbar">
         <div className="toolbar-group">
@@ -632,16 +650,10 @@ export function App(): React.JSX.Element {
         <button onClick={() => openExport()} disabled={busy || snapshot.accounts.length === 0}>
           <Download size={16} />导出账号
         </button>
-        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || selected.size === 0 || snapshot.testing.active}>
-          <Trash2 size={16} />删除选中
-        </button>
         </div>
         <div className="toolbar-group">
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成')} disabled={busy || snapshot.testing.active}>
+        <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成', false)} disabled={busy || snapshot.testing.active}>
           <TestTube2 size={16} />测试全部
-        </button>
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成')} disabled={busy || selected.size === 0 || snapshot.testing.active}>
-          <Play size={16} />测试选中
         </button>
         {snapshot.testing.active && !snapshot.autoSwitch.running && (
           <button className="danger-button" onClick={() => void window.codexSwitcher.cancelTests()}>
@@ -649,34 +661,46 @@ export function App(): React.JSX.Element {
           </button>
         )}
         </div>
-        <div className="toolbar-group switch-actions">
+        {selected.size > 0 && <div className="toolbar-group switch-actions selection-actions">
+        <span>已选 {selected.size}</span>
+        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active}>
+          <Play size={16} />测试选中
+        </button>
         <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据切换后必须重启 Codex，且 Codex 不会自动刷新' : undefined}>
           <CheckCircle2 size={16} />切换账号
         </button>
         <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据会以当前 Codex 支持的临时认证模式启动' : undefined}>
           <RotateCcw size={16} />切换并重启
         </button>
-        <button onClick={() => void run(async () => {
-          const result = await window.codexSwitcher.restoreLatest(false)
-          if (!result.ok) throw new Error(result.message)
-        }, '已恢复上一个配置')} disabled={busy}>
-          <RotateCcw size={16} />恢复上一个
+        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active}>
+          <Trash2 size={16} />删除选中
         </button>
-        </div>
-        <div className="toolbar-group utility-actions">
-        <button onClick={() => void run(async () => {
-          const result = await window.codexSwitcher.restoreApiMode(false)
-          if (!result.ok) throw new Error(result.message)
-        }, '已恢复原 API/代理模式')} disabled={busy}>
-          <RotateCcw size={16} />恢复备份 API
-        </button>
-        <button onClick={() => setSettingsOpen(true)} disabled={busy}>
-          <KeyRound size={16} />自定义 API
-        </button>
-        <button onClick={() => void openSessionRepair()} disabled={busy}>
-          <Wrench size={16} />修复历史会话
-        </button>
-        </div>
+        </div>}
+        <details className="action-menu" onClick={(event) => {
+          if ((event.target as Element).closest('button')) event.currentTarget.removeAttribute('open')
+        }}>
+          <summary><MoreHorizontal size={17} />更多</summary>
+          <div className="action-menu-popover">
+            <button onClick={() => void run(async () => {
+              const result = await window.codexSwitcher.restoreLatest(false)
+              if (!result.ok) throw new Error(result.message)
+            }, '已恢复上一个配置')} disabled={busy}>
+              <RotateCcw size={16} />恢复上一个
+            </button>
+            <button onClick={() => void run(async () => {
+              const result = await window.codexSwitcher.restoreApiMode(false)
+              if (!result.ok) throw new Error(result.message)
+            }, '已恢复原 API/代理模式')} disabled={busy}>
+              <RotateCcw size={16} />恢复备份 API
+            </button>
+            <button onClick={() => setSettingsOpen(true)} disabled={busy}>
+              <KeyRound size={16} />自定义 API
+            </button>
+            <button onClick={() => void openSessionRepair()} disabled={busy}>
+              <Wrench size={16} />修复历史会话
+            </button>
+          </div>
+        </details>
       </div>
 
       {snapshot.testing.active && (
@@ -690,7 +714,7 @@ export function App(): React.JSX.Element {
           <Search size={16} />
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、文件或错误" />
         </label>
-        <select aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
+        <select className="visually-hidden" aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
           <option value="">全部状态</option>
           {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>

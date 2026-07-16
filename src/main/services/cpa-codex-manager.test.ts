@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NormalizedCredential, TestResult } from '../../shared/types'
 import { parseCredentialText } from '../accounts/parser'
+import { DeletedCredentialStore } from '../storage/deleted-credentials'
 import { StatusStore } from '../storage/status-store'
 import { CpaCodexManager } from './cpa-codex-manager'
 
@@ -48,6 +49,7 @@ async function setup(statuses: TestResult['status'][] = ['valid']) {
     directory: () => library,
     concurrency: () => 2,
     statusStore: new StatusStore(join(root, 'status.json')),
+    deletedStore: new DeletedCredentialStore(join(root, 'deleted.json')),
     tester
   })
   return { library, source, tester, manager }
@@ -164,5 +166,26 @@ describe('CpaCodexManager', () => {
     expect(scanned.accounts).toHaveLength(1)
     expect(names).toHaveLength(1)
     expect(names[0]).toMatch(/^codex-legacy-team@example\.com-k12-[a-f0-9]{10}\.json$/)
+  })
+
+  it('deletes every file copy of the same account and does not restore it on refresh', async () => {
+    const { library, manager } = await setup()
+    await mkdir(library, { recursive: true })
+    const raw = JSON.stringify({
+      type: 'codex',
+      access_token: token({ sub: 'duplicate-user', email: 'truelyse4863+c2api4@outlook.com' }),
+      account_id: 'team-workspace',
+      email: 'truelyse4863+c2api4@outlook.com',
+      plan_type: 'k12'
+    })
+    await writeFile(join(library, 'codex-truelyse4863+c2api4@outlook.com.json'), raw)
+    await writeFile(join(library, 'codex-truelyse4863+c2api4@outlook.com-k12-copy.json'), raw)
+    const parsed = parseCredentialText(raw, { sourcePath: 'duplicate.json', format: 'json' }).credentials[0]
+
+    const deleted = await manager.deleteAccounts([parsed.id])
+
+    expect(deleted.deleted).toBe(1)
+    expect((await readdir(library)).filter((name) => name.includes('truelyse4863'))).toEqual([])
+    expect((await manager.scanDirectory()).accounts).toEqual([])
   })
 })

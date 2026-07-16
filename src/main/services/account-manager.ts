@@ -79,6 +79,11 @@ const MAX_ZIP_ENTRY_BYTES = 20 * 1024 * 1024
 const MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_SOURCE_FILE_BYTES = 100 * 1024 * 1024
 
+function formatForPath(path: string): CredentialSourceFormat | undefined {
+  if (/\.json\.0$/i.test(path)) return 'json'
+  return FORMAT_BY_EXTENSION[extname(path).toLowerCase()]
+}
+
 async function collectSupportedFiles(directory: string): Promise<string[]> {
   const files: string[] = []
   const stack = [{ directory, depth: 0 }]
@@ -89,7 +94,7 @@ async function collectSupportedFiles(directory: string): Promise<string[]> {
     for (const entry of entries) {
       const path = join(current.directory, entry.name)
       if (entry.isDirectory()) stack.push({ directory: path, depth: current.depth + 1 })
-      else if (entry.isFile() && FORMAT_BY_EXTENSION[extname(entry.name).toLowerCase()]) {
+      else if (entry.isFile() && formatForPath(entry.name)) {
         files.push(path)
         if (files.length > MAX_SCAN_FILES) throw new Error('账号目录文件数量超过安全限制')
       }
@@ -134,7 +139,7 @@ export class AccountManager {
     const errors: string[] = []
     let skipped = 0
     for (const path of paths) {
-      const format = FORMAT_BY_EXTENSION[extname(path).toLowerCase()]
+      const format = formatForPath(path)
       if (!format) {
         skipped += 1
         continue
@@ -492,13 +497,13 @@ export class AccountManager {
         ) {
           throw new Error('ZIP 包含不安全路径')
         }
-        return Boolean(FORMAT_BY_EXTENSION[extname(normalizedName).toLowerCase()])
+          return Boolean(formatForPath(normalizedName))
       }
     })
     const credentials: NormalizedCredential[] = []
     const errors: string[] = []
     for (const [entryName, bytes] of Object.entries(entries)) {
-      const entryFormat = FORMAT_BY_EXTENSION[extname(entryName).toLowerCase()]
+      const entryFormat = formatForPath(entryName)
       if (!entryFormat || entryFormat === 'zip') continue
       const parsed = parseCredentialText(strFromU8(bytes), {
         sourcePath: `${path}::${entryName}`,

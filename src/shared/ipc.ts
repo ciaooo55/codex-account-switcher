@@ -6,6 +6,7 @@ import type {
   BatchTestResult,
   CpaCodexAccountSummary,
   CpaCodexScanResult,
+  CpaDirectoryStats,
   CredentialExportRequest,
   CredentialExportResult,
   DeleteAccountsResult,
@@ -73,6 +74,7 @@ export interface AppSnapshot {
   grokTesting: GrokTestProgress
   cpaCodexAccounts: CpaCodexAccountSummary[]
   cpaCodexTesting: CpaCodexTestProgress
+  cpaDirectoryStats: CpaDirectoryStats
   customApi: CustomApiProfileSummary
 }
 

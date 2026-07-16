@@ -13,6 +13,7 @@ import type {
   TestResult
 } from '../../shared/types'
 import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
+import { parseGrokCredentialText } from '../accounts/grok-parser'
 import { atomicWriteFile } from '../storage/atomic-file'
 import type { StatusStore } from '../storage/status-store'
 import { serializeCpaCredential } from './exporter'
@@ -28,6 +29,11 @@ interface Options {
   directory: () => string | Promise<string>
   concurrency: () => number | Promise<number>
   statusStore: StatusStore
+  deletedStore?: {
+    list(): Promise<Set<string>>
+    addMany(ids: string[]): Promise<void>
+    removeMany(ids: string[]): Promise<void>
+  }
   tester: {
     test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult>
   }
@@ -108,11 +114,17 @@ export class CpaCodexManager {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     const parsed = await this.readPaths(await files(directory))
-    return this.mergeImported(parsed.credentials, parsed.errors, true)
+    const deleted = await this.options.deletedStore?.list()
+    const credentials = deleted
+      ? parsed.credentials.filter((credential) => !deleted.has(credential.id))
+      : parsed.credentials
+    return this.mergeImported(credentials, parsed.errors, true)
   }
 
   async importFiles(paths: string[]): Promise<CpaCodexScanResult> {
-    return this.importPaths(paths)
+    const result = await this.readPaths(paths)
+    await this.options.deletedStore?.removeMany(result.credentials.map((credential) => credential.id))
+    return this.mergeImported(result.credentials, result.errors)
   }
 
   async importDirectory(directory: string): Promise<CpaCodexScanResult> {
@@ -123,6 +135,7 @@ export class CpaCodexManager {
   async importPasted(text: string): Promise<CpaCodexScanResult> {
     if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error('粘贴内容超过安全限制')
     const parsed = parseCredentialText(text, { sourcePath: 'pasted-cpa-codex.json', format: 'paste' })
+    await this.options.deletedStore?.removeMany(parsed.credentials.map((credential) => credential.id))
     return this.mergeImported(parsed.credentials, parsed.errors)
   }
 
@@ -130,6 +143,7 @@ export class CpaCodexManager {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     const incoming = dedupeCredentials(values)
+    await this.options.deletedStore?.removeMany(incoming.map((credential) => credential.id))
     const existing = await this.readPaths(await files(directory))
     const existingIds = new Set(dedupeCredentials(existing.credentials).map((item) => item.id))
     const fresh = incoming.filter((item) => !existingIds.has(item.id))
@@ -169,10 +183,48 @@ export class CpaCodexManager {
 
   async deleteAccounts(ids: string[]): Promise<DeleteAccountsResult> {
     const selected = new Set(ids)
-    const records = (await this.managedRecords()).filter((item) => selected.has(item.credential.id))
-    await Promise.all(records.map((item) => rm(item.path, { force: true })))
-    const removed = new Set(records.map((item) => item.credential.id)).size
-    return { deleted: removed, message: `已删除 ${removed} 个 CPA Codex 账号文件` }
+    const directory = await this.directory()
+    const paths = await files(directory)
+    const existingIds = new Set<string>()
+    await this.options.deletedStore?.addMany([...selected])
+    try {
+      for (const path of paths) {
+        if (!/\.json(?:\.0)?$/i.test(path)) continue
+        const text = await readFile(path, 'utf8').catch(() => null)
+        if (text === null) continue
+        const format = formatForPath(path)
+        if (format !== 'json') continue
+        const codex = parseCredentialText(text, { sourcePath: path, format: 'json' }).credentials
+        const matched = codex.filter((item) => selected.has(item.id))
+        if (matched.length === 0) continue
+        for (const credential of matched) existingIds.add(credential.id)
+        const remaining = dedupeCredentials(codex.filter((item) => !selected.has(item.id)))
+        const containsGrok = parseGrokCredentialText(text, { sourcePath: path, format: 'json' }).credentials.length > 0
+        if (containsGrok) continue
+
+        const disabled = isDisabled(path)
+        await rm(path, { force: true })
+        for (const credential of remaining) {
+          const target = statePath(join(directory, managedName(credential)), !disabled)
+          await atomicWriteFile(target, serialized({
+            ...credential,
+            sourcePath: target,
+            sourceFormat: 'json',
+            sourceDialect: 'cpa'
+          }))
+        }
+      }
+      if (existingIds.size === 0) {
+        await this.options.deletedStore?.removeMany([...selected])
+        return { deleted: 0, message: '没有找到要删除的 CPA Codex 账号' }
+      }
+      await this.options.statusStore.removeMany([...existingIds])
+    } catch (error) {
+      await this.options.deletedStore?.removeMany([...selected]).catch(() => undefined)
+      throw error
+    }
+    const removed = existingIds.size
+    return { deleted: removed, message: `已删除 ${removed} 个 CPA Codex 账号及目录内全部同账号副本` }
   }
 
   async setEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult> {
@@ -341,9 +393,15 @@ export class CpaCodexManager {
       const targetPaths = new Set([...targets.values()].map((path) => resolve(path).toLowerCase()))
       const sourcePaths = new Set(values.map((item) => item.sourcePath))
       await Promise.all([...sourcePaths].map(async (path) => {
-        if (path.includes('#') || !/\.json(?:\.0)?$/i.test(path)) return
+        if (path.includes('#')) return
         const normalized = resolve(path).toLowerCase()
-        if (!targetPaths.has(normalized)) await rm(path, { force: true })
+        if (targetPaths.has(normalized)) return
+        const format = formatForPath(path)
+        if (!format || format === 'zip') return
+        const text = await readFile(path, 'utf8').catch(() => null)
+        if (text === null) return
+        const containsGrok = parseGrokCredentialText(text, { sourcePath: path, format }).credentials.length > 0
+        if (!containsGrok) await rm(path, { force: true })
       }))
     }
     return {

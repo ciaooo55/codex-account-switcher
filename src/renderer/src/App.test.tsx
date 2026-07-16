@@ -88,6 +88,13 @@ const snapshot: AppSnapshot = {
   },
   grokAccounts: [],
   grokDirectory: 'E:\\home\\lee\\.cli-proxy-api',
+  cpaDirectoryStats: {
+    credentialFiles: 0,
+    codexFiles: 0,
+    grokFiles: 0,
+    duplicateFiles: 0,
+    unrecognizedFiles: 0
+  },
   grokTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
   cpaCodexAccounts: [],
   cpaCodexTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
@@ -538,6 +545,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
+    fireEvent.click(screen.getByText('更多'))
     fireEvent.click(screen.getByRole('button', { name: '恢复备份 API' }))
 
     await waitFor(() => expect(window.codexSwitcher.restoreApiMode).toHaveBeenCalledWith(false))
@@ -547,6 +555,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
+    fireEvent.click(screen.getByText('更多'))
     fireEvent.click(screen.getByRole('button', { name: '修复历史会话' }))
 
     expect(await screen.findByRole('dialog', { name: '修复历史会话' })).toBeInTheDocument()
@@ -622,7 +631,7 @@ describe('App', () => {
       }
     })
 
-    expect(await screen.findByText('已失效')).toBeInTheDocument()
+    expect((await screen.findAllByText('已失效')).length).toBeGreaterThan(0)
     expect(screen.getByText('凭据已失效')).toBeInTheDocument()
   })
 })

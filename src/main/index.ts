@@ -1,4 +1,4 @@
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -212,8 +212,10 @@ async function main(): Promise<void> {
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const customApiStore = new CustomApiStore(join(userData, 'custom-api.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
+  const cpaCodexStatusStore = new StatusStore(join(userData, 'cpa-codex-status.json'))
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-status.json'))
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
+  const deletedCpaCodexStore = new DeletedCredentialStore(join(userData, 'deleted-cpa-codex-accounts.json'))
   const applicationDirectory = e2eMode
     ? userData
     : app.isPackaged
@@ -312,7 +314,8 @@ async function main(): Promise<void> {
   cpaCodexManager = new CpaCodexManager({
     directory: async () => (await settingsStore.get()).grokDirectory,
     concurrency: async () => (await settingsStore.get()).concurrency,
-    statusStore,
+    statusStore: cpaCodexStatusStore,
+    deletedStore: deletedCpaCodexStore,
     tester: {
       test: async (credential, signal) => {
         const settings = await settingsStore.get()
@@ -406,7 +409,17 @@ async function main(): Promise<void> {
     return manager.scanDirectory()
   })
   const initialGrokScan = grokManager.scanDirectory().catch(() => null)
-  const initialCpaCodexScan = cpaCodexManager.scanDirectory().catch(() => null)
+  const initialCpaCodexScan = cpaCodexManager.scanDirectory().then(async (result) => {
+    const cpaStatuses = await cpaCodexStatusStore.getAll()
+    if (Object.keys(cpaStatuses).length === 0) {
+      const legacyStatuses = await statusStore.getAll()
+      await Promise.all(result.accounts.map((account) => {
+        const legacy = legacyStatuses[account.id]
+        return legacy ? cpaCodexStatusStore.set(legacy) : Promise.resolve()
+      }))
+    }
+    return result
+  }).catch(() => null)
 
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()
@@ -548,21 +561,48 @@ async function main(): Promise<void> {
     return updateCheckPromise
   }
 
+  const cpaDirectoryStats = async (
+    directory: string,
+    codexAccounts: number,
+    grokAccounts: number
+  ) => {
+    const entries = await readdir(directory, { recursive: true, withFileTypes: true }).catch(() => [])
+    const names = entries
+      .filter((entry) => entry.isFile() && /\.(?:json(?:\.0)?|jsonl|txt|md|[cm]?js|zip)$/i.test(entry.name))
+      .map((entry) => entry.name.toLowerCase())
+    const codexFiles = names.filter((name) => name.startsWith('codex-')).length
+    const grokFiles = names.filter((name) => name.startsWith('grok-')).length
+    return {
+      credentialFiles: names.length,
+      codexFiles,
+      grokFiles,
+      duplicateFiles: Math.max(0, codexFiles - codexAccounts) + Math.max(0, grokFiles - grokAccounts),
+      unrecognizedFiles: Math.max(0, names.length - codexFiles - grokFiles)
+    }
+  }
+
   ipcMain.handle(ipcChannels.snapshot, async () => {
     await Promise.all([initialScan, initialGrokScan, initialCpaCodexScan])
     const settings = await settingsStore.get()
+    const [accounts, grokAccounts, cpaCodexAccounts, customApi] = await Promise.all([
+      manager.listAccounts(),
+      grokManager.listAccounts(),
+      cpaCodexManager.listAccounts(),
+      customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
+    ])
     return {
-      accounts: await manager.listAccounts(),
+      accounts,
       settings,
       importDirectory,
       testing: progress,
       autoSwitch: autoSwitchScheduler.getState(),
-      grokAccounts: await grokManager.listAccounts(),
+      grokAccounts,
       grokDirectory: settings.grokDirectory,
       grokTesting: grokProgress,
-      cpaCodexAccounts: await cpaCodexManager.listAccounts(),
+      cpaCodexAccounts,
       cpaCodexTesting: cpaCodexProgress,
-      customApi: await customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
+      cpaDirectoryStats: await cpaDirectoryStats(settings.grokDirectory, cpaCodexAccounts.length, grokAccounts.length),
+      customApi
     }
   })
   ipcMain.handle(ipcChannels.scan, () => {

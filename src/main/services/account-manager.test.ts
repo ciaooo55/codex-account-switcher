@@ -73,6 +73,26 @@ function successfulResult(accountId: string): TestResult {
 }
 
 describe('AccountManager', () => {
+  it('scans disabled .json.0 files and deduplicates them with enabled copies by email', async () => {
+    const fixture = await setup()
+    const accessToken = jwt({ sub: 'same-email', email: 'same@example.com' })
+    const raw = JSON.stringify({ type: 'codex', email: 'same@example.com', access_token: accessToken })
+    await writeFile(join(fixture.accountDirectory, 'same.json'), raw)
+    await writeFile(join(fixture.accountDirectory, 'same.json.0'), raw)
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.scanDirectory()
+
+    expect(result.accounts).toHaveLength(1)
+    expect(result.accounts[0].email).toBe('same@example.com')
+  })
+
   it('scans supported files, reports malformed files and never modifies source content', async () => {
     const fixture = await setup()
     const sourcePath = join(fixture.accountDirectory, 'person.json')

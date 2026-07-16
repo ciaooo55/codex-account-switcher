@@ -63,10 +63,10 @@ function isXai(recordValue: Record<string, unknown>, accessPayload: Record<strin
 }
 
 function id(subject: string | null, teamId: string | null, email: string | null, token: string): string {
-  const identity = subject
-    ? `sub:${subject}\0team:${teamId ?? ''}`
-    : email
-      ? `email:${email.toLowerCase()}\0team:${teamId ?? ''}`
+  const identity = email
+    ? `email:${email.toLowerCase()}`
+    : subject
+      ? `sub:${subject}\0team:${teamId ?? ''}`
       : `token:${token}`
   return createHash('sha256').update(identity).digest('hex')
 }
@@ -174,8 +174,9 @@ function merge(left: GrokCredential, right: GrokCredential): GrokCredential {
 export function dedupeGrokCredentials(values: readonly GrokCredential[]): GrokCredential[] {
   const result = new Map<string, GrokCredential>()
   for (const value of values) {
-    const current = result.get(value.id)
-    result.set(value.id, current ? merge(current, value) : value)
+    const key = value.email ? `email:${value.email.toLowerCase()}` : value.id
+    const current = result.get(key)
+    result.set(key, current ? merge(current, value) : value)
   }
   return [...result.values()]
 }

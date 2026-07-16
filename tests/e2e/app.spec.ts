@@ -253,7 +253,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(selectionTeamRow).toHaveClass(/selected-row/)
     await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
     await selectionAccountRow.click()
-    await expect(page.getByText(/已选 2/)).toBeVisible()
+    await expect(page.getByText('已选 2', { exact: true })).toBeVisible()
     await selectionAccountRow.click()
     await expect(page.getByLabel('选择 e2e@example.com')).not.toBeChecked()
     await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
@@ -369,6 +369,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       }
     })
 
+    await page.getByText('更多', { exact: true }).click()
     await page.getByRole('button', { name: '修复历史会话' }).click()
     await expect(page.getByRole('dialog', { name: '修复历史会话' })).toBeVisible()
     await page.getByRole('button', { name: '确认修复' }).click()
@@ -380,6 +381,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(JSON.parse(rollout.split('\n')[0]).payload.model_provider).toBe('openai')
     expect(JSON.parse(rollout.split('\n')[1]).payload.message).toBe('unchanged')
 
+    await page.getByText('更多', { exact: true }).click()
     await page.getByRole('button', { name: '恢复备份 API' }).click()
     await expect(page.getByText('已恢复原 API/代理模式')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe(

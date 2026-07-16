@@ -54,7 +54,22 @@ function tokenFrom(
   tokens: Record<string, unknown> | null,
   keys: readonly string[]
 ): string | null {
-  return firstString(...valuesAt(record, keys), ...valuesAt(tokens, keys))
+  for (const value of [...valuesAt(record, keys), ...valuesAt(tokens, keys)]) {
+    if (typeof value !== 'string' || !value.trim()) continue
+    let token = value.trim()
+    const keyPattern = keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+    const labelled = token.match(new RegExp(`(?:["']?(?:${keyPattern})["']?\\s*[:=]\\s*)["']([^"'\\s]+)["']`, 'i'))
+    if (labelled?.[1]) token = labelled[1]
+    else if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+      token = token.slice(1, -1).trim()
+    }
+    if (keys === ACCESS_TOKEN_KEYS || keys === ID_TOKEN_KEYS) {
+      const jwt = token.match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
+      if (jwt?.[0]) token = jwt[0]
+    }
+    if (token) return token
+  }
+  return null
 }
 
 function decodeJwtPayload(token: string | null): Record<string, unknown> | null {
@@ -853,8 +868,8 @@ function mergedCredential(
 }
 
 function identityKey(credential: NormalizedCredential): string | null {
-  if (credential.subject) return `subject:${credential.subject}`
   if (credential.email) return `email:${credential.email.toLowerCase()}`
+  if (credential.subject) return `subject:${credential.subject}`
   return null
 }
 
@@ -883,19 +898,7 @@ export function dedupeCredentials(
 
   const result = [...ungrouped]
   for (const group of groups.values()) {
-    const knownWorkspaces = new Set(
-      group.map((credential) => credential.accountId).filter((value): value is string => Boolean(value))
-    )
-    if (knownWorkspaces.size !== 1) {
-      result.push(...group)
-      continue
-    }
-
-    const workspace = [...knownWorkspaces][0]
-    const known = group.find((credential) => credential.accountId === workspace)!
-    const unknown = group.filter((credential) => !credential.accountId)
-    result.push(unknown.reduce(mergedCredential, known))
-    result.push(...group.filter((credential) => credential.accountId && credential.accountId !== workspace))
+    result.push(group.slice(1).reduce(mergedCredential, group[0]))
   }
   return result
 }

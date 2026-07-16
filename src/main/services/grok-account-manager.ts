@@ -15,6 +15,7 @@ import type {
 import { dedupeGrokCredentials, parseGrokCredentialText } from '../accounts/grok-parser'
 import { atomicWriteFile } from '../storage/atomic-file'
 import type { GrokStatusStore } from '../storage/grok-status-store'
+import { parseCredentialText } from '../accounts/parser'
 
 const FORMATS: Record<string, CredentialSourceFormat | undefined> = {
   '.json': 'json', '.jsonl': 'jsonl', '.txt': 'txt', '.md': 'md',
@@ -113,7 +114,7 @@ export class GrokAccountManager {
   async scanDirectory(): Promise<GrokScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    return this.importPaths(await files(directory))
+    return this.importPaths(await files(directory), true)
   }
 
   async importDirectory(directory: string): Promise<GrokScanResult> {
@@ -286,7 +287,7 @@ export class GrokAccountManager {
     return paths
   }
 
-  private async importPaths(paths: string[]): Promise<GrokScanResult> {
+  private async importPaths(paths: string[], normalizeDirectorySources = false): Promise<GrokScanResult> {
     const credentials: GrokCredential[] = []
     const errors: string[] = []
     for (const path of paths) {
@@ -311,12 +312,13 @@ export class GrokAccountManager {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
       }
     }
-    return this.mergeImported(credentials, errors)
+    return this.mergeImported(credentials, errors, normalizeDirectorySources)
   }
 
   private async mergeImported(
     importedValues: GrokCredential[],
-    errors: string[]
+    errors: string[],
+    normalizeDirectorySources = false
   ): Promise<GrokScanResult> {
     const existingRecords = this.dedupeRecords(await this.managedCredentialRecords())
     const existing = existingRecords.map((item) => item.credential)
@@ -342,6 +344,19 @@ export class GrokAccountManager {
       return target !== undefined && resolve(item.path).toLowerCase() !== target
     })
     await Promise.all(duplicates.map((item) => rm(item.path, { force: true })))
+    if (normalizeDirectorySources) {
+      const targetPaths = new Set([...targets.values()].map((path) => resolve(path).toLowerCase()))
+      const sourcePaths = new Set(importedValues.map((item) => item.sourcePath))
+      await Promise.all([...sourcePaths].map(async (path) => {
+        if (path.includes('#') || targetPaths.has(resolve(path).toLowerCase())) return
+        const format = formatForPath(path)
+        if (!format || format === 'zip') return
+        const text = await readFile(path, 'utf8').catch(() => null)
+        if (text === null) return
+        const containsCodex = parseCredentialText(text, { sourcePath: path, format }).credentials.length > 0
+        if (!containsCodex) await rm(path, { force: true })
+      }))
+    }
     return {
       imported: importedCount,
       skipped: imported.length - importedCount,

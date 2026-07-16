@@ -362,6 +362,25 @@ describe('parseCredentialText', () => {
     })
   })
 
+  it('repairs a token value that accidentally contains its JSON field label', () => {
+    const accessToken = jwt({ sub: 'labelled-user', email: 'labelled@example.com' })
+    const result = parseCredentialText(JSON.stringify({
+      type: 'codex',
+      email: 'labelled@example.com',
+      access_token: `"access_token": "${accessToken}"`,
+      account_id: 'labelled-workspace',
+      plan_type: 'k12'
+    }), { sourcePath: 'broken-cleaning.json', format: 'json' })
+
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      email: 'labelled@example.com',
+      accessToken,
+      accountId: 'labelled-workspace',
+      planType: 'k12'
+    })
+  })
+
   it('parses static JavaScript exports without executing source code', () => {
     const text = `
       globalThis.__mustNotRun = true;
@@ -644,7 +663,7 @@ describe('dedupeCredentials', () => {
     expect(deduped[0].id).toBe(withWorkspace.id)
   })
 
-  it('keeps an incomplete identity separate when multiple workspaces are possible', () => {
+  it('keeps only one preferred credential per email across multiple workspaces', () => {
     const records = [null, 'workspace-a', 'workspace-b'].map((accountId, index) =>
       parseCredentialText(
         JSON.stringify({
@@ -656,6 +675,6 @@ describe('dedupeCredentials', () => {
       ).credentials[0]
     )
 
-    expect(dedupeCredentials(records)).toHaveLength(3)
+    expect(dedupeCredentials(records)).toHaveLength(1)
   })
 })

@@ -57,7 +57,7 @@ describe('GrokAccountManager', () => {
     expect(stored).toMatchObject({ type: 'xai', auth_kind: 'oauth' })
   })
 
-  it('never deletes or rewrites source files while scanning the account directory', async () => {
+  it('normalizes pure Grok sources inside the managed CPA directory', async () => {
     const { library, manager } = await setup()
     await mkdir(library, { recursive: true })
     await writeFile(join(library, 'source-bundle.txt'), JSON.stringify({
@@ -86,21 +86,12 @@ describe('GrokAccountManager', () => {
       refresh_token: 'refresh-three',
       email: 'scan-three@example.com'
     }))
-    const originalNames = ['source-bundle.txt', 'grok-user-source.json']
-    const originals = new Map(await Promise.all(originalNames.map(async (name) => [
-      name,
-      await readFile(join(library, name), 'utf8')
-    ] as const)))
-
     const result = await manager.scanDirectory()
 
     expect(result.accounts).toHaveLength(3)
-    for (const [name, content] of originals) {
-      expect(await readFile(join(library, name), 'utf8')).toBe(content)
-    }
     const namesAfterSecondScan = await manager.scanDirectory().then(() => readdir(library))
-    expect(namesAfterSecondScan).toEqual(expect.arrayContaining(originalNames))
-    expect(namesAfterSecondScan.filter((name) => name.startsWith('grok-') && name !== 'grok-user-source.json')).toHaveLength(3)
+    expect(namesAfterSecondScan).toHaveLength(3)
+    expect(namesAfterSecondScan.every((name) => /^grok-.*\.json$/.test(name))).toBe(true)
   })
 
   it('deletes managed files and only tests Grok accounts selected in this manager', async () => {

@@ -216,6 +216,14 @@ export interface CpaCodexScanResult {
   accounts: CpaCodexAccountSummary[]
 }
 
+export interface CpaDirectoryStats {
+  credentialFiles: number
+  codexFiles: number
+  grokFiles: number
+  duplicateFiles: number
+  unrecognizedFiles: number
+}
+
 export interface ManagedFileStateResult {
   changed: number
   skipped: number

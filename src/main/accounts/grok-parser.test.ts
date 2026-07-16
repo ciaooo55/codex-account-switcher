@@ -75,4 +75,14 @@ describe('parseGrokCredentialText', () => {
     )
     expect(result.credentials[0]).toMatchObject({ email: 'js@example.com', subject: 'js-user' })
   })
+
+  it('keeps one Grok credential per normalized email even when team ids differ', () => {
+    const result = parseGrokCredentialText(JSON.stringify([
+      { type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'old', team_id: 'team-a' }), email: 'Same@Example.com' },
+      { type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'new', team_id: 'team-b' }), refresh_token: 'refresh-new', email: 'same@example.com' }
+    ]), { sourcePath: 'duplicate-grok.json', format: 'json' })
+
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({ email: 'same@example.com', refreshToken: 'refresh-new', teamId: 'team-b' })
+  })
 })
