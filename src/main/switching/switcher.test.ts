@@ -52,6 +52,27 @@ async function fixture() {
 }
 
 describe('CredentialSwitcher', () => {
+  it('switches to a custom API key provider and keeps unrelated provider definitions', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'https://proxy.example.com/v1',
+      model: 'gpt-custom',
+      apiKey: 'custom-secret-key'
+    })
+
+    expect(result.ok).toBe(true)
+    expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toEqual({
+      auth_mode: 'apikey',
+      OPENAI_API_KEY: 'custom-secret-key'
+    })
+    const config = await readFile(paths.configPath, 'utf8')
+    expect(config).toContain('model_provider = "codex_account_switcher"')
+    expect(config).toContain('base_url = "https://proxy.example.com/v1"')
+    expect(config).toContain('[model_providers.custom]')
+    expect(await readFile(result.backupPath!, 'utf8')).not.toContain('api-secret')
+  })
   it('atomically writes ChatGPT auth, patches config and keeps encrypted backups', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })

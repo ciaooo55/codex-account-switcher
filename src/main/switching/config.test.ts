@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyChatGptConfig, restoreManagedConfig } from './config'
+import { applyChatGptConfig, applyCustomApiConfig, restoreManagedConfig } from './config'
 
 const customConfig = `model_provider = "custom"
 notify = ["tool.exe"]
@@ -17,6 +17,18 @@ goals = true
 `
 
 describe('managed Codex config patching', () => {
+  it('writes a custom Responses provider and preserves unrelated providers', () => {
+    const applied = applyCustomApiConfig(customConfig, {
+      baseUrl: 'https://proxy.example.com/v1',
+      model: 'gpt-custom'
+    })
+
+    expect(applied.text).toContain('model_provider = "codex_account_switcher"')
+    expect(applied.text).toContain('model = "gpt-custom"')
+    expect(applied.text).toContain('base_url = "https://proxy.example.com/v1"')
+    expect(applied.text).toContain('[model_providers.custom]')
+    expect(applied.snapshot.model_provider).toBe('model_provider = "custom"')
+  })
   it('switches top-level auth/provider keys without touching custom provider sections', () => {
     const applied = applyChatGptConfig(customConfig)
 

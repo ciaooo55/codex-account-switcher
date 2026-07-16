@@ -87,3 +87,41 @@ export function restoreManagedConfig(
 ): string {
   return replaceManagedLines(currentText, snapshot)
 }
+
+function tomlString(value: string): string {
+  return JSON.stringify(value)
+}
+
+function removeProviderSection(text: string, providerId: string): string {
+  const lines = text.split(/\r?\n/)
+  const header = `[model_providers.${providerId}]`
+  const start = lines.findIndex((line) => line.trim() === header)
+  if (start === -1) return text
+  let end = start + 1
+  while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1
+  lines.splice(start, end - start)
+  return lines.join(text.includes('\r\n') ? '\r\n' : '\n').replace(/\n{3,}/g, '\n\n')
+}
+
+export function applyCustomApiConfig(
+  text: string,
+  input: { baseUrl: string; model: string }
+): { text: string; snapshot: ManagedConfigSnapshot } {
+  const providerId = 'codex_account_switcher'
+  const snapshot = snapshotManagedLines(text.split(/\r?\n/))
+  const withoutPrevious = removeProviderSection(text, providerId).trimEnd()
+  const managed = replaceManagedLines(withoutPrevious, {
+    model_provider: `model_provider = ${tomlString(providerId)}`,
+    model: `model = ${tomlString(input.model)}`,
+    model_reasoning_effort: null,
+    cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
+  }).trimEnd()
+  const provider = [
+    `[model_providers.${providerId}]`,
+    'name = "Switcher Custom API"',
+    `base_url = ${tomlString(input.baseUrl.replace(/\/$/, ''))}`,
+    'wire_api = "responses"',
+    'requires_openai_auth = true'
+  ].join('\n')
+  return { snapshot, text: `${managed}\n\n${provider}\n` }
+}

@@ -18,6 +18,9 @@ describe('SettingsStore', () => {
 
     await expect(store.get()).resolves.toMatchObject({
       accountDirectory: 'E:\\home\\lee\\.cli-proxy-api',
+      grokDirectory: 'E:\\home\\lee\\.cli-proxy-api',
+      customApiBaseUrl: 'https://api.openai.com/v1',
+      customApiModel: 'gpt-5.4',
       authPath: 'C:\\Users\\lee\\.codex\\auth.json',
       configPath: 'C:\\Users\\lee\\.codex\\config.toml',
       concurrency: 4,

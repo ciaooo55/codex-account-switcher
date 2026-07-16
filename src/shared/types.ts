@@ -137,6 +137,93 @@ export interface AppSettings {
   autoSwitchIntervalSeconds: number
   autoSwitchAccountIds: string[]
   autoSwitchRestartCodex: boolean
+  grokDirectory: string
+  customApiBaseUrl: string
+  customApiModel: string
+}
+
+export type DisplayAccountStatus =
+  | 'untested'
+  | 'valid'
+  | 'invalid'
+  | 'quota_exhausted_weekly'
+  | 'quota_exhausted_5h'
+  | 'unknown_error'
+
+export interface GrokCredential {
+  id: string
+  email: string | null
+  subject: string | null
+  teamId: string | null
+  accessToken: string
+  refreshToken: string | null
+  idToken: string | null
+  tokenType: string
+  clientId: string
+  baseUrl: string
+  tokenEndpoint: string
+  scope: string | null
+  planType: string | null
+  lastRefresh: string | null
+  expiresAt: string | null
+  sourcePath: string
+  sourceFormat: CredentialSourceFormat
+  sourceDialect: CredentialDialect
+  billingSnapshot: Record<string, unknown> | null
+  usageSnapshot: Record<string, unknown> | null
+}
+
+export interface GrokAccountSummary {
+  id: string
+  email: string | null
+  subject: string | null
+  teamId: string | null
+  planType: string | null
+  sourcePath: string
+  sourceFormat: CredentialSourceFormat
+  sourceDialect: CredentialDialect
+  canRefresh: boolean
+  expiresAt: string | null
+  lastRefresh: string | null
+  status: DisplayAccountStatus
+  detail: string
+  lastCheckedAt: string | null
+  usage: UsageSummary | null
+}
+
+export interface GrokTestResult {
+  accountId: string
+  status: DisplayAccountStatus
+  detail: string
+  checkedAt: string
+  httpStatus: number | null
+  refreshed: boolean
+  usage: UsageSummary | null
+}
+
+export interface GrokScanResult {
+  imported: number
+  skipped: number
+  errors: string[]
+  accounts: GrokAccountSummary[]
+}
+
+export interface GrokBatchTestResult {
+  tested: number
+  results: GrokTestResult[]
+  cancelled: boolean
+}
+
+export interface CustomApiProfileInput {
+  baseUrl: string
+  model: string
+  apiKey?: string
+}
+
+export interface CustomApiProfileSummary {
+  baseUrl: string
+  model: string
+  hasApiKey: boolean
 }
 
 export interface AutoSwitchState {

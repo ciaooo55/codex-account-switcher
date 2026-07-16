@@ -14,7 +14,10 @@ const storedSettingsSchema = z.object({
   autoSwitchEnabled: z.boolean().optional(),
   autoSwitchIntervalSeconds: z.number().finite().optional(),
   autoSwitchAccountIds: z.array(z.string()).max(20_000).optional(),
-  autoSwitchRestartCodex: z.boolean().optional()
+  autoSwitchRestartCodex: z.boolean().optional(),
+  grokDirectory: z.string().max(32_767).optional(),
+  customApiBaseUrl: z.string().max(2048).optional(),
+  customApiModel: z.string().max(128).optional()
 })
 
 function defaults(homeDirectory: string): AppSettings {
@@ -30,7 +33,10 @@ function defaults(homeDirectory: string): AppSettings {
     autoSwitchEnabled: false,
     autoSwitchIntervalSeconds: 300,
     autoSwitchAccountIds: [],
-    autoSwitchRestartCodex: true
+    autoSwitchRestartCodex: true,
+    grokDirectory: win32.join('E:\\home', accountName, '.cli-proxy-api'),
+    customApiBaseUrl: 'https://api.openai.com/v1',
+    customApiModel: 'gpt-5.4'
   }
 }
 
@@ -64,6 +70,24 @@ function normalize(value: AppSettings): AppSettings {
   if (deepTestModel.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(deepTestModel)) {
     throw new Error('深度检测模型名称格式无效')
   }
+  const grokDirectory = windowsPath(value.grokDirectory, 'Grok 账号目录')
+  let customApiBaseUrl: string
+  try {
+    const parsed = new URL(value.customApiBaseUrl.trim())
+    if (parsed.protocol !== 'https:' && !['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
+      throw new Error('自定义 API 地址必须使用 HTTPS')
+    }
+    if (parsed.username || parsed.password || parsed.hash) {
+      throw new Error('自定义 API 地址不能包含账号、密码或片段')
+    }
+    customApiBaseUrl = parsed.toString().replace(/\/$/, '')
+  } catch (error) {
+    throw new Error(error instanceof Error && error.message.includes('必须使用') ? error.message : '自定义 API 地址无效')
+  }
+  const customApiModel = value.customApiModel.trim() || 'gpt-5.4'
+  if (customApiModel.length > 128 || !/^[A-Za-z0-9._:/-]+$/.test(customApiModel)) {
+    throw new Error('自定义 API 模型名称格式无效')
+  }
   return {
     accountDirectory,
     authPath,
@@ -75,7 +99,10 @@ function normalize(value: AppSettings): AppSettings {
     autoSwitchEnabled: Boolean(value.autoSwitchEnabled),
     autoSwitchIntervalSeconds: clamp(value.autoSwitchIntervalSeconds, 5, 86_400),
     autoSwitchAccountIds: [...new Set(value.autoSwitchAccountIds.filter((id) => typeof id === 'string' && /^[a-f0-9]{64}$/.test(id)))].slice(0, 20_000),
-    autoSwitchRestartCodex: Boolean(value.autoSwitchRestartCodex)
+    autoSwitchRestartCodex: Boolean(value.autoSwitchRestartCodex),
+    grokDirectory,
+    customApiBaseUrl,
+    customApiModel
   }
 }
 

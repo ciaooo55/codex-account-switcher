@@ -34,6 +34,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await mkdir(join(codexHome, 'sessions', '2026'), { recursive: true })
     await mkdir(userData, { recursive: true })
     await mkdir(join(userData, 'aa'), { recursive: true })
+    await mkdir(join(userData, 'grok-accounts'), { recursive: true })
     await mkdir(importSourceDirectory, { recursive: true })
     await mkdir(exportDirectory, { recursive: true })
 
@@ -73,6 +74,18 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         }),
         account_id: 'workspace-team-e2e',
         plan_type: 'k12'
+      }),
+      'utf8'
+    )
+    await writeFile(
+      join(userData, 'grok-accounts', 'grok-e2e.json'),
+      JSON.stringify({
+        type: 'xai',
+        access_token: jwt({ iss: 'https://auth.x.ai', sub: 'grok-e2e', exp: 1_910_000_000 }),
+        refresh_token: 'grok-refresh-e2e',
+        email: 'grok-e2e@example.com',
+        sub: 'grok-e2e',
+        team_id: 'team-grok-e2e'
       }),
       'utf8'
     )
@@ -157,6 +170,18 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         setTimeout(() => response.end(JSON.stringify({ output: [] })), 180)
         return
       }
+      if (request.url === '/grok/billing?format=credits') {
+        response.end(JSON.stringify({ config: { currentPeriod: { type: 'weekly', end: '2030-01-08T00:00:00Z' }, creditUsagePercent: 25 } }))
+        return
+      }
+      if (request.url === '/grok/billing') {
+        response.end(JSON.stringify({ config: { monthlyLimit: 15000, used: 3000, billingPeriodEnd: '2030-02-01T00:00:00Z' } }))
+        return
+      }
+      if (request.url === '/grok/responses') {
+        response.end(JSON.stringify({ id: 'grok-response-e2e', output: [] }))
+        return
+      }
       response.end(JSON.stringify({ output: [] }))
     })
     await new Promise<void>((resolve, reject) => {
@@ -236,6 +261,16 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.keyboard.press('Escape')
     expect(requests.slice(0, 4).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
 
+    await page.getByRole('button', { name: 'Grok 账号库' }).click()
+    const grokRow = page.getByRole('row', { name: /grok-e2e@example\.com/ })
+    await expect(grokRow).toBeVisible()
+    const beforeGrok = requests.length
+    await page.getByRole('button', { name: '测试全部' }).click()
+    await expect(grokRow).toHaveClass(/status-row-valid/)
+    await expect(grokRow).toContainText('周额度75%')
+    expect(requests.slice(beforeGrok).sort()).toEqual(['/grok/billing', '/grok/billing?format=credits', '/grok/responses'].sort())
+    await page.getByRole('button', { name: 'Codex 账号库' }).click()
+
     const teamRow = page.getByRole('row', { name: /选择 team-e2e@example\.com/ })
     await expect(teamRow).toContainText('外部凭据，需重启')
     await teamRow.click({ button: 'right' })
@@ -300,7 +335,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(JSON.parse(rollout.split('\n')[0]).payload.model_provider).toBe('openai')
     expect(JSON.parse(rollout.split('\n')[1]).payload.message).toBe('unchanged')
 
-    await page.getByRole('button', { name: '恢复 API 模式' }).click()
+    await page.getByRole('button', { name: '恢复备份 API' }).click()
     await expect(page.getByText('已恢复原 API/代理模式')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe(
       'apikey'
@@ -349,7 +384,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     )
     expect(teamManagedFile).toBeTruthy()
     await unlink(join(userData, 'aa', teamManagedFile!))
-    await page.getByRole('button', { name: '账号库' }).click()
+    await page.getByRole('button', { name: 'Codex 账号库' }).click()
     await page.getByRole('button', { name: '重新扫描' }).click()
     await expect(page.getByText('team-e2e@example.com')).toHaveCount(0)
     await page.getByRole('button', { name: '定时切换' }).click()

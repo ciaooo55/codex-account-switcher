@@ -29,28 +29,29 @@ import type {
   AccountStatus,
   AccountSummary,
   AppSettings,
+  DisplayAccountStatus,
   CredentialExportFormat,
   CredentialExportLayout,
   ScanResult,
   SessionRepairPreview,
   UsageWindow
 } from '../../shared/types'
+import { GrokPage } from './GrokPage'
 
-const STATUS_LABELS: Record<AccountStatus, string> = {
+const STATUS_LABELS: Record<DisplayAccountStatus, string> = {
   untested: '未测试',
   valid: '有效',
-  quota_exhausted: '额度耗尽',
   quota_exhausted_5h: '5 小时额度耗尽',
   quota_exhausted_weekly: '周额度耗尽',
-  workspace_deactivated: '工作区已停用',
-  no_permission: '无权限',
   invalid: '已失效',
-  needs_refresh: '需要刷新',
-  non_refreshable: '不可刷新',
-  model_unavailable: '模型不可用',
-  network_error: '网络错误',
-  file_error: '文件错误',
-  endpoint_incompatible: '接口异常'
+  unknown_error: '未知错误'
+}
+
+function displayStatus(status: AccountStatus): DisplayAccountStatus {
+  if (status === 'untested' || status === 'valid' || status === 'quota_exhausted_5h' || status === 'quota_exhausted_weekly') return status
+  if (status === 'quota_exhausted') return 'quota_exhausted_5h'
+  if (['invalid', 'no_permission', 'workspace_deactivated', 'non_refreshable'].includes(status)) return 'invalid'
+  return 'unknown_error'
 }
 
 function dateTime(value: string | null): string {
@@ -132,11 +133,12 @@ export function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [keyword, setKeyword] = useState('')
-  const [statusFilter, setStatusFilter] = useState<AccountStatus | ''>('')
-  const [activeView, setActiveView] = useState<'accounts' | 'automation'>('accounts')
+  const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
+  const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'automation'>('accounts')
   const [automationKeyword, setAutomationKeyword] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null)
+  const [customApiKey, setCustomApiKey] = useState('')
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
@@ -176,6 +178,15 @@ export function App(): React.JSX.Element {
       })
     )
     const stopUpdates = window.codexSwitcher.onUpdateState(setUpdateState)
+    const stopGrokTesting = window.codexSwitcher.onGrokTestProgress((grokTesting) =>
+      setSnapshot((current) => {
+        if (!current) return current
+        const grokAccounts = grokTesting.updatedAccount
+          ? current.grokAccounts.map((account) => account.id === grokTesting.updatedAccount?.id ? grokTesting.updatedAccount : account)
+          : current.grokAccounts
+        return { ...current, grokAccounts, grokTesting }
+      })
+    )
     const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
       if (!autoSwitch.running) void reload(true)
@@ -183,6 +194,7 @@ export function App(): React.JSX.Element {
     return () => {
       stopTesting()
       stopUpdates()
+      stopGrokTesting()
       stopAutoSwitch()
     }
   }, [])
@@ -223,7 +235,7 @@ export function App(): React.JSX.Element {
     if (!snapshot) return []
     const query = keyword.trim().toLowerCase()
     return snapshot.accounts.filter((account) => {
-      if (statusFilter && account.status !== statusFilter) return false
+      if (statusFilter && displayStatus(account.status) !== statusFilter) return false
       if (!query) return true
       return `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.sourceDialect} ${account.sourcePath} ${account.detail}`
         .toLowerCase()
@@ -480,7 +492,7 @@ export function App(): React.JSX.Element {
   }
 
   const counts = Object.keys(STATUS_LABELS).reduce<Record<string, number>>((result, status) => {
-    result[status] = snapshot.accounts.filter((item) => item.status === status).length
+    result[status] = snapshot.accounts.filter((item) => displayStatus(item.status) === status).length
     return result
   }, {})
   const selectedAccount = selected.size === 1
@@ -503,11 +515,14 @@ export function App(): React.JSX.Element {
       <header className="app-header">
         <div className="app-identity">
           <h1>Codex Account Switcher</h1>
-          <p>{snapshot.importDirectory}</p>
+          <p>{activeView === 'grok' ? snapshot.grokDirectory : snapshot.importDirectory}</p>
         </div>
         <nav className="view-tabs" aria-label="主页面">
           <button className={activeView === 'accounts' ? 'active' : ''} onClick={() => setActiveView('accounts')}>
-            <ListChecks size={16} />账号库
+            <ListChecks size={16} />Codex 账号库
+          </button>
+          <button className={activeView === 'grok' ? 'active' : ''} onClick={() => setActiveView('grok')}>
+            <TestTube2 size={16} />Grok 账号库
           </button>
           <button className={activeView === 'automation' ? 'active' : ''} onClick={() => setActiveView('automation')}>
             <TimerReset size={16} />定时切换
@@ -530,8 +545,9 @@ export function App(): React.JSX.Element {
       <section className="summary-band">
         <div><span>账号</span><strong>{snapshot.accounts.length}</strong></div>
         <div><span>有效</span><strong className="text-ok">{counts.valid ?? 0}</strong></div>
-        <div><span>额度耗尽</span><strong className="text-warn">{(counts.quota_exhausted ?? 0) + (counts.quota_exhausted_5h ?? 0) + (counts.quota_exhausted_weekly ?? 0)}</strong></div>
-        <div><span>异常</span><strong className="text-error">{(counts.invalid ?? 0) + (counts.no_permission ?? 0) + (counts.workspace_deactivated ?? 0) + (counts.network_error ?? 0)}</strong></div>
+        <div><span>5h 耗尽</span><strong className="text-warn">{counts.quota_exhausted_5h ?? 0}</strong></div>
+        <div><span>周额度耗尽</span><strong className="text-warn">{counts.quota_exhausted_weekly ?? 0}</strong></div>
+        <div><span>已失效 / 未知</span><strong className="text-error">{(counts.invalid ?? 0) + (counts.unknown_error ?? 0)}</strong></div>
         <div><span>当前账号</span><strong>{snapshot.accounts.find((item) => item.active)?.email ?? '未知/API 模式'}</strong></div>
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
       </section>
@@ -584,7 +600,10 @@ export function App(): React.JSX.Element {
           const result = await window.codexSwitcher.restoreApiMode(false)
           if (!result.ok) throw new Error(result.message)
         }, '已恢复原 API/代理模式')} disabled={busy}>
-          <KeyRound size={16} />恢复 API 模式
+          <RotateCcw size={16} />恢复备份 API
+        </button>
+        <button onClick={() => setSettingsOpen(true)} disabled={busy}>
+          <KeyRound size={16} />自定义 API
         </button>
         <span className="toolbar-divider" />
         <button onClick={() => void openSessionRepair()} disabled={busy}>
@@ -603,7 +622,7 @@ export function App(): React.JSX.Element {
           <Search size={16} />
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、文件或错误" />
         </label>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as AccountStatus | '')}>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
           <option value="">全部状态</option>
           {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
@@ -624,7 +643,7 @@ export function App(): React.JSX.Element {
               return (
               <tr
                 key={account.id}
-                className={`account-row status-row-${account.status}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
+                className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
                 aria-busy={running}
                 onContextMenu={(event) => openContextMenu(event, account)}
               >
@@ -637,7 +656,7 @@ export function App(): React.JSX.Element {
                   {running ? (
                     <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">正在验证账号并刷新额度</div></>
                   ) : (
-                    <><span className={`status status-${account.status}`}>{STATUS_LABELS[account.status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>
+                    <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>
                   )}
                 </td>
                 <td>{account.planType ?? '-'}</td>
@@ -651,7 +670,13 @@ export function App(): React.JSX.Element {
           </tbody>
         </table>
       </div>
-      </div> : (
+      </div> : activeView === 'grok' ? (
+        <GrokPage
+          snapshot={snapshot}
+          onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
+          notify={(kind, text) => setMessage({ kind, text })}
+        />
+      ) : (
         <main className="page-view automation-view">
           <section className="automation-status-band">
             <div><span>运行状态</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '正在检查' : snapshot.autoSwitch.enabled ? '已启用' : '未启用'}</strong></div>
@@ -700,10 +725,10 @@ export function App(): React.JSX.Element {
                   const checked = settingsDraft.autoSwitchAccountIds.includes(account.id)
                   const running = snapshot.testing.runningIds.includes(account.id)
                   return (
-                    <tr key={account.id} className={`status-row-${account.status}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}`}>
+                    <tr key={account.id} className={`status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}`}>
                       <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
                       <td><div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div><div className="workspace-id">{switchCapability(account)}</div></td>
-                      <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${account.status}`}>{STATUS_LABELS[account.status]}</span><div className="status-detail">{account.detail}</div></>}</td>
+                      <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail">{account.detail}</div></>}</td>
                       <td>{account.planType ?? '未知'}</td>
                       <td><Quota account={account} running={running} /></td>
                       <td>{dateTime(account.lastCheckedAt)}</td>
@@ -910,6 +935,7 @@ export function App(): React.JSX.Element {
             <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" onClick={() => setSettingsOpen(false)}><X size={18} /></button></div>
             <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
             <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
+            <label>Grok 账号目录<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><button title="选择 Grok 目录" onClick={async () => { const path = await window.codexSwitcher.chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
             <label>auth.json 路径<input value={settingsDraft.authPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, authPath: event.target.value })} /></label>
             <label>config.toml 路径<input value={settingsDraft.configPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, configPath: event.target.value })} /></label>
             <div className="settings-grid">
@@ -918,6 +944,29 @@ export function App(): React.JSX.Element {
               <label>备份保留数<input type="number" min={1} value={settingsDraft.backupRetention} onChange={(event) => setSettingsDraft({ ...settingsDraft, backupRetention: Number(event.target.value) })} /></label>
               <label>深度检测模型<input value={settingsDraft.deepTestModel} onChange={(event) => setSettingsDraft({ ...settingsDraft, deepTestModel: event.target.value })} /></label>
             </div>
+            <section className="custom-api-panel" aria-label="自定义 API">
+              <div className="section-heading">
+                <div><strong>自定义 API</strong><span>地址和模型会记忆，Key 使用 Windows DPAPI 加密且不会回显</span></div>
+                <span className={`saved-secret ${snapshot.customApi.hasApiKey ? 'ready' : ''}`}>{snapshot.customApi.hasApiKey ? 'Key 已保存' : '未保存 Key'}</span>
+              </div>
+              <label>API 地址<input value={settingsDraft.customApiBaseUrl} onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiBaseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
+              <div className="settings-grid">
+                <label>模型<input value={settingsDraft.customApiModel} onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiModel: event.target.value })} /></label>
+                <label>API Key<input type="password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} placeholder={snapshot.customApi.hasApiKey ? '留空继续使用已保存 Key' : '输入 API Key'} autoComplete="new-password" /></label>
+              </div>
+              <button className="primary-button" onClick={() => void run(async () => {
+                const result = await window.codexSwitcher.switchToCustomApi({
+                  baseUrl: settingsDraft.customApiBaseUrl,
+                  model: settingsDraft.customApiModel,
+                  ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
+                }, false)
+                if (!result.ok) throw new Error(result.message)
+                setCustomApiKey('')
+                await reload()
+              }, '已切换到自定义 API 模式')} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
+                <KeyRound size={16} />保存并切换
+              </button>
+            </section>
             <section className="update-panel" aria-label="应用更新">
               <div>
                 <strong>应用更新</strong>

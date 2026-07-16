@@ -72,7 +72,10 @@ const snapshot: AppSnapshot = {
     autoSwitchEnabled: false,
     autoSwitchIntervalSeconds: 300,
     autoSwitchAccountIds: [],
-    autoSwitchRestartCodex: true
+    autoSwitchRestartCodex: true,
+    grokDirectory: 'E:\\home\\lee\\.cli-proxy-api',
+    customApiBaseUrl: 'https://api.openai.com/v1',
+    customApiModel: 'gpt-5.4'
   },
   testing: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
   autoSwitch: {
@@ -82,7 +85,11 @@ const snapshot: AppSnapshot = {
     lastCheckAt: null,
     lastMessage: '自动切换未启用',
     lastSwitchedAccountId: null
-  }
+  },
+  grokAccounts: [],
+  grokDirectory: 'E:\\home\\lee\\.cli-proxy-api',
+  grokTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
+  customApi: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', hasApiKey: false }
 }
 
 let progressListener: ((progress: TestProgress) => void) | null = null
@@ -126,9 +133,20 @@ function api(): CodexSwitcherApi {
     switchAccount: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     restoreLatest: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     restoreApiMode: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
+    switchToCustomApi: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
+    getCustomApiProfile: vi.fn().mockResolvedValue(snapshot.customApi),
+    scanGrokDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
+    importGrokFiles: vi.fn().mockResolvedValue(null),
+    importGrokDirectory: vi.fn().mockResolvedValue(null),
+    importGrokPasted: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
+    deleteGrokAccounts: vi.fn().mockResolvedValue({ deleted: 0, message: 'ok' }),
+    testGrokAccounts: vi.fn().mockResolvedValue({ tested: 0, results: [], cancelled: false }),
+    cancelGrokTests: vi.fn().mockResolvedValue(undefined),
+    exportGrokAccounts: vi.fn().mockResolvedValue([]),
     restartCodex: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     updateSettings: vi.fn().mockResolvedValue(snapshot.settings),
     chooseAccountDirectory: vi.fn().mockResolvedValue(null),
+    chooseGrokDirectory: vi.fn().mockResolvedValue(null),
     revealSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     previewSessionRepair: vi.fn().mockResolvedValue({
       snapshotId: 'snapshot-a',
@@ -178,6 +196,7 @@ function api(): CodexSwitcherApi {
       switchedAccountId: null
     }),
     onUpdateState: vi.fn().mockImplementation(() => () => undefined),
+    onGrokTestProgress: vi.fn().mockImplementation(() => () => undefined),
     onAutoSwitchState: vi.fn().mockImplementation(() => () => undefined),
     onTestProgress: vi.fn().mockImplementation((listener) => {
       progressListener = listener
@@ -205,6 +224,40 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: '测试全部' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导入文件' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导入文件夹' })).toBeInTheDocument()
+  })
+
+  it('keeps Codex and Grok test-all actions isolated by page', async () => {
+    const bridge = api()
+    const grokSnapshot: AppSnapshot = {
+      ...snapshot,
+      grokAccounts: [{
+        id: 'g'.repeat(64),
+        email: 'grok@example.com',
+        subject: 'grok-user',
+        teamId: 'team-a',
+        planType: 'SuperGrok',
+        sourcePath: 'E:\\grok\\grok-account.json',
+        sourceFormat: 'json',
+        sourceDialect: 'cpa',
+        canRefresh: true,
+        expiresAt: '2030-01-01T00:00:00Z',
+        lastRefresh: '2026-07-16T00:00:00Z',
+        status: 'untested',
+        detail: '未测试',
+        lastCheckedAt: null,
+        usage: null
+      }]
+    }
+    vi.mocked(bridge.getSnapshot).mockResolvedValue(grokSnapshot)
+    window.codexSwitcher = bridge
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Grok 账号库' }))
+    await screen.findByText('grok@example.com')
+    fireEvent.click(screen.getByRole('button', { name: '测试全部' }))
+
+    await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith())
+    expect(bridge.testAccounts).not.toHaveBeenCalled()
   })
 
   it('imports every supported file from a selected folder', async () => {
@@ -404,7 +457,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByRole('button', { name: '恢复 API 模式' }))
+    fireEvent.click(screen.getByRole('button', { name: '恢复备份 API' }))
 
     await waitFor(() => expect(window.codexSwitcher.restoreApiMode).toHaveBeenCalledWith(false))
   })

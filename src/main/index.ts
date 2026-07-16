@@ -15,7 +15,7 @@ import {
 } from 'electron'
 import electronUpdater from 'electron-updater'
 import { z } from 'zod'
-import { ipcChannels, type TestProgress, type UpdateState } from '../shared/ipc'
+import { ipcChannels, type GrokTestProgress, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { AutoSwitchScheduler } from './services/auto-switch'
@@ -23,11 +23,15 @@ import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/
 import { CodexProcessManager } from './services/codex-process'
 import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
+import { GrokAccountManager } from './services/grok-account-manager'
+import { GrokCredentialTester } from './services/grok-detector'
 import { SessionRepairService } from './services/session-repair'
 import { SettingsStore } from './storage/settings'
 import { StatusStore } from './storage/status-store'
 import { DeletedCredentialStore } from './storage/deleted-credentials'
 import { CredentialVault } from './storage/vault'
+import { CustomApiStore } from './storage/custom-api-store'
+import { GrokStatusStore } from './storage/grok-status-store'
 import { CredentialSwitcher } from './switching/switcher'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -45,7 +49,15 @@ let switchOperationActive = false
 let accountLibraryOperationActive = false
 let autoSwitchOperationActive = false
 let testController: AbortController | null = null
+let grokTestController: AbortController | null = null
 let progress: TestProgress = {
+  active: false,
+  done: 0,
+  total: 0,
+  runningIds: [],
+  updatedAccount: null
+}
+let grokProgress: GrokTestProgress = {
   active: false,
   done: 0,
   total: 0,
@@ -146,7 +158,12 @@ async function main(): Promise<void> {
   const homeDirectory = homedir()
   const cipher = createCipher()
   const settingsStore = new SettingsStore(join(userData, 'settings.json'), homeDirectory)
-  const initialSettings = await settingsStore.get()
+  let initialSettings = await settingsStore.get()
+  if (e2eMode) {
+    initialSettings = await settingsStore.update({
+      grokDirectory: join(userData, 'grok-accounts')
+    })
+  }
   let codexPaths = await discoverCodexPaths({
     homeDirectory,
     configuredAuthPath: initialSettings.authPath,
@@ -181,7 +198,9 @@ async function main(): Promise<void> {
     })
   }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
+  const customApiStore = new CustomApiStore(join(userData, 'custom-api.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
+  const grokStatusStore = new GrokStatusStore(join(userData, 'grok-status.json'))
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
   const applicationDirectory = e2eMode
     ? userData
@@ -255,6 +274,16 @@ async function main(): Promise<void> {
         backupRetention: settings.backupRetention,
         cipher
       }).restoreApiMode()
+    },
+    switchToCustomApi: async (input: { baseUrl: string; model: string; apiKey: string }) => {
+      const settings = await settingsStore.get()
+      return new CredentialSwitcher({
+        authPath: settings.authPath,
+        configPath: settings.configPath,
+        backupDir: join(userData, 'backups'),
+        backupRetention: settings.backupRetention,
+        cipher
+      }).switchToCustomApi(input)
     }
   }
   const manager = new AccountManager({
@@ -267,6 +296,22 @@ async function main(): Promise<void> {
     deletedStore
   })
   const exporter = new CredentialExportService({ vault })
+  let grokManager: GrokAccountManager
+  grokManager = new GrokAccountManager({
+    directory: async () => (await settingsStore.get()).grokDirectory,
+    concurrency: async () => (await settingsStore.get()).concurrency,
+    statusStore: grokStatusStore,
+    tester: {
+      test: async (credential, signal) => {
+        const settings = await settingsStore.get()
+        return new GrokCredentialTester({
+          timeoutMs: settings.timeoutMs,
+          ...(testApiBase ? { cliBaseUrl: `${testApiBase}/grok` } : {}),
+          onCredentialUpdated: (updated) => grokManager.upsertRefreshed(updated)
+        }).test(credential, signal)
+      }
+    }
+  })
 
   const pruneAutoSwitchPool = async (): Promise<boolean> => {
     const settings = await settingsStore.get()
@@ -319,6 +364,7 @@ async function main(): Promise<void> {
     }
     return manager.scanDirectory()
   })
+  const initialGrokScan = grokManager.scanDirectory().catch(() => null)
 
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()
@@ -331,6 +377,11 @@ async function main(): Promise<void> {
   const sendProgress = (next: TestProgress): void => {
     progress = next
     mainWindow?.webContents.send(ipcChannels.testProgress, progress)
+  }
+
+  const sendGrokProgress = (next: GrokTestProgress): void => {
+    grokProgress = next
+    mainWindow?.webContents.send(ipcChannels.grokTestProgress, grokProgress)
   }
 
   const sendUpdateState = (next: UpdateState): void => {
@@ -458,13 +509,18 @@ async function main(): Promise<void> {
   }
 
   ipcMain.handle(ipcChannels.snapshot, async () => {
-    await initialScan
+    await Promise.all([initialScan, initialGrokScan])
+    const settings = await settingsStore.get()
     return {
       accounts: await manager.listAccounts(),
-      settings: await settingsStore.get(),
+      settings,
       importDirectory,
       testing: progress,
-      autoSwitch: autoSwitchScheduler.getState()
+      autoSwitch: autoSwitchScheduler.getState(),
+      grokAccounts: await grokManager.listAccounts(),
+      grokDirectory: settings.grokDirectory,
+      grokTesting: grokProgress,
+      customApi: await customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
     }
   })
   ipcMain.handle(ipcChannels.scan, () => {
@@ -653,6 +709,108 @@ async function main(): Promise<void> {
       switchOperationActive = false
     }
   })
+  ipcMain.handle(ipcChannels.customApiProfile, async () => {
+    const settings = await settingsStore.get()
+    return customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
+  })
+  ipcMain.handle(ipcChannels.customApiSwitch, async (_event, input: unknown) => {
+    if (testController || switchOperationActive || autoSwitchOperationActive) {
+      return { ok: false, message: '账号任务正在运行，暂时不能切换 API', backupPath: null }
+    }
+    const payload = z.object({
+      profile: z.object({
+        baseUrl: z.string().url().max(2048),
+        model: z.string().min(1).max(128),
+        apiKey: z.string().max(16_384).optional()
+      }),
+      restart: z.boolean()
+    }).parse(input)
+    const updated = await settingsStore.update({
+      customApiBaseUrl: payload.profile.baseUrl,
+      customApiModel: payload.profile.model
+    })
+    if (payload.profile.apiKey?.trim()) await customApiStore.saveKey(payload.profile.apiKey)
+    const apiKey = await customApiStore.getKey()
+    if (!apiKey) return { ok: false, message: '请先填写自定义 API Key', backupPath: null }
+    switchOperationActive = true
+    try {
+      const result = await switcher.switchToCustomApi({
+        baseUrl: updated.customApiBaseUrl,
+        model: updated.customApiModel,
+        apiKey
+      })
+      if (result.ok && payload.restart) {
+        const restartResult = await processManager.restart()
+        return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
+      }
+      return result
+    } finally {
+      switchOperationActive = false
+    }
+  })
+
+  ipcMain.handle(ipcChannels.grokScan, () => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    return grokManager.scanDirectory()
+  })
+  ipcMain.handle(ipcChannels.grokImport, async () => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    const selected = await dialog.showOpenDialog({
+      title: '导入 Grok 账号文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
+    })
+    return selected.canceled ? null : grokManager.importFiles(selected.filePaths)
+  })
+  ipcMain.handle(ipcChannels.grokImportDirectory, async () => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    const settings = await settingsStore.get()
+    const selected = await dialog.showOpenDialog({
+      title: '导入文件夹内的 Grok 账号',
+      defaultPath: settings.grokDirectory,
+      properties: ['openDirectory']
+    })
+    return selected.canceled ? null : grokManager.importDirectory(selected.filePaths[0])
+  })
+  ipcMain.handle(ipcChannels.grokImportPasted, (_event, input: unknown) => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    return grokManager.importPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input))
+  })
+  ipcMain.handle(ipcChannels.grokDelete, (_event, input: unknown) => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    return grokManager.deleteAccounts(z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input))
+  })
+  ipcMain.handle(ipcChannels.grokTest, async (_event, input: unknown) => {
+    if (grokTestController) throw new Error('已有 Grok 检测任务正在运行')
+    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional().parse(input)
+    grokTestController = new AbortController()
+    sendGrokProgress({ active: true, done: 0, total: ids?.length ?? (await grokManager.listAccounts()).length, runningIds: [], updatedAccount: null })
+    try {
+      return await grokManager.testAccounts(ids, {
+        signal: grokTestController.signal,
+        onProgress: ({ done, total, runningIds, updatedAccount }) => sendGrokProgress({
+          active: true, done, total, runningIds, updatedAccount: updatedAccount ?? null
+        })
+      })
+    } finally {
+      grokTestController = null
+      sendGrokProgress({ ...grokProgress, active: false, runningIds: [], updatedAccount: null })
+    }
+  })
+  ipcMain.handle(ipcChannels.grokCancelTest, () => grokTestController?.abort())
+  ipcMain.handle(ipcChannels.grokExport, async (_event, input: unknown) => {
+    const payload = z.object({
+      ids: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000),
+      layout: z.enum(['separate', 'bundle'])
+    }).parse(input)
+    const settings = await settingsStore.get()
+    const selected = await dialog.showOpenDialog({
+      title: '选择 Grok 账号导出目录',
+      defaultPath: settings.grokDirectory,
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return selected.canceled ? null : grokManager.exportAccounts(payload.ids, payload.layout, selected.filePaths[0])
+  })
   ipcMain.handle(ipcChannels.restart, () => processManager.restart())
   ipcMain.handle(ipcChannels.settingsUpdate, async (_event, input: unknown) => {
     if (testController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
@@ -670,7 +828,10 @@ async function main(): Promise<void> {
         autoSwitchEnabled: z.boolean().optional(),
         autoSwitchIntervalSeconds: z.number().optional(),
         autoSwitchAccountIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(20_000).optional(),
-        autoSwitchRestartCodex: z.boolean().optional()
+        autoSwitchRestartCodex: z.boolean().optional(),
+        grokDirectory: z.string().max(32_767).optional(),
+        customApiBaseUrl: z.string().max(2048).optional(),
+        customApiModel: z.string().max(128).optional()
       })
       .parse(input) satisfies Partial<AppSettings>
     if (patch.autoSwitchAccountIds || patch.autoSwitchEnabled === true) {
@@ -696,6 +857,15 @@ async function main(): Promise<void> {
     const result = await dialog.showOpenDialog({
       title: '选择账号目录',
       defaultPath: current.accountDirectory,
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
+  ipcMain.handle(ipcChannels.settingsChooseGrokDirectory, async () => {
+    const current = await settingsStore.get()
+    const result = await dialog.showOpenDialog({
+      title: '选择 Grok 账号目录',
+      defaultPath: current.grokDirectory,
       properties: ['openDirectory', 'createDirectory']
     })
     return result.canceled ? null : result.filePaths[0]

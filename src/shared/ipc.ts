@@ -7,6 +7,11 @@ import type {
   CredentialExportRequest,
   CredentialExportResult,
   DeleteAccountsResult,
+  CustomApiProfileInput,
+  CustomApiProfileSummary,
+  GrokAccountSummary,
+  GrokBatchTestResult,
+  GrokScanResult,
   ScanResult,
   SessionRepairPreview,
   SessionRepairResult,
@@ -19,6 +24,14 @@ export interface TestProgress {
   total: number
   runningIds: string[]
   updatedAccount: AccountSummary | null
+}
+
+export interface GrokTestProgress {
+  active: boolean
+  done: number
+  total: number
+  runningIds: string[]
+  updatedAccount: GrokAccountSummary | null
 }
 
 export type UpdateStatus =
@@ -44,6 +57,10 @@ export interface AppSnapshot {
   importDirectory: string
   testing: TestProgress
   autoSwitch: AutoSwitchState
+  grokAccounts: GrokAccountSummary[]
+  grokDirectory: string
+  grokTesting: GrokTestProgress
+  customApi: CustomApiProfileSummary
 }
 
 export interface RestartResult {
@@ -64,9 +81,20 @@ export interface CodexSwitcherApi {
   switchAccount(id: string, restart: boolean): Promise<SwitchResult>
   restoreLatest(restart: boolean): Promise<SwitchResult>
   restoreApiMode(restart: boolean): Promise<SwitchResult>
+  switchToCustomApi(profile: CustomApiProfileInput, restart: boolean): Promise<SwitchResult>
+  getCustomApiProfile(): Promise<CustomApiProfileSummary>
+  scanGrokDirectory(): Promise<GrokScanResult>
+  importGrokFiles(): Promise<GrokScanResult | null>
+  importGrokDirectory(): Promise<GrokScanResult | null>
+  importGrokPasted(text: string): Promise<GrokScanResult>
+  deleteGrokAccounts(ids: string[]): Promise<DeleteAccountsResult>
+  testGrokAccounts(ids?: string[]): Promise<GrokBatchTestResult>
+  cancelGrokTests(): Promise<void>
+  exportGrokAccounts(ids: string[], layout: 'separate' | 'bundle'): Promise<string[] | null>
   restartCodex(): Promise<RestartResult>
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   chooseAccountDirectory(): Promise<string | null>
+  chooseGrokDirectory(): Promise<string | null>
   revealSource(id: string): Promise<RestartResult>
   previewSessionRepair(targetProvider?: string): Promise<SessionRepairPreview>
   applySessionRepair(snapshotId: string, targetProvider: string): Promise<SessionRepairResult>
@@ -76,6 +104,7 @@ export interface CodexSwitcherApi {
   installUpdate(): Promise<void>
   runAutoSwitchNow(): Promise<AutoSwitchRunResult>
   onTestProgress(listener: (progress: TestProgress) => void): () => void
+  onGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
   onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
 }
@@ -93,9 +122,21 @@ export const ipcChannels = {
   switchAccount: 'accounts:switch',
   restore: 'accounts:restore',
   restoreApiMode: 'accounts:restore-api-mode',
+  customApiSwitch: 'custom-api:switch',
+  customApiProfile: 'custom-api:profile',
+  grokScan: 'grok:scan',
+  grokImport: 'grok:import',
+  grokImportDirectory: 'grok:import-directory',
+  grokImportPasted: 'grok:import-pasted',
+  grokDelete: 'grok:delete',
+  grokTest: 'grok:test',
+  grokCancelTest: 'grok:test-cancel',
+  grokExport: 'grok:export',
+  grokTestProgress: 'grok:test-progress',
   restart: 'codex:restart',
   settingsUpdate: 'settings:update',
   settingsChooseDirectory: 'settings:choose-directory',
+  settingsChooseGrokDirectory: 'settings:choose-grok-directory',
   revealSource: 'accounts:reveal-source',
   sessionRepairPreview: 'sessions:repair-preview',
   sessionRepairApply: 'sessions:repair-apply',

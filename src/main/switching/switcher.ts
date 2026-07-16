@@ -16,6 +16,7 @@ import type {
 } from '../../shared/types'
 import {
   applyChatGptConfig,
+  applyCustomApiConfig,
   restoreManagedConfig,
   type ManagedConfigSnapshot
 } from './config'
@@ -203,6 +204,42 @@ export class CredentialSwitcher {
       return {
         ok: false,
         message: error instanceof Error ? error.message : '账号切换失败',
+        backupPath
+      }
+    }
+  }
+
+  async switchToCustomApi(input: { baseUrl: string; model: string; apiKey: string }): Promise<SwitchResult> {
+    const previousAuth = await readOptional(this.options.authPath)
+    const previousConfig = (await readOptional(this.options.configPath)) ?? ''
+    let backupPath: string | null = null
+    try {
+      const appliedConfig = applyCustomApiConfig(previousConfig, input)
+      backupPath = await this.writeBackup({
+        createdAt: new Date().toISOString(),
+        authText: previousAuth,
+        configSnapshot: appliedConfig.snapshot
+      })
+      const authText = `${JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: input.apiKey }, null, 2)}\n`
+      await writeAtomic(this.options.authPath, authText)
+      await writeAtomic(this.options.configPath, appliedConfig.text)
+      const written = JSON.parse(await readFile(this.options.authPath, 'utf8')) as { OPENAI_API_KEY?: unknown }
+      if (typeof written.OPENAI_API_KEY !== 'string' || !written.OPENAI_API_KEY.trim()) {
+        throw new Error('API Key 配置校验失败')
+      }
+      await this.pruneBackups()
+      return { ok: true, message: '已切换到自定义 API 模式', backupPath }
+    } catch (error) {
+      try {
+        if (previousAuth === null) await rm(this.options.authPath, { force: true })
+        else await writeAtomic(this.options.authPath, previousAuth)
+        await writeAtomic(this.options.configPath, previousConfig)
+      } catch {
+        return { ok: false, message: '自定义 API 切换失败，且自动回滚未完整完成', backupPath }
+      }
+      return {
+        ok: false,
+        message: error instanceof Error ? `自定义 API 切换失败，已回滚：${error.message}` : '自定义 API 切换失败，已回滚',
         backupPath
       }
     }

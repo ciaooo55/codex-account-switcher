@@ -701,7 +701,7 @@ function tryStaticJavaScript(text: string): StaticValue[] | undefined {
   return values.length > 0 ? values : undefined
 }
 
-function extractedValues(text: string, options: CredentialParseOptions): unknown[] {
+export function extractCredentialValues(text: string, options: CredentialParseOptions): unknown[] {
   const normalizedText = text.replace(/^\uFEFF/, '')
   if (options.format === 'paste' || options.format === 'md' || options.format === 'txt') {
     return pastedValues(normalizedText)
@@ -727,7 +727,7 @@ export function parseCredentialText(
   })
 
   try {
-    const values = extractedValues(text, options)
+    const values = extractCredentialValues(text, options)
     validateValueLimits(values)
     const credentials = values
       .flatMap((value) => credentialRecords(value))

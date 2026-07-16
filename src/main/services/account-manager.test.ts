@@ -45,7 +45,10 @@ async function setup() {
     autoSwitchEnabled: false,
     autoSwitchIntervalSeconds: 300,
     autoSwitchAccountIds: [],
-    autoSwitchRestartCodex: true
+    autoSwitchRestartCodex: true,
+    grokDirectory: join(root, 'grok'),
+    customApiBaseUrl: 'https://api.openai.com/v1',
+    customApiModel: 'gpt-5.4'
   }
   const vault = new CredentialVault(join(root, 'app', 'vault.json'), cipher)
   const statusStore = new StatusStore(join(root, 'app', 'status.json'))

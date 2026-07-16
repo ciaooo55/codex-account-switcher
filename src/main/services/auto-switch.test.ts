@@ -14,7 +14,10 @@ function settings(enabled = true): AppSettings {
     autoSwitchEnabled: enabled,
     autoSwitchIntervalSeconds: 30,
     autoSwitchAccountIds: ['a'.repeat(64)],
-    autoSwitchRestartCodex: true
+    autoSwitchRestartCodex: true,
+    grokDirectory: 'E:\\grok',
+    customApiBaseUrl: 'https://api.openai.com/v1',
+    customApiModel: 'gpt-5.4'
   }
 }
 
