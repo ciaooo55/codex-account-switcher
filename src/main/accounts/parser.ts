@@ -154,6 +154,17 @@ function normalizeCredential(
   const idToken = tokenFrom(record, tokens, ID_TOKEN_KEYS)
   const accessPayload = decodeJwtPayload(accessToken)
   const idPayload = decodeJwtPayload(idToken)
+  const credentialType = firstString(record.type, record.platform)?.toLowerCase()
+  const issuer = firstString(accessPayload?.iss, idPayload?.iss)
+  const scope = firstString(record.scope, accessPayload?.scope, idPayload?.scope)
+  const baseUrl = firstString(record.base_url, record.baseUrl)
+  if (
+    credentialType === 'xai' ||
+    credentialType === 'grok' ||
+    issuer === 'https://auth.x.ai' ||
+    Boolean(scope?.includes('grok-cli:access')) ||
+    Boolean(baseUrl?.includes('x.ai'))
+  ) return null
   const accessAuth = claimRecord(accessPayload, 'https://api.openai.com/auth', 'auth')
   const idAuth = claimRecord(idPayload, 'https://api.openai.com/auth', 'auth')
   const accessProfile = claimRecord(

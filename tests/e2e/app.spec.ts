@@ -77,11 +77,12 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       }),
       'utf8'
     )
+    const grokAccessToken = jwt({ iss: 'https://auth.x.ai', sub: 'grok-e2e', exp: 1_910_000_000 })
     await writeFile(
       join(userData, 'grok-accounts', 'grok-e2e.json'),
       JSON.stringify({
         type: 'xai',
-        access_token: jwt({ iss: 'https://auth.x.ai', sub: 'grok-e2e', exp: 1_910_000_000 }),
+        access_token: grokAccessToken,
         refresh_token: 'grok-refresh-e2e',
         email: 'grok-e2e@example.com',
         sub: 'grok-e2e',
@@ -91,11 +92,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     )
     await writeFile(
       join(importSourceDirectory, 'folder-accounts.md'),
-      `# Imported account\n\n\`\`\`json\n${JSON.stringify({
-        type: 'codex',
-        access_token: jwt({ sub: 'folder-e2e', exp: 1_910_000_000 }),
-        email: 'folder-e2e@example.com'
-      })}\n\`\`\``,
+      `# Imported accounts\n\n\`\`\`json\n${JSON.stringify([{
+        type: 'codex', access_token: jwt({ sub: 'folder-e2e', exp: 1_910_000_000 }), email: 'folder-e2e@example.com'
+      }, {
+        type: 'xai', access_token: grokAccessToken, email: 'grok-e2e@example.com', sub: 'grok-e2e', team_id: 'team-grok-e2e'
+      }])}\n\`\`\``,
       'utf8'
     )
     await writeFile(
@@ -224,7 +225,10 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.restore())
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
 
+    await page.getByRole('button', { name: '导入账号' }).click()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'import-dialog.png'), fullPage: true })
     await page.getByRole('button', { name: '导入文件夹' }).click()
+    await expect(page.getByText(/Codex 导入 1、跳过 0；Grok 导入 0、跳过 1/)).toBeVisible()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
     expect(await readdir(join(userData, 'aa'))).toContain('folder-e2e@example.com_unknown.json')
     await unlink(join(importSourceDirectory, 'folder-accounts.md'))
@@ -235,6 +239,17 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '删除选中' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toHaveCount(0)
     expect(await readdir(join(userData, 'aa'))).not.toContain('folder-e2e@example.com_unknown.json')
+
+    const selectionTeamRow = page.getByRole('row', { name: /选择 team-e2e@example\.com/ })
+    const selectionAccountRow = page.getByRole('row', { name: /选择 e2e@example\.com/ })
+    await selectionTeamRow.click()
+    await expect(selectionTeamRow).toHaveClass(/selected-row/)
+    await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
+    await selectionAccountRow.click({ modifiers: ['Control'] })
+    await expect(page.getByText(/已选 2/)).toBeVisible()
+    await selectionAccountRow.click()
+    await expect(page.getByLabel('选择 e2e@example.com')).toBeChecked()
+    await expect(page.getByLabel('选择 team-e2e@example.com')).not.toBeChecked()
 
     await page.getByRole('button', { name: '测试全部' }).click()
     await expect(page.getByText('检测中').first()).toBeVisible()
@@ -269,7 +284,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.keyboard.press('Escape')
     expect(requests.slice(0, 4).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
 
-    await page.getByRole('button', { name: 'Grok 账号库' }).click()
+    await page.getByRole('button', { name: /^Grok 账号库/ }).click()
     const grokRow = page.getByRole('row', { name: /grok-e2e@example\.com/ })
     await expect(grokRow).toBeVisible()
     const beforeGrok = requests.length
@@ -277,7 +292,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(grokRow).toHaveClass(/status-row-valid/)
     await expect(grokRow).toContainText('周额度75%')
     expect(requests.slice(beforeGrok).sort()).toEqual(['/grok/billing', '/grok/billing?format=credits', '/grok/responses'].sort())
-    await page.getByRole('button', { name: 'Codex 账号库' }).click()
+    await page.getByRole('button', { name: /^Codex 账号库/ }).click()
 
     const teamRow = page.getByRole('row', { name: /选择 team-e2e@example\.com/ })
     await expect(teamRow).toContainText('外部凭据，需重启')
@@ -295,6 +310,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await accountRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '切换到此账号' }).click()
     await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
+    await expect(accountRow).toHaveAttribute('aria-current', 'true')
+    await expect(accountRow.getByText('正在使用')).toBeVisible()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-desktop.png'), fullPage: true })
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe('chatgpt')
 
     await page.getByLabel('选择 e2e@example.com').check()
@@ -313,7 +331,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       exp: 1_910_000_000,
       'https://api.openai.com/profile': { email: 'pasted-e2e@example.com' }
     })
-    await page.getByRole('button', { name: '粘贴导入' }).click()
+    await page.getByRole('button', { name: '导入账号' }).click()
     await page.getByLabel('凭据文本').fill(
       `账号：\n\`\`\`json\n${JSON.stringify({ type: 'codex', access_token: pastedAccess })}\n\`\`\``
     )
@@ -353,6 +371,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     )
 
     await page.setViewportSize({ width: 980, height: 640 })
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-compact.png'), fullPage: true })
     await page.getByRole('button', { name: '设置' }).click()
     const settingsPanel = page.getByRole('dialog', { name: '设置' })
     await expect(settingsPanel).toBeVisible()
@@ -392,7 +411,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     )
     expect(teamManagedFile).toBeTruthy()
     await unlink(join(userData, 'aa', teamManagedFile!))
-    await page.getByRole('button', { name: 'Codex 账号库' }).click()
+    await page.getByRole('button', { name: /^Codex 账号库/ }).click()
     await page.getByRole('button', { name: '重新扫描' }).click()
     await expect(page.getByText('team-e2e@example.com')).toHaveCount(0)
     await page.getByRole('button', { name: '定时切换' }).click()

@@ -1,7 +1,9 @@
 import {
+  BadgeCheck,
   CheckCircle2,
   CircleAlert,
   ClipboardPaste,
+  Code2,
   Copy,
   Download,
   FolderInput,
@@ -20,6 +22,7 @@ import {
   TestTube2,
   TimerReset,
   Trash2,
+  Zap,
   Wrench,
   X
 } from 'lucide-react'
@@ -34,6 +37,7 @@ import type {
   CredentialExportLayout,
   ScanResult,
   SessionRepairPreview,
+  UnifiedImportResult,
   UsageWindow
 } from '../../shared/types'
 import { GrokPage } from './GrokPage'
@@ -142,7 +146,7 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
-  const [pasteOpen, setPasteOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [exportDialog, setExportDialog] = useState<{
     accountIds: string[]
@@ -269,14 +273,51 @@ export function App(): React.JSX.Element {
     }
   }
 
+  const unifiedImportMessage = (result: UnifiedImportResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
+    const codexTotal = result.codex.imported + result.codex.skipped
+    const grokTotal = result.grok.imported + result.grok.skipped
+    const total = codexTotal + grokTotal
+    const errors = total === 0
+      ? [...new Set([...result.codex.errors, ...result.grok.errors])]
+      : []
+    return {
+      kind: errors.length > 0 ? 'warn' : 'ok',
+      text: total === 0
+        ? `${source}：未识别到 Codex 或 Grok 账号`
+        : `${source}：Codex 导入 ${result.codex.imported}、跳过 ${result.codex.skipped}；Grok 导入 ${result.grok.imported}、跳过 ${result.grok.skipped}`
+    }
+  }
+
+  const runUnifiedImport = async (
+    action: () => Promise<UnifiedImportResult | null>,
+    source: string
+  ): Promise<boolean> => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await action()
+      if (!result) {
+        setMessage({ kind: 'warn', text: '已取消操作' })
+        return false
+      }
+      await reload()
+      setMessage(unifiedImportMessage(result, source))
+      const recognized = result.codex.imported + result.codex.skipped + result.grok.imported + result.grok.skipped > 0
+      if (recognized) setImportOpen(false)
+      return recognized
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const submitPaste = async (): Promise<void> => {
     if (!pasteText.trim()) return
-    await run(async () => {
-      const result = await window.codexSwitcher.importPasted(pasteText)
-      if (result.imported === 0) throw new Error(result.errors[0] ?? '未提取到有效账号')
-      setPasteOpen(false)
+    if (await runUnifiedImport(() => window.codexSwitcher.importAnyPasted(pasteText), '粘贴导入完成')) {
       setPasteText('')
-    }, '粘贴内容已清洗并导入')
+    }
   }
 
   const checkForUpdates = async (): Promise<void> => {
@@ -386,6 +427,14 @@ export function App(): React.JSX.Element {
       else next.add(id)
       return next
     })
+  }
+
+  const selectAccountRow = (event: React.MouseEvent, id: string): void => {
+    if (event.ctrlKey || event.metaKey) {
+      toggle(id)
+      return
+    }
+    setSelected(new Set([id]))
   }
 
   const switchAccount = async (id: string, restart: boolean): Promise<void> => {
@@ -514,20 +563,23 @@ export function App(): React.JSX.Element {
     <div className="app-shell">
       <header className="app-header">
         <div className="app-identity">
-          <h1>Codex Account Switcher</h1>
+          <div className="identity-title"><span className="product-mark"><Code2 size={17} /></span><h1>Codex Account Switcher</h1></div>
           <p>{activeView === 'grok' ? snapshot.grokDirectory : snapshot.importDirectory}</p>
         </div>
         <nav className="view-tabs" aria-label="主页面">
           <button className={activeView === 'accounts' ? 'active' : ''} onClick={() => setActiveView('accounts')}>
-            <ListChecks size={16} />Codex 账号库
+            <ListChecks size={16} />Codex 账号库 <span className="tab-count">{snapshot.accounts.length}</span>
           </button>
           <button className={activeView === 'grok' ? 'active' : ''} onClick={() => setActiveView('grok')}>
-            <TestTube2 size={16} />Grok 账号库
+            <Zap size={16} />Grok 账号库 <span className="tab-count grok">{snapshot.grokAccounts.length}</span>
           </button>
           <button className={activeView === 'automation' ? 'active' : ''} onClick={() => setActiveView('automation')}>
             <TimerReset size={16} />定时切换
           </button>
         </nav>
+        <button className="header-import-button" onClick={() => setImportOpen(true)} disabled={busy}>
+          <Import size={17} />导入账号
+        </button>
         <button className="icon-button" title="设置" aria-label="设置" onClick={() => setSettingsOpen(true)} disabled={busy}>
           <Settings size={19} />
         </button>
@@ -542,26 +594,18 @@ export function App(): React.JSX.Element {
 
       {activeView === 'accounts' ? <div className="page-view accounts-view">
 
-      <section className="summary-band">
+      <section className="summary-band codex-summary">
         <div><span>账号</span><strong>{snapshot.accounts.length}</strong></div>
         <div><span>有效</span><strong className="text-ok">{counts.valid ?? 0}</strong></div>
         <div><span>5h 耗尽</span><strong className="text-warn">{counts.quota_exhausted_5h ?? 0}</strong></div>
         <div><span>周额度耗尽</span><strong className="text-warn">{counts.quota_exhausted_weekly ?? 0}</strong></div>
         <div><span>已失效 / 未知</span><strong className="text-error">{(counts.invalid ?? 0) + (counts.unknown_error ?? 0)}</strong></div>
-        <div><span>当前账号</span><strong>{snapshot.accounts.find((item) => item.active)?.email ?? '未知/API 模式'}</strong></div>
+        <div className="current-summary"><span>当前正在使用</span><strong><BadgeCheck size={15} />{snapshot.accounts.find((item) => item.active)?.email ?? '未知 / API 模式'}</strong></div>
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
       </section>
 
-      <div className="toolbar">
-        <button onClick={() => void runScan(() => window.codexSwitcher.importFiles(), '文件导入完成')} disabled={busy}>
-          <Import size={16} />导入文件
-        </button>
-        <button onClick={() => void runScan(() => window.codexSwitcher.importDirectory(), '文件夹导入完成')} disabled={busy}>
-          <FolderInput size={16} />导入文件夹
-        </button>
-        <button onClick={() => setPasteOpen(true)} disabled={busy}>
-          <ClipboardPaste size={16} />粘贴导入
-        </button>
+      <div className="toolbar codex-toolbar">
+        <div className="toolbar-group">
         <button onClick={() => void runScan(() => window.codexSwitcher.scanDirectory(), 'aa 重新扫描完成')} disabled={busy}>
           <RefreshCw size={16} />重新扫描
         </button>
@@ -571,7 +615,8 @@ export function App(): React.JSX.Element {
         <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || selected.size === 0 || snapshot.testing.active}>
           <Trash2 size={16} />删除选中
         </button>
-        <span className="toolbar-divider" />
+        </div>
+        <div className="toolbar-group">
         <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成')} disabled={busy || snapshot.testing.active}>
           <TestTube2 size={16} />测试全部
         </button>
@@ -583,7 +628,8 @@ export function App(): React.JSX.Element {
             <Square size={15} />取消
           </button>
         )}
-        <span className="toolbar-divider" />
+        </div>
+        <div className="toolbar-group switch-actions">
         <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据切换后必须重启 Codex，且 Codex 不会自动刷新' : undefined}>
           <CheckCircle2 size={16} />切换账号
         </button>
@@ -596,6 +642,8 @@ export function App(): React.JSX.Element {
         }, '已恢复上一个配置')} disabled={busy}>
           <RotateCcw size={16} />恢复上一个
         </button>
+        </div>
+        <div className="toolbar-group utility-actions">
         <button onClick={() => void run(async () => {
           const result = await window.codexSwitcher.restoreApiMode(false)
           if (!result.ok) throw new Error(result.message)
@@ -605,10 +653,10 @@ export function App(): React.JSX.Element {
         <button onClick={() => setSettingsOpen(true)} disabled={busy}>
           <KeyRound size={16} />自定义 API
         </button>
-        <span className="toolbar-divider" />
         <button onClick={() => void openSessionRepair()} disabled={busy}>
           <Wrench size={16} />修复历史会话
         </button>
+        </div>
       </div>
 
       {snapshot.testing.active && (
@@ -626,7 +674,7 @@ export function App(): React.JSX.Element {
           <option value="">全部状态</option>
           {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <span className="selection-count">已选 {selected.size}</span>
+        <span className="selection-count">显示 {accounts.length} / {snapshot.accounts.length} · 已选 {selected.size}</span>
       </div>
 
       <div className="table-wrap">
@@ -645,11 +693,13 @@ export function App(): React.JSX.Element {
                 key={account.id}
                 className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
                 aria-busy={running}
+                aria-current={account.active ? 'true' : undefined}
+                onClick={(event) => selectAccountRow(event, account.id)}
                 onContextMenu={(event) => openContextMenu(event, account)}
               >
-                <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onChange={() => toggle(account.id)} /></td>
+                <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggle(account.id)} /></td>
                 <td>
-                  <div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div>
+                  <div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.active && <span className="active-badge"><BadgeCheck size={12} />正在使用</span>}</div>
                   <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {switchCapability(account)}</div>
                 </td>
                 <td>
@@ -662,7 +712,7 @@ export function App(): React.JSX.Element {
                 <td>{account.planType ?? '-'}</td>
                 <td><Quota account={account} running={running} /></td>
                 <td><div>刷新 {dateTime(account.lastRefresh)}</div><div className="muted">到期 {dateTime(account.accessExpiresAt)}</div><div className="muted">检测 {dateTime(account.lastCheckedAt)}</div></td>
-                <td><div className="source-path" title={account.sourcePath}>{account.sourcePath}</div><span className="format-label">{account.sourceDialect.toUpperCase()} · {account.sourceFormat.toUpperCase()}</span></td>
+                <td><div className="source-path" title={account.sourcePath}>{account.sourcePath}</div><div className="source-tags"><span className="provider-label codex"><Code2 size={11} />CODEX</span><span className="format-label">{account.sourceDialect.toUpperCase()} · {account.sourceFormat.toUpperCase()}</span></div></td>
               </tr>
               )
             })}
@@ -725,8 +775,11 @@ export function App(): React.JSX.Element {
                   const checked = settingsDraft.autoSwitchAccountIds.includes(account.id)
                   const running = snapshot.testing.runningIds.includes(account.id)
                   return (
-                    <tr key={account.id} className={`status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}`}>
-                      <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
+                    <tr key={account.id} className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${checked ? ' selected-row' : ''}`} onClick={() => {
+                      if (!account.switchable) return
+                      setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: checked ? settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) : [...settingsDraft.autoSwitchAccountIds, account.id] })
+                    }}>
+                      <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
                       <td><div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div><div className="workspace-id">{switchCapability(account)}</div></td>
                       <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail">{account.detail}</div></>}</td>
                       <td>{account.planType ?? '未知'}</td>
@@ -742,27 +795,30 @@ export function App(): React.JSX.Element {
         </main>
       )}
 
-      {pasteOpen && (
+      {importOpen && (
         <div className="repair-backdrop" role="presentation">
-          <section className="compact-dialog" role="dialog" aria-modal="true" aria-label="粘贴导入账号">
+          <section className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号">
             <div className="panel-header">
-              <h2>粘贴导入</h2>
-              <button className="icon-button" title="关闭" aria-label="关闭粘贴导入" onClick={() => setPasteOpen(false)} disabled={busy}>
+              <div><h2>导入账号</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span className="provider-label grok"><Zap size={11} />Grok / xAI</span><span>自动识别并分库</span></div></div>
+              <button className="icon-button" title="关闭" aria-label="关闭导入账号" onClick={() => setImportOpen(false)} disabled={busy}>
                 <X size={18} />
               </button>
             </div>
+            <div className="import-source-actions">
+              <button aria-label="导入多个文件" onClick={() => void runUnifiedImport(() => window.codexSwitcher.importAnyFiles(), '文件导入完成')} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>可多选</small></span></button>
+              <button aria-label="导入文件夹" onClick={() => void runUnifiedImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归读取</small></span></button>
+            </div>
+            <div className="import-divider"><span>或粘贴凭据</span></div>
             <label className="paste-field">
-              凭据文本
               <textarea
                 aria-label="凭据文本"
                 value={pasteText}
                 onChange={(event) => setPasteText(event.target.value)}
-                placeholder="粘贴 JSON、JSONL、键值文本或静态 JS"
+                placeholder="粘贴 JSON、JSONL、CPA、SubAPI、键值文本或静态 JS"
               />
             </label>
-            <div className="dialog-note">内容会在主进程清洗解析，完整 token 不会进入界面状态或日志。</div>
             <div className="panel-actions">
-              <button onClick={() => setPasteOpen(false)} disabled={busy}>取消</button>
+              <button onClick={() => setImportOpen(false)} disabled={busy}>取消</button>
               <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim()}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
                 清洗并导入

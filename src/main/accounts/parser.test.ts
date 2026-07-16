@@ -94,6 +94,25 @@ describe('parseCredentialText', () => {
     })
   })
 
+  it('does not misclassify direct xAI credentials as Codex accounts', () => {
+    const result = parseCredentialText(
+      JSON.stringify({
+        type: 'xai',
+        base_url: 'https://api.x.ai/v1',
+        access_token: jwt({
+          iss: 'https://auth.x.ai',
+          sub: 'xai-user',
+          scope: 'openid offline_access grok-cli:access'
+        }),
+        email: 'grok@example.com'
+      }),
+      { sourcePath: 'grok.json', format: 'json' }
+    )
+
+    expect(result.credentials).toEqual([])
+    expect(result.errors[0]).toContain('grok.json')
+  })
+
   it('parses a native Sub2API file containing many accounts with outer metadata', () => {
     const payload = {
       type: 'sub2api-data',

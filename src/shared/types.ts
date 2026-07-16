@@ -208,6 +208,11 @@ export interface GrokScanResult {
   accounts: GrokAccountSummary[]
 }
 
+export interface UnifiedImportResult {
+  codex: ScanResult
+  grok: GrokScanResult
+}
+
 export interface GrokBatchTestResult {
   tested: number
   results: GrokTestResult[]

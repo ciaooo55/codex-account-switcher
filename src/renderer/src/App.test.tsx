@@ -116,6 +116,15 @@ function api(): CodexSwitcherApi {
       errors: [],
       accounts: snapshot.accounts
     }),
+    importAnyFiles: vi.fn().mockResolvedValue(null),
+    importAnyDirectory: vi.fn().mockResolvedValue({
+      codex: { imported: 2, skipped: 0, errors: [], accounts: snapshot.accounts },
+      grok: { imported: 0, skipped: 0, errors: [], accounts: [] }
+    }),
+    importAnyPasted: vi.fn().mockResolvedValue({
+      codex: { imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts },
+      grok: { imported: 0, skipped: 0, errors: [], accounts: [] }
+    }),
     deleteAccounts: vi.fn().mockResolvedValue({
       deleted: 1,
       message: '已从账号库删除 1 个账号，原始文件未修改'
@@ -222,8 +231,27 @@ describe('App', () => {
     expect(screen.getByText('second@example.com')).toBeInTheDocument()
     expect(screen.getByText('80%')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '测试全部' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '导入文件' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '导入文件夹' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导入账号' })).toBeInTheDocument()
+    expect(screen.getByText('正在使用')).toBeInTheDocument()
+  })
+
+  it('selects accounts by clicking the row and supports ctrl multi-select', async () => {
+    render(<App />)
+    const firstRow = await screen.findByRole('row', { name: /person@example\.com/ })
+    const secondRow = screen.getByRole('row', { name: /second@example\.com/ })
+
+    fireEvent.click(secondRow)
+    expect(screen.getByLabelText('选择 second@example.com')).toBeChecked()
+    expect(screen.getByLabelText('选择 person@example.com')).not.toBeChecked()
+    expect(secondRow).toHaveClass('selected-row')
+
+    fireEvent.click(firstRow, { ctrlKey: true })
+    expect(screen.getByLabelText('选择 second@example.com')).toBeChecked()
+    expect(screen.getByLabelText('选择 person@example.com')).toBeChecked()
+
+    fireEvent.click(firstRow)
+    expect(screen.getByLabelText('选择 person@example.com')).toBeChecked()
+    expect(screen.getByLabelText('选择 second@example.com')).not.toBeChecked()
   })
 
   it('keeps Codex and Grok test-all actions isolated by page', async () => {
@@ -252,8 +280,11 @@ describe('App', () => {
     window.codexSwitcher = bridge
     render(<App />)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Grok 账号库' }))
-    await screen.findByText('grok@example.com')
+    fireEvent.click(await screen.findByRole('button', { name: /^Grok 账号库/ }))
+    const grokRow = await screen.findByRole('row', { name: /grok@example\.com/ })
+    fireEvent.click(grokRow)
+    expect(screen.getByLabelText('选择 Grok grok@example.com')).toBeChecked()
+    expect(grokRow).toHaveClass('selected-row')
     fireEvent.click(screen.getByRole('button', { name: '测试全部' }))
 
     await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith())
@@ -264,36 +295,37 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
     fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
 
-    await waitFor(() => expect(window.codexSwitcher.importDirectory).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('文件夹导入完成：导入 2，跳过 0')).toBeInTheDocument()
+    await waitFor(() => expect(window.codexSwitcher.importAnyDirectory).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('文件夹导入完成：Codex 导入 2、跳过 0；Grok 导入 0、跳过 0')).toBeInTheDocument()
   })
 
   it('does not report success when the file picker is cancelled', async () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByRole('button', { name: '导入文件' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
 
     expect(await screen.findByText('已取消操作')).toBeInTheDocument()
     expect(screen.queryByText(/文件导入完成/)).not.toBeInTheDocument()
   })
 
   it('reports partial import failures instead of hiding them behind a success message', async () => {
-    window.codexSwitcher.importFiles = vi.fn().mockResolvedValue({
-      imported: 3,
-      skipped: 2,
-      errors: ['broken.json: invalid'],
-      accounts: snapshot.accounts
+    window.codexSwitcher.importAnyFiles = vi.fn().mockResolvedValue({
+      codex: { imported: 3, skipped: 2, errors: ['broken.json: invalid'], accounts: snapshot.accounts },
+      grok: { imported: 1, skipped: 0, errors: [], accounts: [] }
     })
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByRole('button', { name: '导入文件' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
 
-    const warning = await screen.findByText('文件导入完成：导入 3，跳过 2，失败 1')
-    expect(warning.closest('.message')).toHaveClass('warn')
+    const result = await screen.findByText('文件导入完成：Codex 导入 3、跳过 2；Grok 导入 1、跳过 0')
+    expect(result.closest('.message')).toHaveClass('ok')
   })
 
   it('filters by persistent status and searches workspace text', async () => {
@@ -485,14 +517,14 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByRole('button', { name: '粘贴导入' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
     fireEvent.change(screen.getByLabelText('凭据文本'), {
       target: { value: '{"access_token":"secret"}' }
     })
     fireEvent.click(screen.getByRole('button', { name: '清洗并导入' }))
 
     await waitFor(() =>
-      expect(window.codexSwitcher.importPasted).toHaveBeenCalledWith('{"access_token":"secret"}')
+      expect(window.codexSwitcher.importAnyPasted).toHaveBeenCalledWith('{"access_token":"secret"}')
     )
   })
 

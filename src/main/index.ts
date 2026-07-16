@@ -555,6 +555,52 @@ async function main(): Promise<void> {
     const text = z.string().min(1).max(100 * 1024 * 1024).parse(input)
     return runAccountLibraryMutation(() => manager.importPasted(text))
   })
+  const importAnyFiles = async (paths: string[]) => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    return runAccountLibraryMutation(async () => ({
+      codex: await manager.importFiles(paths, { archiveSources: true }),
+      grok: await grokManager.importFiles(paths)
+    }))
+  }
+  const importAnyDirectory = async (directory: string) => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    return runAccountLibraryMutation(async () => ({
+      codex: await manager.importDirectory(directory),
+      grok: await grokManager.importDirectory(directory)
+    }))
+  }
+  const importAnyPasted = async (text: string) => {
+    if (grokTestController) throw new Error('Grok 检测正在运行')
+    return runAccountLibraryMutation(async () => ({
+      codex: await manager.importPasted(text),
+      grok: await grokManager.importPasted(text)
+    }))
+  }
+  ipcMain.handle(ipcChannels.importAny, async () => {
+    const result = await dialog.showOpenDialog({
+      title: '导入 Codex 或 Grok 账号文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
+    })
+    return result.canceled ? null : importAnyFiles(result.filePaths)
+  })
+  ipcMain.handle(ipcChannels.importAnyDirectory, async () => {
+    let directory: string | null = null
+    if (e2eMode && process.env.CODEX_SWITCHER_E2E_IMPORT_DIR) {
+      directory = resolve(process.env.CODEX_SWITCHER_E2E_IMPORT_DIR)
+    } else {
+      const settings = await settingsStore.get()
+      const result = await dialog.showOpenDialog({
+        title: '导入文件夹内的 Codex 或 Grok 账号',
+        defaultPath: settings.accountDirectory,
+        properties: ['openDirectory']
+      })
+      if (!result.canceled) directory = result.filePaths[0]
+    }
+    return directory ? importAnyDirectory(directory) : null
+  })
+  ipcMain.handle(ipcChannels.importAnyPasted, (_event, input: unknown) =>
+    importAnyPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input)))
   ipcMain.handle(ipcChannels.deleteAccounts, async (_event, input: unknown) => {
     const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
     const result = await runAccountLibraryMutation(() => manager.deleteAccounts(ids))
