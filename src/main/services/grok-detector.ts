@@ -25,6 +25,20 @@ interface BillingSummary {
   monthlyResetAt: string | null
 }
 
+interface UpstreamError {
+  status: number | null
+  code: string
+  message: string
+}
+
+interface FetchResult {
+  response: Response
+  body: unknown
+  text: string
+}
+
+const TRANSIENT_STATUS = new Set([408, 500, 502, 503, 504])
+
 function number(...values: unknown[]): number | null {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -39,6 +53,62 @@ function object(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+function string(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function upstreamError(body: unknown, text: string, fallbackStatus: number | null): UpstreamError {
+  const root = object(body)
+  const nested = object(root?.error)
+  return {
+    status: number(nested?.status, root?.status, fallbackStatus),
+    code: string(nested?.code, root?.code, nested?.type, root?.type),
+    message: string(nested?.message, typeof root?.error === 'string' ? root.error : null, root?.message, text)
+  }
+}
+
+function sseError(text: string): UpstreamError | null {
+  for (const line of text.split(/\r?\n/)) {
+    const data = line.trim().replace(/^data:\s*/, '')
+    if (!data || data === '[DONE]') continue
+    try {
+      const body = JSON.parse(data)
+      const root = object(body)
+      if (root?.type === 'error' || object(root?.error) || number(root?.status) !== null) {
+        return upstreamError(body, '', number(root?.status))
+      }
+    } catch {
+      // Ignore non-JSON SSE fields such as event names.
+    }
+  }
+  return null
+}
+
+function quotaError(error: UpstreamError): boolean {
+  const detail = `${error.code} ${error.message}`.toLowerCase()
+  return error.status === 429 ||
+    detail.includes('free-usage-exhausted') ||
+    detail.includes('included free usage') ||
+    detail.includes('resource_exhausted') ||
+    detail.includes('quota exhausted') ||
+    detail.includes('rate limit exceeded') ||
+    detail.includes('used all')
+}
+
+function completedProbe(probe: FetchResult): boolean {
+  const body = object(probe.body)
+  return Boolean(
+    body?.id ||
+    body?.output ||
+    object(body?.response)?.id ||
+    probe.text.includes('response.completed') ||
+    probe.text.includes('data: [DONE]')
+  )
+}
+
 function date(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const parsed = Date.parse(value)
@@ -49,7 +119,7 @@ function cents(value: unknown): number | null {
   if (typeof value === 'number') return value
   if (typeof value === 'string') return number(value)
   const item = object(value)
-  return number(item?.cents, item?.amount, item?.value)
+  return number(item?.cents, item?.amount, item?.value, item?.val)
 }
 
 function parseBilling(body: unknown): BillingSummary | null {
@@ -158,7 +228,7 @@ export class GrokCredentialTester {
   }
 
   private async check(credential: GrokCredential, signal?: AbortSignal): Promise<GrokTestResult> {
-    const headers = this.headers(credential.accessToken)
+    const headers = this.headers(credential.accessToken, false)
     const [weekly, monthly] = await Promise.all([
       this.fetchJson(`${this.cliBase}/billing?format=credits`, { headers, signal }),
       this.fetchJson(`${this.cliBase}/billing`, { headers, signal })
@@ -179,23 +249,49 @@ export class GrokCredentialTester {
       checkedAt: new Date().toISOString()
     } : null
 
-    const probe = await this.fetchJson(`${this.cliBase}/responses`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: 'grok-4.5', input: '.', max_output_tokens: 1, store: false }),
-      signal
-    })
-    if (probe.response.status === 401 || probe.response.status === 403) {
-      return result(credential, 'invalid', 'Grok 凭据已失效或无订阅权限', probe.response.status, false, usage)
+    if (
+      (billing?.weeklyPercent !== null && billing?.weeklyPercent !== undefined && billing.weeklyPercent >= 100) ||
+      (billing?.monthlyPercent !== null && billing?.monthlyPercent !== undefined && billing.monthlyPercent >= 100)
+    ) {
+      return result(credential, 'quota_exhausted_weekly', 'Grok 包含额度已耗尽', 200, false, usage)
     }
-    if (probe.response.status === 429) {
-      return result(credential, 'quota_exhausted_weekly', 'Grok 可用额度已耗尽', 429, false, usage)
+
+    let probe: FetchResult | null = null
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      probe = await this.fetchJson(`${this.cliBase}/responses`, {
+        method: 'POST',
+        headers: this.headers(credential.accessToken, true),
+        body: JSON.stringify({
+          model: 'grok-4.5',
+          stream: true,
+          store: false,
+          input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply OK.' }] }],
+          tools: [{ type: 'x_search' }],
+          tool_choice: 'auto'
+        }),
+        signal
+      })
+      if (!TRANSIENT_STATUS.has(probe.response.status) || attempt === 1) break
+      await this.wait(300, signal)
     }
-    if (!probe.response.ok) {
-      return result(credential, 'unknown_error', `Grok 检测接口返回 ${probe.response.status}`, probe.response.status, false, usage)
+    if (!probe) throw new Error('Grok 探测请求未执行')
+    const streamError = sseError(probe.text)
+    const error = streamError ?? upstreamError(probe.body, '', probe.response.status)
+    const effectiveStatus = streamError?.status ?? probe.response.status
+    if (effectiveStatus === 401 || effectiveStatus === 403) {
+      return result(credential, 'invalid', 'Grok 凭据已失效或无订阅权限', effectiveStatus, false, usage)
     }
-    if (billing?.weeklyPercent !== null && billing?.weeklyPercent !== undefined && billing.weeklyPercent >= 100) {
-      return result(credential, 'quota_exhausted_weekly', '周额度已耗尽', probe.response.status, false, usage)
+    if (quotaError(error)) {
+      return result(credential, 'quota_exhausted_weekly', 'Grok 包含额度已耗尽', effectiveStatus, false, usage)
+    }
+    if (!probe.response.ok || streamError) {
+      const detail = TRANSIENT_STATUS.has(effectiveStatus)
+        ? `Grok 上游暂时不可用（${effectiveStatus}），凭据未判失效`
+        : `Grok 检测请求返回 ${effectiveStatus}`
+      return result(credential, 'unknown_error', detail, effectiveStatus, false, usage)
+    }
+    if (!completedProbe(probe)) {
+      return result(credential, 'unknown_error', 'Grok 流式检测未返回完成事件', probe.response.status, false, usage)
     }
     return result(credential, 'valid', '凭据、额度和真实请求均验证成功', probe.response.status, false, usage)
   }
@@ -247,18 +343,38 @@ export class GrokCredentialTester {
     return parsed.toString()
   }
 
-  private headers(token: string): Record<string, string> {
+  private headers(token: string, stream: boolean): Record<string, string> {
     return {
       Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
+      Accept: stream ? 'text/event-stream' : 'application/json',
       'Content-Type': 'application/json',
+      Connection: 'Keep-Alive',
       'X-XAI-Token-Auth': 'xai-grok-cli',
       'X-Grok-Client-Version': CLIENT_VERSION,
       'User-Agent': `xai-grok-workspace/${CLIENT_VERSION}`
     }
   }
 
-  private async fetchJson(url: string, init: RequestInit): Promise<{ response: Response; body: unknown }> {
+  private async wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let timeout: ReturnType<typeof setTimeout>
+      const cleanup = (): void => signal?.removeEventListener('abort', abort)
+      const finish = (): void => {
+        cleanup()
+        resolve()
+      }
+      const abort = (): void => {
+        clearTimeout(timeout)
+        cleanup()
+        reject(new Error('aborted'))
+      }
+      timeout = setTimeout(finish, milliseconds)
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
+    })
+  }
+
+  private async fetchJson(url: string, init: RequestInit): Promise<FetchResult> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.options.timeoutMs)
     const abort = (): void => controller.abort()
@@ -268,7 +384,7 @@ export class GrokCredentialTester {
       const text = (await response.text()).slice(0, 1_048_576)
       let body: unknown = null
       try { body = text ? JSON.parse(text) : null } catch { body = null }
-      return { response, body }
+      return { response, body, text }
     } finally {
       clearTimeout(timeout)
       init.signal?.removeEventListener('abort', abort)

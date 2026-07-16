@@ -180,7 +180,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         return
       }
       if (request.url === '/grok/responses') {
-        response.end(JSON.stringify({ id: 'grok-response-e2e', output: [] }))
+        response.setHeader('content-type', 'text/event-stream')
+        response.end('data: {"type":"response.completed","response":{"id":"grok-response-e2e","status":"completed","output":[]}}\n\n')
         return
       }
       response.end(JSON.stringify({ output: [] }))
@@ -245,11 +246,12 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await selectionTeamRow.click()
     await expect(selectionTeamRow).toHaveClass(/selected-row/)
     await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
-    await selectionAccountRow.click({ modifiers: ['Control'] })
+    await selectionAccountRow.click()
     await expect(page.getByText(/已选 2/)).toBeVisible()
     await selectionAccountRow.click()
-    await expect(page.getByLabel('选择 e2e@example.com')).toBeChecked()
-    await expect(page.getByLabel('选择 team-e2e@example.com')).not.toBeChecked()
+    await expect(page.getByLabel('选择 e2e@example.com')).not.toBeChecked()
+    await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
+    await selectionAccountRow.click()
 
     await page.getByRole('button', { name: '测试全部' }).click()
     await expect(page.getByText('检测中').first()).toBeVisible()

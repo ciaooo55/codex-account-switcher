@@ -1,5 +1,5 @@
 import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
-import { extname, join, resolve } from 'node:path'
+import { basename, extname, join, resolve } from 'node:path'
 import { strFromU8, unzipSync } from 'fflate'
 import type {
   CredentialExportLayout,
@@ -94,22 +94,22 @@ export class GrokAccountManager {
   async scanDirectory(): Promise<GrokScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    return this.importPaths(await files(directory), true)
+    return this.importPaths(await files(directory))
   }
 
   async importDirectory(directory: string): Promise<GrokScanResult> {
     if (!(await stat(directory)).isDirectory()) throw new Error('选择的路径不是文件夹')
-    return this.importPaths(await files(directory), false)
+    return this.importPaths(await files(directory))
   }
 
   async importFiles(paths: string[]): Promise<GrokScanResult> {
-    return this.importPaths(paths, false)
+    return this.importPaths(paths)
   }
 
   async importPasted(text: string): Promise<GrokScanResult> {
     if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error('粘贴内容超过安全限制')
     const parsed = parseGrokCredentialText(text, { sourcePath: 'pasted-grok.json', format: 'paste' })
-    return this.mergeImported(parsed.credentials, parsed.errors, [], false)
+    return this.mergeImported(parsed.credentials, parsed.errors)
   }
 
   async listAccounts(): Promise<GrokAccountSummary[]> {
@@ -139,11 +139,12 @@ export class GrokAccountManager {
 
   async deleteAccounts(ids: string[]): Promise<DeleteAccountsResult> {
     const selected = new Set(ids)
-    const credentials = await this.listCredentials()
-    const removed = credentials.filter((item) => selected.has(item.id))
-    await Promise.all(removed.map((item) => rm(item.sourcePath, { force: true })))
-    await this.options.statusStore.removeMany(removed.map((item) => item.id))
-    return { deleted: removed.length, message: `已删除 ${removed.length} 个 Grok 账号文件` }
+    const records = await this.managedCredentialRecords()
+    const removed = records.filter((item) => selected.has(item.credential.id))
+    await Promise.all(removed.map((item) => rm(item.path, { force: true })))
+    const removedIds = [...new Set(removed.map((item) => item.credential.id))]
+    await this.options.statusStore.removeMany(removedIds)
+    return { deleted: removedIds.length, message: `已删除 ${removedIds.length} 个 Grok 账号和对应的托管凭证文件` }
   }
 
   async testAccounts(ids?: string[], options: TestOptions = {}): Promise<GrokBatchTestResult> {
@@ -218,10 +219,9 @@ export class GrokAccountManager {
     return paths
   }
 
-  private async importPaths(paths: string[], authoritative: boolean): Promise<GrokScanResult> {
+  private async importPaths(paths: string[]): Promise<GrokScanResult> {
     const credentials: GrokCredential[] = []
     const errors: string[] = []
-    const parsedSources: string[] = []
     for (const path of paths) {
       const format = FORMATS[extname(path).toLowerCase()]
       if (!format) continue
@@ -239,20 +239,17 @@ export class GrokAccountManager {
         } else {
           const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
           credentials.push(...parsed.credentials)
-          if (parsed.credentials.length > 0) parsedSources.push(path)
         }
       } catch (error) {
         errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
       }
     }
-    return this.mergeImported(credentials, errors, parsedSources, authoritative)
+    return this.mergeImported(credentials, errors)
   }
 
   private async mergeImported(
     importedValues: GrokCredential[],
-    errors: string[],
-    parsedSources: string[],
-    authoritative: boolean
+    errors: string[]
   ): Promise<GrokScanResult> {
     const existing = await this.listCredentials(true)
     const imported = dedupeGrokCredentials(importedValues)
@@ -261,24 +258,9 @@ export class GrokAccountManager {
     const merged = dedupeGrokCredentials([...existing, ...imported])
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    const expected = new Set<string>()
     for (const credential of merged) {
       const path = join(directory, managedName(credential))
-      expected.add(resolve(path).toLowerCase())
       await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
-    }
-    const directoryKey = `${resolve(directory).toLowerCase()}\\`
-    if (authoritative && errors.length === 0) {
-      for (const source of parsedSources) {
-        const sourceKey = resolve(source).toLowerCase()
-        if (sourceKey.startsWith(directoryKey) && !expected.has(sourceKey)) await rm(source, { force: true })
-      }
-    }
-    for (const path of await files(directory)) {
-      if (extname(path).toLowerCase() !== '.json') continue
-      if (path.split(/[\\/]/).pop()?.startsWith(MANAGED_PREFIX) && !expected.has(resolve(path).toLowerCase())) {
-        await rm(path, { force: true })
-      }
     }
     return {
       imported: importedCount,
@@ -289,11 +271,13 @@ export class GrokAccountManager {
   }
 
   private async listCredentials(managedOnly = true): Promise<GrokCredential[]> {
+    if (managedOnly) {
+      return dedupeGrokCredentials((await this.managedCredentialRecords()).map((item) => item.credential))
+    }
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     const result: GrokCredential[] = []
     for (const path of await files(directory)) {
-      if (managedOnly && !path.split(/[\\/]/).pop()?.startsWith(MANAGED_PREFIX)) continue
       const format = FORMATS[extname(path).toLowerCase()]
       if (!format || format === 'zip') continue
       try {
@@ -304,6 +288,25 @@ export class GrokAccountManager {
       }
     }
     return dedupeGrokCredentials(result)
+  }
+
+  private async managedCredentialRecords(): Promise<Array<{ path: string; credential: GrokCredential }>> {
+    const directory = await this.directory()
+    await mkdir(directory, { recursive: true })
+    const result: Array<{ path: string; credential: GrokCredential }> = []
+    for (const path of await files(directory)) {
+      if (extname(path).toLowerCase() !== '.json' || !basename(path).startsWith(MANAGED_PREFIX)) continue
+      try {
+        const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
+        if (parsed.credentials.length !== 1) continue
+        const credential = parsed.credentials[0]
+        if (basename(path).toLowerCase() !== managedName(credential).toLowerCase()) continue
+        result.push({ path, credential })
+      } catch {
+        // A similarly named user source file is not an application-managed credential.
+      }
+    }
+    return result
   }
 
   private async directory(): Promise<string> {

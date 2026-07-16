@@ -235,7 +235,7 @@ describe('App', () => {
     expect(screen.getByText('正在使用')).toBeInTheDocument()
   })
 
-  it('selects accounts by clicking the row and supports ctrl multi-select', async () => {
+  it('toggles additive multi-select by clicking account rows', async () => {
     render(<App />)
     const firstRow = await screen.findByRole('row', { name: /person@example\.com/ })
     const secondRow = screen.getByRole('row', { name: /second@example\.com/ })
@@ -245,13 +245,13 @@ describe('App', () => {
     expect(screen.getByLabelText('选择 person@example.com')).not.toBeChecked()
     expect(secondRow).toHaveClass('selected-row')
 
-    fireEvent.click(firstRow, { ctrlKey: true })
+    fireEvent.click(firstRow)
     expect(screen.getByLabelText('选择 second@example.com')).toBeChecked()
     expect(screen.getByLabelText('选择 person@example.com')).toBeChecked()
 
     fireEvent.click(firstRow)
-    expect(screen.getByLabelText('选择 person@example.com')).toBeChecked()
-    expect(screen.getByLabelText('选择 second@example.com')).not.toBeChecked()
+    expect(screen.getByLabelText('选择 person@example.com')).not.toBeChecked()
+    expect(screen.getByLabelText('选择 second@example.com')).toBeChecked()
   })
 
   it('keeps Codex and Grok test-all actions isolated by page', async () => {

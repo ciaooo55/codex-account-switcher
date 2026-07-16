@@ -91,16 +91,12 @@ export function GrokPage({ snapshot, onSnapshot, notify }: Props): React.JSX.Ele
     }, 'Grok 账号已删除')
   }
 
-  const selectRow = (event: React.MouseEvent, id: string): void => {
-    if (event.ctrlKey || event.metaKey) {
-      setSelected((current) => {
-        const next = new Set(current)
-        next.has(id) ? next.delete(id) : next.add(id)
-        return next
-      })
-      return
-    }
-    setSelected(new Set([id]))
+  const selectRow = (id: string): void => {
+    setSelected((current) => {
+      const next = new Set(current)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
   }
 
   const exportAccounts = async (layout: 'separate' | 'bundle', chosen?: string[]): Promise<void> => {
@@ -152,7 +148,7 @@ export function GrokPage({ snapshot, onSnapshot, notify }: Props): React.JSX.Ele
         <thead><tr><th className="select-column"><input type="checkbox" aria-label="选择全部 Grok 账号" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th><th>账号</th><th>状态</th><th>等级</th><th>用量与重置</th><th>凭据时间</th><th>托管文件</th></tr></thead>
         <tbody>{accounts.map((account) => {
           const running = snapshot.grokTesting.runningIds.includes(account.id)
-          return <tr key={account.id} className={`account-row status-row-${account.status}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`} onClick={(event) => selectRow(event, account.id)} onContextMenu={(event) => {
+          return <tr key={account.id} className={`account-row status-row-${account.status}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`} onClick={() => selectRow(account.id)} onContextMenu={(event) => {
             event.preventDefault()
             setSelected(new Set([account.id]))
             setContextMenu({ account, x: Math.min(event.clientX, window.innerWidth - 240), y: Math.min(event.clientY, window.innerHeight - 230) })

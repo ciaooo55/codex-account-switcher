@@ -429,13 +429,7 @@ export function App(): React.JSX.Element {
     })
   }
 
-  const selectAccountRow = (event: React.MouseEvent, id: string): void => {
-    if (event.ctrlKey || event.metaKey) {
-      toggle(id)
-      return
-    }
-    setSelected(new Set([id]))
-  }
+  const selectAccountRow = (id: string): void => toggle(id)
 
   const switchAccount = async (id: string, restart: boolean): Promise<void> => {
     if (restart && !window.confirm('切换并重启会中断正在运行的 Codex 任务，继续吗？')) return
@@ -694,7 +688,7 @@ export function App(): React.JSX.Element {
                 className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
                 aria-busy={running}
                 aria-current={account.active ? 'true' : undefined}
-                onClick={(event) => selectAccountRow(event, account.id)}
+                onClick={() => selectAccountRow(account.id)}
                 onContextMenu={(event) => openContextMenu(event, account)}
               >
                 <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggle(account.id)} /></td>
