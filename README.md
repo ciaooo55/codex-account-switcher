@@ -64,8 +64,8 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.9.5.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.9.5.exe`：便携版
+- `Codex-Account-Switcher-Setup-0.9.6.exe`：安装版
+- `Codex-Account-Switcher-Portable-0.9.6.exe`：便携版
 
 ## 默认路径
 

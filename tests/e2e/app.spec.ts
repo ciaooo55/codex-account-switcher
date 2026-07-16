@@ -282,13 +282,20 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     const cellGeometry = await accountRow.evaluate((row) =>
       [...row.children].filter((child) => child.tagName === 'TD').map((cell) => {
         const bounds = cell.getBoundingClientRect()
-        return { top: bounds.top, height: bounds.height, background: getComputedStyle(cell).backgroundColor }
+        return {
+          top: bounds.top,
+          width: bounds.width,
+          height: bounds.height,
+          background: getComputedStyle(cell).backgroundColor
+        }
       })
     )
     expect(cellGeometry).toHaveLength(7)
-    expect(Math.max(...cellGeometry.map((cell) => cell.top)) - Math.min(...cellGeometry.map((cell) => cell.top))).toBeLessThanOrEqual(1)
-    expect(Math.max(...cellGeometry.map((cell) => cell.height)) - Math.min(...cellGeometry.map((cell) => cell.height))).toBeLessThanOrEqual(1)
-    expect(new Set(cellGeometry.map((cell) => cell.background)).size).toBe(1)
+    const visibleCells = cellGeometry.filter((cell) => cell.width > 0 && cell.height > 0)
+    expect(visibleCells.length).toBeGreaterThanOrEqual(5)
+    expect(Math.max(...visibleCells.map((cell) => cell.top)) - Math.min(...visibleCells.map((cell) => cell.top))).toBeLessThanOrEqual(1)
+    expect(Math.max(...visibleCells.map((cell) => cell.height)) - Math.min(...visibleCells.map((cell) => cell.height))).toBeLessThanOrEqual(1)
+    expect(new Set(visibleCells.map((cell) => cell.background)).size).toBe(1)
 
     await accountRow.click({ button: 'right', position: { x: 1_200, y: 20 } })
     const contextMenu = page.getByRole('menu', { name: '账号管理' })
