@@ -50,15 +50,19 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
-          $exe = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/win-unpacked/Codex Account Switcher.exe").Path
           $setup = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/Codex-Account-Switcher-Setup-*.exe").Path
           $testInstall = Join-Path $env:RUNNER_TEMP "codex-switcher-install"
+          $exe = Join-Path $testInstall "Codex Account Switcher.exe"
 
           function Get-PackagedSwitcherProcess {
             @(Get-Process | Where-Object { $_.Path -eq $exe })
           }
 
           try {
+            $initialInstaller = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
+            if ($initialInstaller.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
+              throw "Initial silent installation failed with code $($initialInstaller.ExitCode)."
+            }
             Start-Process -FilePath $exe
             Start-Sleep -Seconds 6
             Start-Process -FilePath $exe
@@ -73,9 +77,9 @@ jobs:
             New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
             $sentinel = Join-Path $managedLibrary "update-preservation-test.json"
             Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
-            $installer = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
-            if ($installer.ExitCode -ne 0) {
-              throw "Silent installer exited with code $($installer.ExitCode)."
+            $updateInstaller = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -Wait -PassThru
+            if ($updateInstaller.ExitCode -ne 0) {
+              throw "Silent update installer exited with code $($updateInstaller.ExitCode)."
             }
             Start-Sleep -Seconds 2
             if ((Get-PackagedSwitcherProcess).Count -ne 0) {

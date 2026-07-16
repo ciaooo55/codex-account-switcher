@@ -216,6 +216,14 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     const page = await electronApp.firstWindow()
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
 
+    await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.minimize())
+    await expect.poll(() => electronApp.evaluate(({ BrowserWindow }) => ({
+      count: BrowserWindow.getAllWindows().length,
+      minimized: BrowserWindow.getAllWindows()[0]?.isMinimized() ?? false
+    }))).toEqual({ count: 1, minimized: true })
+    await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.restore())
+    await expect(page.getByText('e2e@example.com').first()).toBeVisible()
+
     await page.getByRole('button', { name: '导入文件夹' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
     expect(await readdir(join(userData, 'aa'))).toContain('folder-e2e@example.com_unknown.json')
@@ -394,7 +402,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await electronApp.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]
       if (!window) throw new Error('主窗口不存在')
-      Reflect.apply(window.emit, window, ['minimize'])
+      window.close()
     })
     await expect
       .poll(() => electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length))

@@ -72,6 +72,8 @@ let updateState: UpdateState = {
   message: '尚未检查更新'
 }
 
+const INSTALL_QUIT_ARGUMENT = '--quit-for-install'
+
 function createCipher(): SecretCipher {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Windows 凭据加密不可用，应用不会以明文保存账号')
@@ -126,12 +128,6 @@ function showTrayMessage(title: string, content: string): void {
 }
 
 function attachWindowLifecycle(window: BrowserWindow): void {
-  window.on('minimize', () => {
-    if (isQuitting) return
-    setImmediate(() => {
-      if (!isQuitting && !window.isDestroyed()) window.destroy()
-    })
-  })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
     if (!isQuitting && !trayBackgroundHintShown) {
@@ -1031,8 +1027,17 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!hasSingleInstanceLock) {
   app.quit()
+} else if (process.argv.includes(INSTALL_QUIT_ARGUMENT)) {
+  app.quit()
 } else {
-  app.on('second-instance', showMainWindow)
+  app.on('second-instance', (_event, commandLine) => {
+    if (commandLine.includes(INSTALL_QUIT_ARGUMENT)) {
+      isQuitting = true
+      app.quit()
+      return
+    }
+    showMainWindow()
+  })
 
   app.whenReady().then(main).catch((error) => {
     dialog.showErrorBox(

@@ -1,6 +1,6 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "Windows desktop account switcher for Codex file-based credentials",
   "author": "ciaooo55",
