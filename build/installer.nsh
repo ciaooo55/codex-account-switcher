@@ -1,17 +1,7 @@
 !include "LogicLib.nsh"
-!include "getProcessInfo.nsh"
-Var /GLOBAL pid
 
-!macro customCheckAppRunning
-  ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
-    DetailPrint "正在关闭 Codex Account Switcher..."
-    Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --quit-for-install'
-    Sleep 1500
-  ${EndIf}
-
-  !insertmacro IS_POWERSHELL_AVAILABLE
-  !insertmacro _CHECK_APP_RUNNING
-
+!macro customInit
+  InitPluginsDir
   ${If} ${FileExists} "$INSTDIR\aa\*.*"
     DetailPrint "正在暂存 aa 托管凭证库..."
     CreateDirectory "$PLUGINSDIR\old-install\aa"
