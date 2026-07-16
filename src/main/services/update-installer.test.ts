@@ -1,18 +1,25 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildInstallAndCleanupScript,
   cleanupLegacyUpdateCache,
+  consumeInstallerResult,
   downloadInstaller
 } from './update-installer'
 
 const roots: string[] = []
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  await Promise.all(roots.splice(0).map((root) => rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100
+  })))
 })
 
 describe('update installer', () => {
@@ -49,21 +56,123 @@ describe('update installer', () => {
     await expect(readFile(targetPath)).rejects.toThrow()
   })
 
-  it('builds a silent install command that removes only the downloaded installer', () => {
+  it('builds a silent install command with handshake, result reporting, cleanup and restart', () => {
     const script = buildInstallAndCleanupScript(
       "D:\\Profiles\\Example User\\Downloads\\it's-setup.exe",
-      'E:\\Apps\\Codex Account Switcher'
+      'E:\\Apps\\Codex Account Switcher',
+      'D:\\Profiles\\Example User\\Downloads\\update.ready',
+      'D:\\Profiles\\Example User\\update.log',
+      'D:\\Profiles\\Example User\\update-result.json'
     )
     expect(script).toContain("$installer = 'D:\\Profiles\\Example User\\Downloads\\it''s-setup.exe'")
     expect(script).toContain("$installDirectory = 'E:\\Apps\\Codex Account Switcher'")
     expect(script).toContain("$application = Join-Path $installDirectory 'Codex Account Switcher.exe'")
     expect(script).toContain('[StringComparer]::OrdinalIgnoreCase.Equals($_.ExecutablePath, $application)')
     expect(script).toContain('Stop-Process -Id $_.ProcessId')
-    expect(script).toContain("@('/S', '/allusers'")
-    expect(script).toContain("@('/S', '/currentuser'")
+    expect(script).toContain('/S /allusers /D=`"$installDirectory`"')
+    expect(script).toContain('/S /currentuser /D=`"$installDirectory`"')
     expect(script).toContain("$start['Verb'] = 'RunAs'")
     expect(script).toContain('Installer exited with code')
     expect(script).toContain('Remove-Item -LiteralPath $installer')
+    expect(script).toContain("status = 'succeeded'")
+    expect(script).toContain("status = 'failed'")
+    expect(script).toContain('Start-Process -FilePath $application')
+    expect(script).toContain('Remove-Item -LiteralPath $readyPath')
+  })
+
+  it.runIf(process.platform === 'win32')('produces a script accepted by Windows PowerShell', () => {
+    const script = buildInstallAndCleanupScript(
+      "D:\\Profiles\\Example User\\Downloads\\it's-setup.exe",
+      'E:\\Apps\\Codex Account Switcher'
+    )
+    const source = Buffer.from(script, 'utf16le').toString('base64')
+    const parserCommand = [
+      `$source = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${source}'))`,
+      '$tokens = $null',
+      '$errors = $null',
+      '[System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors) | Out-Null',
+      'if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }'
+    ].join('; ')
+    const encodedParserCommand = Buffer.from(parserCommand, 'utf16le').toString('base64')
+    const powershell = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+
+    expect(() => execFileSync(powershell, [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      encodedParserCommand
+    ], { stdio: 'pipe' })).not.toThrow()
+  })
+
+  it.runIf(process.platform === 'win32')('completes the detached install script lifecycle in a temporary directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'switcher-update-integration-'))
+    roots.push(root)
+    const installDirectory = join(root, 'Installed App')
+    const installerPath = join(root, 'Downloaded Setup.exe')
+    const applicationPath = join(installDirectory, 'Codex Account Switcher.exe')
+    const readyPath = join(root, 'update.ready')
+    const logPath = join(root, 'update.log')
+    const resultPath = join(root, 'update-result.json')
+    const receivedArgumentsPath = join(root, 'received-args.txt')
+    const sourcePath = join(root, 'Noop.cs')
+    await mkdir(installDirectory, { recursive: true })
+    await writeFile(
+      sourcePath,
+      'using System; using System.IO; public static class Program { public static int Main(string[] args) { File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "received-args.txt"), args); return 0; } }',
+      'ascii'
+    )
+    const compiler = `${process.env.SystemRoot ?? 'C:\\Windows'}\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe`
+    execFileSync(compiler, ['/nologo', '/target:winexe', `/out:${installerPath}`, sourcePath], { stdio: 'pipe' })
+    await copyFile(installerPath, applicationPath)
+
+    const script = buildInstallAndCleanupScript(
+      installerPath,
+      installDirectory,
+      readyPath,
+      logPath,
+      resultPath,
+      false
+    )
+    const encodedCommand = Buffer.from(script, 'utf16le').toString('base64')
+    const powershell = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+    execFileSync(powershell, [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      encodedCommand
+    ], { stdio: 'pipe', timeout: 15_000 })
+
+    await expect(stat(installerPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(applicationPath)).resolves.toBeDefined()
+    await expect(stat(readyPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(consumeInstallerResult(resultPath)).resolves.toMatchObject({
+      status: 'succeeded',
+      message: '更新安装成功'
+    })
+    await expect(readFile(logPath, 'utf8')).resolves.toContain('Update installed successfully')
+    await expect(readFile(receivedArgumentsPath, 'utf8')).resolves.toBe(
+      `/S\r\n/currentuser\r\n/D=${installDirectory}\r\n`
+    )
+  }, 20_000)
+
+  it('consumes a persisted installer result once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'switcher-update-'))
+    roots.push(root)
+    const resultPath = join(root, 'result.json')
+    await writeFile(resultPath, JSON.stringify({
+      status: 'failed',
+      message: 'UAC was cancelled',
+      at: '2026-07-16T12:00:00.000Z'
+    }), 'utf8')
+
+    await expect(consumeInstallerResult(resultPath)).resolves.toEqual({
+      status: 'failed',
+      message: 'UAC was cancelled',
+      at: '2026-07-16T12:00:00.000Z'
+    })
+    await expect(consumeInstallerResult(resultPath)).resolves.toBeNull()
   })
 
   it('cleans only the legacy pending update directory', async () => {

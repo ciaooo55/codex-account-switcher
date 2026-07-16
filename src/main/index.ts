@@ -30,6 +30,7 @@ import { GrokCredentialTester } from './services/grok-detector'
 import { SessionRepairService } from './services/session-repair'
 import {
   cleanupLegacyUpdateCache,
+  consumeInstallerResult,
   downloadInstaller,
   launchInstallerAndDelete
 } from './services/update-installer'
@@ -108,7 +109,7 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     autoHideMenuBar: true,
     show: false,
-    backgroundColor: '#111418',
+    backgroundColor: '#edf1f3',
     title: 'Codex Account Switcher',
     webPreferences: {
       preload: join(currentDirectory, '../preload/index.js'),
@@ -166,6 +167,18 @@ function showMainWindow(): void {
 
 async function main(): Promise<void> {
   await cleanupLegacyUpdateCache(process.env.LOCALAPPDATA).catch(() => undefined)
+  const installerResult = await consumeInstallerResult().catch(() => null)
+  if (installerResult) {
+    updateState = {
+      status: installerResult.status === 'succeeded' ? 'not_available' : 'error',
+      currentVersion: app.getVersion(),
+      availableVersion: null,
+      percent: null,
+      message: installerResult.status === 'succeeded'
+        ? `已成功更新到 ${app.getVersion()}`
+        : `更新安装失败：${installerResult.message}`
+    }
+  }
   const userData = app.getPath('userData')
   const homeDirectory = homedir()
   const cipher = createCipher()
@@ -1138,11 +1151,11 @@ async function main(): Promise<void> {
     })
     return updateDownloadPromise
   })
-  ipcMain.handle(ipcChannels.updateInstall, () => {
+  ipcMain.handle(ipcChannels.updateInstall, async () => {
     if (updateState.status !== 'downloaded' || !downloadedInstallerPath) {
       throw new Error('安装包尚未下载完成')
     }
-    launchInstallerAndDelete(downloadedInstallerPath, dirname(process.execPath))
+    await launchInstallerAndDelete(downloadedInstallerPath, dirname(process.execPath))
     isQuitting = true
     app.quit()
   })
@@ -1234,6 +1247,12 @@ async function main(): Promise<void> {
   await initialScan
   await autoSwitchScheduler.start()
   await rebuildTrayMenu()
+  if (installerResult) {
+    showTrayMessage(
+      installerResult.status === 'succeeded' ? '更新完成' : '更新失败',
+      updateState.message
+    )
+  }
   app.once('before-quit', () => {
     isQuitting = true
     autoSwitchScheduler.stop()

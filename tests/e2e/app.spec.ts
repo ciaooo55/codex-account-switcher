@@ -155,6 +155,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
                 used_percent: 23,
                 limit_window_seconds: 604_800,
                 reset_after_seconds: 86_400
+              },
+              secondary_window: {
+                used_percent: 40,
+                limit_window_seconds: 18_000,
+                reset_after_seconds: 1_800
               }
             },
             credits: { has_credits: true, unlimited: false, balance: '9.99' },
@@ -253,15 +258,17 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(selectionTeamRow).toHaveClass(/selected-row/)
     await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
     await selectionAccountRow.click()
-    await expect(page.getByText('已选 2', { exact: true })).toBeVisible()
+    await expect(page.getByText('已选择 2 个账号', { exact: true })).toBeVisible()
     await selectionAccountRow.click()
     await expect(page.getByLabel('选择 e2e@example.com')).not.toBeChecked()
     await expect(page.getByLabel('选择 team-e2e@example.com')).toBeChecked()
     await selectionAccountRow.click()
 
-    await page.getByRole('button', { name: '测试全部' }).click()
+    await page.getByRole('button', { name: '测试当前页面全部' }).click()
     await expect(page.getByText('检测中').first()).toBeVisible()
     await expect(page.getByText('77%').first()).toBeVisible()
+    await expect(page.getByText('剩余 24 小时').first()).toBeVisible()
+    await expect(page.getByText('剩余 30 分钟').first()).toBeVisible()
     await expect(page.getByText('Codex 周额度').first()).toBeVisible()
     const accountRow = page.getByRole('row', { name: /选择 e2e@example\.com/ })
     await expect(accountRow).toHaveClass(/status-row-valid/)
@@ -306,7 +313,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     const grokRow = page.getByRole('row', { name: /grok-e2e@example\.com/ })
     await expect(grokRow).toBeVisible()
     const beforeGrok = requests.length
-    await page.getByRole('button', { name: '测试全部' }).click()
+    await page.getByRole('button', { name: '测试当前页面全部' }).click()
     await expect(grokRow).toHaveClass(/status-row-valid/)
     await expect(grokRow).toContainText('周额度75%')
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'cpa-grok-ui.png'), fullPage: true })
@@ -392,6 +399,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     )
 
     await page.setViewportSize({ width: 980, height: 640 })
+    const compactTable = await page.locator('.accounts-view .table-wrap').first().evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth
+    }))
+    expect(compactTable.scrollWidth).toBeLessThanOrEqual(compactTable.clientWidth + 1)
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-compact.png'), fullPage: true })
     await page.getByRole('button', { name: '设置' }).click()
     const settingsPanel = page.getByRole('dialog', { name: '设置' })

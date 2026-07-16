@@ -250,7 +250,7 @@ describe('App', () => {
     expect((await screen.findAllByText('person@example.com')).length).toBeGreaterThan(0)
     expect(screen.getByText('second@example.com')).toBeInTheDocument()
     expect(screen.getByText('80%')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '测试全部' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试当前页面全部' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导入账号' })).toBeInTheDocument()
     expect(screen.getByText('正在使用')).toBeInTheDocument()
   })
@@ -307,7 +307,7 @@ describe('App', () => {
     fireEvent.click(grokRow)
     expect(screen.getByLabelText('选择 Grok grok@example.com')).toBeChecked()
     expect(grokRow).toHaveClass('selected-row')
-    fireEvent.click(screen.getByRole('button', { name: '测试全部' }))
+    fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
 
     await waitFor(() => expect(bridge.testGrokAccounts).toHaveBeenCalledWith())
     expect(bridge.testAccounts).not.toHaveBeenCalled()

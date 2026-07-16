@@ -65,22 +65,50 @@ function dateTime(value: string | null): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function resetText(window: UsageWindow): string {
+function sourceFileName(value: string): string {
+  return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value
+}
+
+function secondsUntilReset(window: UsageWindow, checkedAt: string, now: number): number | null {
+  const referenceNow = Math.max(now, Date.now())
+  if (window.resetAt) {
+    const timestamp = Date.parse(window.resetAt)
+    return Number.isFinite(timestamp) ? Math.max(0, Math.ceil((timestamp - referenceNow) / 1_000)) : null
+  }
+  if (window.resetInSeconds === null) return null
+  const checkedTimestamp = Date.parse(checkedAt)
+  const elapsed = Number.isFinite(checkedTimestamp) ? Math.max(0, Math.floor((referenceNow - checkedTimestamp) / 1_000)) : 0
+  return Math.max(0, window.resetInSeconds - elapsed)
+}
+
+function resetMoment(window: UsageWindow, checkedAt: string): string {
   if (window.resetAt) return dateTime(window.resetAt)
   if (window.resetInSeconds !== null) {
-    const hours = Math.floor(window.resetInSeconds / 3600)
-    const minutes = Math.floor((window.resetInSeconds % 3600) / 60)
-    return hours > 0 ? `${hours}小时${minutes}分钟` : `${minutes}分钟`
+    const checkedTimestamp = Date.parse(checkedAt)
+    if (Number.isFinite(checkedTimestamp)) return dateTime(new Date(checkedTimestamp + window.resetInSeconds * 1_000).toISOString())
   }
   return '-'
 }
 
+function resetCountdown(window: UsageWindow, checkedAt: string, now: number): string | null {
+  const seconds = secondsUntilReset(window, checkedAt, now)
+  if (seconds === null) return null
+  if (seconds === 0) return '即将恢复'
+  const weekly = window.windowSeconds === 604_800 || /周|week/i.test(window.label)
+  const fiveHour = window.windowSeconds === 18_000 || /5\s*(?:小时|h(?:our)?s?)/i.test(window.label)
+  if (weekly) return `剩余 ${Math.ceil(seconds / 3_600)} 小时`
+  if (fiveHour) return `剩余 ${Math.ceil(seconds / 60)} 分钟`
+  return seconds >= 21_600 ? `剩余 ${Math.ceil(seconds / 3_600)} 小时` : `剩余 ${Math.ceil(seconds / 60)} 分钟`
+}
+
 function Quota({
   account,
-  running = false
+  running = false,
+  now
 }: {
   account: AccountSummary
   running?: boolean
+  now: number
 }): React.JSX.Element {
   if (running) {
     return (
@@ -102,16 +130,17 @@ function Quota({
       {windows.slice(0, 3).map((window) => {
         const remaining = window.remainingPercent
         const className = remaining !== null && remaining <= 10 ? 'danger' : remaining !== null && remaining <= 30 ? 'warn' : ''
+        const countdown = resetCountdown(window, account.usage!.checkedAt, now)
         return (
           <div className="quota-item" key={window.id}>
             <div className="quota-label">
               <span>{window.label}</span>
-              <strong>{remaining === null ? '-' : `${Math.round(remaining)}%`}</strong>
+              <span className="quota-values"><strong>{remaining === null ? '-' : `${Math.round(remaining)}%`}</strong>{countdown && <em>{countdown}</em>}</span>
             </div>
             <div className="quota-track">
               <div className={`quota-fill ${className}`} style={{ width: `${remaining ?? 0}%` }} />
             </div>
-            <span className="quota-reset">重置 {resetText(window)}</span>
+            <span className="quota-reset">重置 {resetMoment(window, account.usage!.checkedAt)}</span>
           </div>
         )
       })}
@@ -139,10 +168,10 @@ export function App(): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
-  const [accountSort, setAccountSort] = useState<AccountSortMode>('quota_desc')
+  const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
   const [activeView, setActiveView] = useState<'accounts' | 'cpa' | 'automation'>('accounts')
   const [automationKeyword, setAutomationKeyword] = useState('')
-  const [automationSort, setAutomationSort] = useState<AccountSortMode>('quota_desc')
+  const [automationSort, setAutomationSort] = useState<AccountSortMode>('availability_reset')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null)
   const [customApiKey, setCustomApiKey] = useState('')
@@ -163,6 +192,7 @@ export function App(): React.JSX.Element {
     y: number
   } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
+  const [clock, setClock] = useState(() => Date.now())
 
   const reload = async (preserveSettingsDraft = false): Promise<void> => {
     const next = await window.codexSwitcher.getSnapshot()
@@ -215,6 +245,17 @@ export function App(): React.JSX.Element {
       stopAutoSwitch()
     }
   }, [])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClock(Date.now()), 30_000)
+    return () => window.clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    if (!message) return
+    const timeout = window.setTimeout(() => setMessage(null), message.kind === 'error' ? 8_000 : 5_000)
+    return () => window.clearTimeout(timeout)
+  }, [message])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -597,7 +638,6 @@ export function App(): React.JSX.Element {
       <header className="app-header">
         <div className="app-identity">
           <div className="identity-title"><span className="product-mark"><Code2 size={17} /></span><h1>Codex Account Switcher</h1></div>
-          <p>{activeView === 'cpa' ? snapshot.grokDirectory : snapshot.importDirectory}</p>
         </div>
         <nav className="view-tabs" aria-label="主页面">
           <button className={activeView === 'accounts' ? 'active' : ''} onClick={() => setActiveView('accounts')}>
@@ -611,7 +651,7 @@ export function App(): React.JSX.Element {
           </button>
         </nav>
         <button className="header-import-button" aria-label="导入账号" onClick={() => setImportOpen(true)} disabled={busy}>
-          <Import size={17} />导入到 aa
+          <Import size={17} />导入账号
         </button>
         <button className="icon-button" title="设置" aria-label="设置" onClick={() => setSettingsOpen(true)} disabled={busy}>
           <Settings size={19} />
@@ -619,9 +659,10 @@ export function App(): React.JSX.Element {
       </header>
 
       {message && (
-        <div className={`message ${message.kind}`}>
+        <div className={`message ${message.kind}`} role="status" aria-live="polite">
           {message.kind === 'ok' ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
-          {message.text}
+          <span>{message.text}</span>
+          <button className="message-close" title="关闭提示" aria-label="关闭提示" onClick={() => setMessage(null)}><X size={14} /></button>
         </div>
       )}
 
@@ -653,7 +694,7 @@ export function App(): React.JSX.Element {
         </div>
         <div className="toolbar-group">
         <button onClick={() => void run(() => window.codexSwitcher.testAccounts(), '全部账号检测完成', false)} disabled={busy || snapshot.testing.active}>
-          <TestTube2 size={16} />测试全部
+          <TestTube2 size={16} />测试当前页面全部
         </button>
         {snapshot.testing.active && !snapshot.autoSwitch.running && (
           <button className="danger-button" onClick={() => void window.codexSwitcher.cancelTests()}>
@@ -661,22 +702,7 @@ export function App(): React.JSX.Element {
           </button>
         )}
         </div>
-        {selected.size > 0 && <div className="toolbar-group switch-actions selection-actions">
-        <span>已选 {selected.size}</span>
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active}>
-          <Play size={16} />测试选中
-        </button>
-        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据切换后必须重启 Codex，且 Codex 不会自动刷新' : undefined}>
-          <CheckCircle2 size={16} />切换账号
-        </button>
-        <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据会以当前 Codex 支持的临时认证模式启动' : undefined}>
-          <RotateCcw size={16} />切换并重启
-        </button>
-        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active}>
-          <Trash2 size={16} />删除选中
-        </button>
-        </div>}
-        <details className="action-menu" onClick={(event) => {
+        <details className="action-menu toolbar-end" onClick={(event) => {
           if ((event.target as Element).closest('button')) event.currentTarget.removeAttribute('open')
         }}>
           <summary><MoreHorizontal size={17} />更多</summary>
@@ -702,6 +728,22 @@ export function App(): React.JSX.Element {
           </div>
         </details>
       </div>
+
+      {selected.size > 0 && <div className="selection-toolbar" aria-label="选中账号操作">
+        <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>{selected.size === 1 ? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span></div>
+        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active}>
+          <Play size={16} />测试选中
+        </button>
+        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据切换后必须重启 Codex，且 Codex 不会自动刷新' : undefined}>
+          <CheckCircle2 size={16} />切换账号
+        </button>
+        <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少完整 OAuth 凭据，也没有可用的 Team/K12 workspace ID' : selectedAccount && usesExternalAuth(selectedAccount) ? '外部 Team/K12 凭据会以当前 Codex 支持的临时认证模式启动' : undefined}>
+          <RotateCcw size={16} />切换并重启
+        </button>
+        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active}>
+          <Trash2 size={16} />删除选中
+        </button>
+      </div>}
 
       {snapshot.testing.active && (
         <div className="task-progress">
@@ -741,7 +783,14 @@ export function App(): React.JSX.Element {
                 className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
                 aria-busy={running}
                 aria-current={account.active ? 'true' : undefined}
+                tabIndex={0}
                 onClick={() => selectAccountRow(account.id)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  selectAccountRow(account.id)
+                }}
                 onContextMenu={(event) => openContextMenu(event, account)}
               >
                 <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggle(account.id)} /></td>
@@ -757,9 +806,9 @@ export function App(): React.JSX.Element {
                   )}
                 </td>
                 <td>{account.planType ?? '-'}</td>
-                <td><Quota account={account} running={running} /></td>
-                <td><div>刷新 {dateTime(account.lastRefresh)}</div><div className="muted">到期 {dateTime(account.accessExpiresAt)}</div><div className="muted">检测 {dateTime(account.lastCheckedAt)}</div></td>
-                <td><div className="source-path" title={account.sourcePath}>{account.sourcePath}</div><div className="source-tags"><span className="provider-label codex"><Code2 size={11} />CODEX</span><span className="format-label">{account.sourceDialect.toUpperCase()} · {account.sourceFormat.toUpperCase()}</span></div></td>
+                <td><Quota account={account} running={running} now={clock} /></td>
+                <td><div>刷新 {dateTime(account.lastRefresh)}</div><div className="muted">Token 到期 {dateTime(account.accessExpiresAt)}</div><div className="muted">检测 {dateTime(account.lastCheckedAt)}</div></td>
+                <td><div className="source-path" title={account.sourcePath}>{sourceFileName(account.sourcePath)}</div><div className="source-tags"><span className="provider-label codex"><Code2 size={11} />CODEX</span><span className="format-label">{account.sourceDialect.toUpperCase()} · {account.sourceFormat.toUpperCase()}</span></div></td>
               </tr>
               )
             })}
@@ -833,7 +882,7 @@ export function App(): React.JSX.Element {
                       <td><div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div><div className="workspace-id">{switchCapability(account)}</div></td>
                       <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail">{account.detail}</div></>}</td>
                       <td>{account.planType ?? '未知'}</td>
-                      <td><Quota account={account} running={running} /></td>
+                      <td><Quota account={account} running={running} now={clock} /></td>
                       <td>{dateTime(account.lastCheckedAt)}</td>
                     </tr>
                   )
