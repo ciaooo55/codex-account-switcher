@@ -688,7 +688,7 @@ describe('AccountManager', () => {
     expect(switchTo).toHaveBeenCalledWith(expect.objectContaining({ email: 'fast-switch@example.com' }))
   })
 
-  it('blocks a credential with a definitive cached failure until it is retested', async () => {
+  it('silently retests a credential with a cached failure before switching', async () => {
     const fixture = await setup()
     await writeFile(
       join(fixture.accountDirectory, 'invalid-switch.json'),
@@ -698,8 +698,8 @@ describe('AccountManager', () => {
         email: 'invalid-switch@example.com'
       })
     )
-    const test = vi.fn()
-    const switchTo = vi.fn()
+    const test = vi.fn(async (item: NormalizedCredential) => successfulResult(item.id))
+    const switchTo = vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null })
     const manager = new AccountManager({
       settings: () => fixture.settings,
       vault: fixture.vault,
@@ -714,13 +714,10 @@ describe('AccountManager', () => {
       detail: '凭据已失效'
     })
 
-    await expect(manager.switchAccount(scan.accounts[0].id)).resolves.toMatchObject({
-      ok: false,
-      message: expect.stringContaining('请先重新检测')
-    })
+    await expect(manager.switchAccount(scan.accounts[0].id)).resolves.toMatchObject({ ok: true })
 
-    expect(test).not.toHaveBeenCalled()
-    expect(switchTo).not.toHaveBeenCalled()
+    expect(test).toHaveBeenCalledTimes(1)
+    expect(switchTo).toHaveBeenCalledTimes(1)
   })
 
   it.each([

@@ -621,7 +621,11 @@ export function App(): React.JSX.Element {
       await reload()
       setMessage({
         kind: result.restartResult && !result.restartResult.ok ? 'warn' : 'ok',
-        text: restart ? result.message : '账号已切换，请重启 Codex 使所有会话生效'
+        text: result.restartResult && !result.restartResult.ok
+          ? result.message
+          : restart
+            ? '切换成功，Codex 已重启'
+            : '切换成功，请重启 Codex 使所有会话生效'
       })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })

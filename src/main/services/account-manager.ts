@@ -435,15 +435,9 @@ export class AccountManager {
     if (!credential) return { ok: false, message: '账号不存在', backupPath: null }
 
     const cached = (await this.options.statusStore.getAll())[credential.id]
-    if (cached && DEFINITIVELY_UNUSABLE_STATUSES.has(cached.status) && !credentialNeedsRefresh(credential)) {
-      return {
-        ok: false,
-        message: `账号上次检测不可用：${cached.detail}。请先重新检测，确认恢复后再切换`,
-        backupPath: null
-      }
-    }
-
-    if (credentialNeedsRefresh(credential)) {
+    const needsSilentValidation = credentialNeedsRefresh(credential) ||
+      Boolean(cached && DEFINITIVELY_UNUSABLE_STATUSES.has(cached.status))
+    if (needsSilentValidation) {
       const result = await this.options.tester.test(credential)
       await this.updateCredentialPlan(credential.id, result)
       await this.options.statusStore.set(result)

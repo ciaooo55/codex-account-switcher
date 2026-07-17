@@ -375,7 +375,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     const beforeAccountSwitches = requests.length
     await teamRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '切换到此账号' }).click()
-    await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
+    await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
       auth_mode: 'chatgptAuthTokens',
       tokens: {
@@ -386,7 +386,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await accountRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '切换到此账号' }).click()
-    await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
+    await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
     await expect(accountRow).toHaveAttribute('aria-current', 'true')
     await expect(accountRow.getByText('正在使用')).toBeVisible()
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-desktop.png'), fullPage: true })
@@ -417,7 +417,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('pasted-e2e@example.com').first()).toBeVisible()
 
     await page.getByRole('button', { name: '切换账号' }).click()
-    await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
+    await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
       auth_mode: 'chatgpt',
       tokens: {

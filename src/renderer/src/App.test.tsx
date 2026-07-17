@@ -675,7 +675,8 @@ describe('App', () => {
     await waitFor(() =>
       expect(window.codexSwitcher.switchAccount).toHaveBeenCalledWith('account-a', true)
     )
-    expect(await screen.findByText('账号切换完成；Codex 已重启')).toBeInTheDocument()
+    expect(await screen.findByText('切换成功，Codex 已重启')).toBeInTheDocument()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
     confirm.mockRestore()
   })
 
