@@ -355,6 +355,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     const teamRow = codexRow('team-e2e@example.com')
     await expect(teamRow).toContainText('外部凭据，需重启')
+    const beforeAccountSwitches = requests.length
     await teamRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '切换到此账号' }).click()
     await expect(page.getByText('账号已切换，请重启 Codex 使所有会话生效')).toBeVisible()
@@ -373,6 +374,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(accountRow.getByText('正在使用')).toBeVisible()
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-desktop.png'), fullPage: true })
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8')).auth_mode).toBe('chatgpt')
+    expect(requests).toHaveLength(beforeAccountSwitches)
 
     await page.getByLabel('选择 e2e@example.com', { exact: true }).check()
     await page.getByRole('button', { name: '导出账号' }).click()

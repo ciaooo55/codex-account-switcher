@@ -70,8 +70,10 @@ describe('update installer', () => {
     expect(script).toContain("$application = Join-Path $installDirectory 'Codex Account Switcher.exe'")
     expect(script).toContain('[StringComparer]::OrdinalIgnoreCase.Equals($_.ExecutablePath, $application)')
     expect(script).toContain('Stop-Process -Id $_.ProcessId')
-    expect(script).toContain('/S /allusers /D=`"$installDirectory`"')
-    expect(script).toContain('/S /currentuser /D=`"$installDirectory`"')
+    expect(script).toContain('$userMatch = Test-SamePath $userLocation $installDirectory')
+    expect(script).toContain('$machineMatch = Test-SamePath $machineLocation $installDirectory')
+    expect(script).toContain("ArgumentList = @('/S', $installModeArgument)")
+    expect(script).not.toContain('/D=')
     expect(script).toContain("$start['Verb'] = 'RunAs'")
     expect(script).toContain('Installer exited with code')
     expect(script).toContain('Remove-Item -LiteralPath $installer')
@@ -81,14 +83,18 @@ describe('update installer', () => {
     expect(script).toContain('Remove-Item -LiteralPath $helperPath')
   })
 
-  it.runIf(process.platform === 'win32')('produces a script accepted by Windows PowerShell', () => {
+  it.runIf(process.platform === 'win32')('produces a script accepted by Windows PowerShell', async () => {
     const script = buildInstallAndCleanupScript(
       "D:\\Profiles\\Example User\\Downloads\\it's-setup.exe",
       'E:\\Apps\\Codex Account Switcher'
     )
-    const source = Buffer.from(script, 'utf16le').toString('base64')
+    const root = await mkdtemp(join(tmpdir(), 'switcher-update-parser-'))
+    roots.push(root)
+    const scriptPath = join(root, 'update.ps1')
+    await writeFile(scriptPath, script, 'utf8')
+    const escapedScriptPath = scriptPath.replaceAll("'", "''")
     const parserCommand = [
-      `$source = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${source}'))`,
+      `$source = [IO.File]::ReadAllText('${escapedScriptPath}')`,
       '$tokens = $null',
       '$errors = $null',
       '[System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors) | Out-Null',
@@ -132,8 +138,7 @@ describe('update installer', () => {
       readyPath,
       logPath,
       resultPath,
-      timeoutMs: 10_000,
-      machineInstallOverride: false
+      timeoutMs: 10_000
     })
 
     let installerResult: Awaited<ReturnType<typeof consumeInstallerResult>> = null
@@ -152,7 +157,7 @@ describe('update installer', () => {
     })
     await expect(readFile(logPath, 'utf8')).resolves.toContain('Update installed successfully')
     await expect(readFile(receivedArgumentsPath, 'utf8')).resolves.toBe(
-      `/S\r\n/currentuser\r\n/D=${installDirectory}\r\n`
+      '/S\r\n/currentuser\r\n'
     )
   }, 20_000)
 

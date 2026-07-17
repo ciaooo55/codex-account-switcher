@@ -94,6 +94,19 @@ const MAX_ZIP_ENTRIES = 2_000
 const MAX_ZIP_ENTRY_BYTES = 20 * 1024 * 1024
 const MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_SOURCE_FILE_BYTES = 100 * 1024 * 1024
+const SWITCH_REFRESH_GRACE_MS = 2 * 60 * 1_000
+const DEFINITIVELY_UNUSABLE_STATUSES = new Set<TestResult['status']>([
+  'workspace_deactivated',
+  'no_permission',
+  'invalid',
+  'non_refreshable'
+])
+
+function credentialNeedsRefresh(credential: NormalizedCredential, now = Date.now()): boolean {
+  if (!credential.accessExpiresAt) return false
+  const expiresAt = Date.parse(credential.accessExpiresAt)
+  return Number.isFinite(expiresAt) && expiresAt <= now + SWITCH_REFRESH_GRACE_MS
+}
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
   if (/\.json\.0$/i.test(path)) return 'json'
@@ -408,13 +421,26 @@ export class AccountManager {
   async switchAccount(id: string): Promise<SwitchResult> {
     const credential = await this.options.vault.get(id)
     if (!credential) return { ok: false, message: '账号不存在', backupPath: null }
-    const result = await this.options.tester.test(credential)
-    await this.updateCredentialPlan(credential.id, result)
-    await this.options.statusStore.set(result)
-    await this.persistVaultLibrary()
-    if (!['valid', 'quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly', 'model_unavailable'].includes(result.status)) {
-      return { ok: false, message: `账号不可切换：${result.detail}`, backupPath: null }
+
+    const cached = (await this.options.statusStore.getAll())[credential.id]
+    if (cached && DEFINITIVELY_UNUSABLE_STATUSES.has(cached.status) && !credentialNeedsRefresh(credential)) {
+      return {
+        ok: false,
+        message: `账号上次检测不可用：${cached.detail}。请先重新检测，确认恢复后再切换`,
+        backupPath: null
+      }
     }
+
+    if (credentialNeedsRefresh(credential)) {
+      const result = await this.options.tester.test(credential)
+      await this.updateCredentialPlan(credential.id, result)
+      await this.options.statusStore.set(result)
+      await this.persistVaultLibrary()
+      if (!['valid', 'quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly', 'model_unavailable'].includes(result.status)) {
+        return { ok: false, message: `账号不可切换：${result.detail}`, backupPath: null }
+      }
+    }
+
     const latestCredential = (await this.options.vault.get(id)) ?? credential
     return this.options.switcher.switchTo(latestCredential)
   }

@@ -47,20 +47,42 @@ jobs:
         run: npm run package:win
 
       - name: Smoke test single instance and installer replacement
-        timeout-minutes: 5
+        timeout-minutes: 8
         shell: pwsh
         run: |
           $setup = (Resolve-Path "${{ env.CODEX_RELEASE_DIR }}/Codex-Account-Switcher-Setup-*.exe").Path
           $testInstall = Join-Path $env:RUNNER_TEMP "Codex Account Switcher"
           $exe = Join-Path $testInstall "Codex Account Switcher.exe"
+          $appKey = 'ca637cc9-81db-5210-aea1-8b5539723f26'
+          $machineAppKey = "HKLM:\Software\$appKey"
+          $machineUninstallKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appKey"
 
           function Get-PackagedSwitcherProcess {
             @(Get-Process | Where-Object { $_.Path -eq $exe })
           }
 
-          function Invoke-SilentInstaller([string] $stage) {
+          function Assert-ApplicationPresent([string] $stage) {
+            if (-not (Test-Path -LiteralPath $exe)) {
+              throw "$stage did not leave the application executable installed."
+            }
+          }
+
+          function Assert-SingleInstance([string] $stage) {
+            Start-Process -FilePath $exe
+            Start-Sleep -Seconds 6
+            Start-Process -FilePath $exe
+            Start-Sleep -Seconds 4
+            $windows = @(Get-PackagedSwitcherProcess | Where-Object { $_.MainWindowHandle -ne 0 })
+            if ($windows.Count -ne 1) {
+              throw "$stage expected one primary application window after two launches, found $($windows.Count)."
+            }
+          }
+
+          function Invoke-SilentInstaller([string] $stage, [string] $mode, [bool] $setDirectory) {
             Write-Host "Starting $stage installer..."
-            $process = Start-Process -FilePath $setup -ArgumentList @("/S", "/D=$testInstall") -PassThru
+            $arguments = @('/S', "/$mode")
+            if ($setDirectory) { $arguments += "/D=$testInstall" }
+            $process = Start-Process -FilePath $setup -ArgumentList $arguments -PassThru
             if (-not $process.WaitForExit(90000)) {
               & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F | Out-Host
               throw "$stage installer did not exit within 90 seconds."
@@ -72,33 +94,52 @@ jobs:
             Write-Host "$stage installer completed."
           }
 
+          function Invoke-SilentUninstaller([string] $mode) {
+            $uninstaller = Join-Path $testInstall 'Uninstall Codex Account Switcher.exe'
+            if (-not (Test-Path -LiteralPath $uninstaller)) { return }
+            Get-PackagedSwitcherProcess | Stop-Process -Force -ErrorAction SilentlyContinue
+            $process = Start-Process -FilePath $uninstaller -ArgumentList @("/$mode", '/S') -PassThru -Wait
+            if ($process.ExitCode -ne 0) { throw "$mode uninstaller exited with code $($process.ExitCode)." }
+          }
+
           try {
-            Invoke-SilentInstaller "Initial"
-            if (-not (Test-Path -LiteralPath $exe)) { throw "Initial installation did not create the application executable." }
-            Start-Process -FilePath $exe
-            Start-Sleep -Seconds 6
-            Start-Process -FilePath $exe
-            Start-Sleep -Seconds 4
-
-            $windows = @(Get-PackagedSwitcherProcess | Where-Object { $_.MainWindowHandle -ne 0 })
-            if ($windows.Count -ne 1) {
-              throw "Expected one primary application window after two launches, found $($windows.Count)."
-            }
-
+            Invoke-SilentInstaller 'Current-user initial' 'currentuser' $true
+            Assert-ApplicationPresent 'Current-user initial installation'
+            Assert-SingleInstance 'Current-user installation'
             $managedLibrary = Join-Path $testInstall "aa"
             New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
             $sentinel = Join-Path $managedLibrary "update-preservation-test.json"
             Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
-            Invoke-SilentInstaller "Update"
+            Invoke-SilentInstaller 'Current-user update' 'currentuser' $false
             Start-Sleep -Seconds 2
-            if ((Get-PackagedSwitcherProcess).Count -ne 0) {
-              throw "Installer did not close the running packaged application."
-            }
-            if (-not (Test-Path -LiteralPath $sentinel)) {
-              throw "Installer update did not preserve the managed aa library."
-            }
+            if ((Get-PackagedSwitcherProcess).Count -ne 0) { throw 'Current-user update did not close the running application.' }
+            Assert-ApplicationPresent 'Current-user update'
+            if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Current-user update did not preserve aa.' }
+
+            $brokenLocation = $testInstall -replace '^([A-Za-z]):', '$1'
+            New-Item -Path $machineAppKey -Force | Out-Null
+            Set-ItemProperty -Path $machineAppKey -Name InstallLocation -Value $brokenLocation
+            New-Item -Path $machineUninstallKey -Force | Out-Null
+            Set-ItemProperty -Path $machineUninstallKey -Name UninstallString -Value "`"$brokenLocation\Uninstall Codex Account Switcher.exe`" /allusers"
+            Invoke-SilentInstaller 'All-users initial' 'allusers' $true
+            Assert-ApplicationPresent 'All-users initial installation'
+            $machineLocation = (Get-ItemProperty $machineAppKey -ErrorAction Stop).InstallLocation
+            if (-not [StringComparer]::OrdinalIgnoreCase.Equals(
+              [IO.Path]::GetFullPath($machineLocation).TrimEnd('\'),
+              [IO.Path]::GetFullPath($testInstall).TrimEnd('\')
+            )) { throw "All-users registry path is invalid: $machineLocation" }
+            Assert-SingleInstance 'All-users installation'
+            New-Item -ItemType Directory -Force -Path $managedLibrary | Out-Null
+            Set-Content -LiteralPath $sentinel -Encoding utf8 -Value '{"test":true}'
+            Invoke-SilentInstaller 'All-users update' 'allusers' $false
+            Start-Sleep -Seconds 2
+            if ((Get-PackagedSwitcherProcess).Count -ne 0) { throw 'All-users update did not close the running application.' }
+            Assert-ApplicationPresent 'All-users update'
+            if (-not (Test-Path -LiteralPath $sentinel)) { throw 'All-users update did not preserve aa.' }
           } finally {
             Get-PackagedSwitcherProcess | Stop-Process -Force -ErrorAction SilentlyContinue
+            Invoke-SilentUninstaller 'allusers'
+            Invoke-SilentUninstaller 'currentuser'
           }
 
       - name: Create SHA256 checksums

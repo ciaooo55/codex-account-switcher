@@ -314,8 +314,10 @@ describe('App', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: '重新扫描' }))
 
-    await waitFor(() => expect(screen.queryByText('second@example.com')).not.toBeInTheDocument())
-    expect(screen.queryByText('已选择 1 个账号')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.queryByText('second@example.com')).not.toBeInTheDocument()
+      expect(screen.queryByText('已选择 1 个账号')).not.toBeInTheDocument()
+    })
   })
 
   it('keeps Codex and Grok test-all actions isolated by page', async () => {

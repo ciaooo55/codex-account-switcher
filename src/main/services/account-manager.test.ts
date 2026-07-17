@@ -585,7 +585,7 @@ describe('AccountManager', () => {
       join(fixture.accountDirectory, 'refresh.json'),
       JSON.stringify({
         type: 'codex',
-        access_token: jwt({ sub: 'refresh-user' }),
+        access_token: jwt({ sub: 'refresh-user', exp: 1 }),
         refresh_token: 'refresh-old',
         email: 'refresh@example.com'
       })
@@ -621,6 +621,69 @@ describe('AccountManager', () => {
         lastRefresh: '2026-07-16T00:00:00Z'
       })
     )
+  })
+
+  it('switches an unexpired credential without repeating network validation', async () => {
+    const fixture = await setup()
+    await writeFile(
+      join(fixture.accountDirectory, 'fast-switch.json'),
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'fast-switch-user', exp: Math.floor(Date.now() / 1_000) + 3_600 }),
+        refresh_token: 'refresh-fast',
+        email: 'fast-switch@example.com'
+      })
+    )
+    const test = vi.fn()
+    const switchTo = vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null })
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test },
+      switcher: { switchTo, restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const scan = await manager.scanDirectory()
+
+    await expect(manager.switchAccount(scan.accounts[0].id)).resolves.toMatchObject({ ok: true })
+
+    expect(test).not.toHaveBeenCalled()
+    expect(switchTo).toHaveBeenCalledWith(expect.objectContaining({ email: 'fast-switch@example.com' }))
+  })
+
+  it('blocks a credential with a definitive cached failure until it is retested', async () => {
+    const fixture = await setup()
+    await writeFile(
+      join(fixture.accountDirectory, 'invalid-switch.json'),
+      JSON.stringify({
+        type: 'codex',
+        access_token: jwt({ sub: 'invalid-switch-user', exp: Math.floor(Date.now() / 1_000) + 3_600 }),
+        email: 'invalid-switch@example.com'
+      })
+    )
+    const test = vi.fn()
+    const switchTo = vi.fn()
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test },
+      switcher: { switchTo, restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const scan = await manager.scanDirectory()
+    await fixture.statusStore.set({
+      ...successfulResult(scan.accounts[0].id),
+      status: 'invalid',
+      detail: '凭据已失效'
+    })
+
+    await expect(manager.switchAccount(scan.accounts[0].id)).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining('请先重新检测')
+    })
+
+    expect(test).not.toHaveBeenCalled()
+    expect(switchTo).not.toHaveBeenCalled()
   })
 
   it.each([

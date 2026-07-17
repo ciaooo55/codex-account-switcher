@@ -104,9 +104,26 @@ export function buildInstallAndCleanupScript(
   const escapedLogPath = logPath.replaceAll("'", "''")
   const escapedResultPath = resultPath.replaceAll("'", "''")
   const escapedHelperPath = helperPath?.replaceAll("'", "''") ?? ''
-  const machineInstallLine = machineInstallOverride === undefined
-    ? '  $machineInstall = Test-Path -LiteralPath $machineKey'
-    : `  $machineInstall = $${machineInstallOverride ? 'true' : 'false'}`
+  const installModeLines = machineInstallOverride === undefined
+    ? [
+        '  $userLocation = (Get-ItemProperty -LiteralPath $userKey -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation',
+        '  $machineLocation = (Get-ItemProperty -LiteralPath $machineKey -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation',
+        '  $userMatch = Test-SamePath $userLocation $installDirectory',
+        '  $machineMatch = Test-SamePath $machineLocation $installDirectory',
+        '  if ($machineMatch) {',
+        '    $machineInstall = $true',
+        '  } elseif ($userMatch) {',
+        '    $machineInstall = $false',
+        '  } else {',
+        "    $normalizedInstall = [IO.Path]::GetFullPath($installDirectory).TrimEnd([char[]]'\\/')",
+        '    $programRoots = @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }',
+        '    $machineInstall = @($programRoots | Where-Object {',
+        "      $root = [IO.Path]::GetFullPath($_).TrimEnd([char[]]'\\/')",
+        "      $normalizedInstall.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase)",
+        '    }).Count -gt 0',
+        '  }'
+      ]
+    : [`  $machineInstall = $${machineInstallOverride ? 'true' : 'false'}`]
   return [
     "$ErrorActionPreference = 'Stop'",
     `$installer = '${escapedPath}'`,
@@ -116,6 +133,17 @@ export function buildInstallAndCleanupScript(
     `$resultPath = '${escapedResultPath}'`,
     `$helperPath = '${escapedHelperPath}'`,
     "$application = Join-Path $installDirectory 'Codex Account Switcher.exe'",
+    "$appKeySuffix = 'Software\\ca637cc9-81db-5210-aea1-8b5539723f26'",
+    '$userKey = "Registry::HKEY_CURRENT_USER\\$appKeySuffix"',
+    '$machineKey = "Registry::HKEY_LOCAL_MACHINE\\$appKeySuffix"',
+    'function Test-SamePath([string]$left, [string]$right) {',
+    '  if ([string]::IsNullOrWhiteSpace($left) -or [string]::IsNullOrWhiteSpace($right)) { return $false }',
+    '  try {',
+    "    $normalizedLeft = [IO.Path]::GetFullPath($left).TrimEnd([char[]]'\\/')",
+    "    $normalizedRight = [IO.Path]::GetFullPath($right).TrimEnd([char[]]'\\/')",
+    '    return [StringComparer]::OrdinalIgnoreCase.Equals($normalizedLeft, $normalizedRight)',
+    '  } catch { return $false }',
+    '}',
     'try {',
     "  Set-Content -LiteralPath $readyPath -Value 'ready' -Encoding ascii -Force",
     "  Set-Content -LiteralPath $logPath -Value \"[$([DateTime]::Now.ToString('s'))] Update helper started\" -Encoding utf8 -Force",
@@ -129,14 +157,17 @@ export function buildInstallAndCleanupScript(
     '    $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
     '    Start-Sleep -Milliseconds 750',
     '  }',
-    "  $machineKey = 'Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ca637cc9-81db-5210-aea1-8b5539723f26'",
-    machineInstallLine,
-    "  $argumentLine = if ($machineInstall) { \"/S /allusers /D=`\"$installDirectory`\"\" } else { \"/S /currentuser /D=`\"$installDirectory`\"\" }",
-    '  $start = @{ FilePath = $installer; ArgumentList = $argumentLine; PassThru = $true; Wait = $true }',
+    ...installModeLines,
+    "  $installModeArgument = if ($machineInstall) { '/allusers' } else { '/currentuser' }",
+    "  Add-Content -LiteralPath $logPath -Value \"[$([DateTime]::Now.ToString('s'))] Install mode $installModeArgument for $installDirectory\" -Encoding utf8 -ErrorAction SilentlyContinue",
+    "  $start = @{ FilePath = $installer; ArgumentList = @('/S', $installModeArgument); PassThru = $true; Wait = $true }",
     "  if ($machineInstall) { $start['Verb'] = 'RunAs' }",
     '  $process = Start-Process @start',
     "  if ($process.ExitCode -ne 0) { throw \"Installer exited with code $($process.ExitCode)\" }",
-    '  Start-Sleep -Seconds 1',
+    '  $installDeadline = [DateTime]::UtcNow.AddSeconds(20)',
+    '  while (-not (Test-Path -LiteralPath $application) -and [DateTime]::UtcNow -lt $installDeadline) {',
+    '    Start-Sleep -Milliseconds 250',
+    '  }',
     "  if (-not (Test-Path -LiteralPath $application)) { throw 'Installed application executable was not found' }",
     '  Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue',
     "  Add-Content -LiteralPath $logPath -Value \"[$([DateTime]::Now.ToString('s'))] Update installed successfully\" -Encoding utf8 -ErrorAction SilentlyContinue",
