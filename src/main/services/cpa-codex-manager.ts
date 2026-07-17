@@ -10,6 +10,7 @@ import type {
   DeleteAccountsResult,
   ManagedFileStateResult,
   NormalizedCredential,
+  ScanResult,
   TestResult
 } from '../../shared/types'
 import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
@@ -97,8 +98,8 @@ function formatForPath(path: string): CredentialSourceFormat | undefined {
   return FORMATS[extname(path).toLowerCase()]
 }
 
-function serialized(credential: NormalizedCredential): string {
-  return `${JSON.stringify({ ...serializeCpaCredential(credential), disabled: false }, null, 2)}\n`
+function serialized(credential: NormalizedCredential, priority?: number): string {
+  return `${JSON.stringify({ ...serializeCpaCredential(credential, priority), disabled: false }, null, 2)}\n`
 }
 
 async function writeIfChanged(path: string, text: string): Promise<void> {
@@ -163,22 +164,68 @@ export class CpaCodexManager {
     return this.mergeImported(parsed.credentials, parsed.errors)
   }
 
-  async exportCredentials(values: NormalizedCredential[]): Promise<CpaCodexScanResult> {
+  async exportCredentials(
+    values: NormalizedCredential[],
+    defaultPriority = 10,
+    priorities: Readonly<Record<string, number>> = {}
+  ): Promise<CpaCodexScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     const incoming = dedupeCredentials(values)
     await this.options.deletedStore?.removeMany(incoming.map((credential) => credential.id))
-    const existing = await this.readPaths(await files(directory))
-    const existingIds = new Set(dedupeCredentials(existing.credentials).map((item) => item.id))
-    const fresh = incoming.filter((item) => !existingIds.has(item.id))
-    const result = await this.mergeImported(fresh, [])
+    const records = await this.managedRecords()
+    const managed = new Map(this.dedupeRecords(records).map((record) => [record.credential.id, record]))
+    const parsed = await this.readPaths(await files(directory))
+    const existing = new Map(dedupeCredentials(parsed.credentials).map((credential) => [credential.id, credential]))
+    const sourceCounts = new Map<string, number>()
+    for (const credential of parsed.credentials) {
+      sourceCounts.set(credential.sourcePath, (sourceCounts.get(credential.sourcePath) ?? 0) + 1)
+    }
+    let imported = 0
+    for (const credential of incoming) {
+      const current = managed.get(credential.id)
+      const previous = existing.get(credential.id)
+      const reusableSource = previous && sourceCounts.get(previous.sourcePath) === 1 &&
+        !previous.sourcePath.includes('#') && formatForPath(previous.sourcePath) === 'json'
+        ? previous.sourcePath
+        : null
+      const target = current?.path ?? reusableSource ?? join(directory, managedName(credential))
+      await atomicWriteFile(
+        target,
+        serialized(
+          { ...credential, sourcePath: target, sourceFormat: 'json', sourceDialect: 'cpa' },
+          priorities[credential.id] ?? defaultPriority
+        )
+      )
+      const duplicatePaths = records
+        .filter((record) => record.credential.id === credential.id && resolve(record.path).toLowerCase() !== resolve(target).toLowerCase())
+        .map((record) => record.path)
+      await Promise.all(duplicatePaths.map((path) => rm(path, { force: true })))
+      if (!previous) imported += 1
+    }
     return {
-      ...result,
-      imported: fresh.length,
-      skipped: incoming.length - fresh.length,
-      errors: existing.errors,
+      imported,
+      skipped: incoming.length - imported,
+      errors: parsed.errors,
       accounts: await this.listAccounts()
     }
+  }
+
+  async copyAccountsTo(
+    ids: string[] | undefined,
+    target: { importCredentialsAdditive(values: readonly NormalizedCredential[]): Promise<ScanResult> }
+  ): Promise<ScanResult> {
+    const parsed = await this.readPaths(await files(await this.directory()))
+    const available = dedupeCredentials(parsed.credentials)
+    const wanted = ids ? new Set(ids) : null
+    const selected = available.filter((credential) => !wanted || wanted.has(credential.id))
+    if (wanted) {
+      const selectedIds = new Set(selected.map((credential) => credential.id))
+      const missing = [...wanted].find((id) => !selectedIds.has(id))
+      if (missing) throw new Error(`CPA Codex 账号不存在：${missing}`)
+    }
+    const result = await target.importCredentialsAdditive(selected)
+    return { ...result, errors: [...parsed.errors, ...result.errors] }
   }
 
   async listAccounts(): Promise<CpaCodexAccountSummary[]> {

@@ -327,10 +327,18 @@ export interface BatchTestResult {
 export type CredentialExportFormat = 'cpa' | 'sub2api' | 'codex'
 export type CredentialExportLayout = 'separate' | 'bundle'
 
+export interface CredentialPriorityRequest {
+  accountIds: string[]
+  defaultPriority: number
+  priorities?: Record<string, number>
+}
+
 export interface CredentialExportRequest {
   accountIds: string[]
   format: CredentialExportFormat
   layout: CredentialExportLayout
+  defaultPriority?: number
+  priorities?: Record<string, number>
 }
 
 export interface CredentialExportResult {

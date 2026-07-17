@@ -192,11 +192,13 @@ function api(): CodexSwitcherApi {
     exportGrokAccounts: vi.fn().mockResolvedValue([]),
     exportGrokAccountsToCpa: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
     scanCpaGrokDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
+    syncCpaGrokToLibrary: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
     deleteCpaGrokAccounts: vi.fn().mockResolvedValue({ deleted: 0, message: 'ok' }),
     testCpaGrokAccounts: vi.fn().mockResolvedValue({ tested: 0, results: [], cancelled: false }),
     cancelCpaGrokTests: vi.fn().mockResolvedValue(undefined),
     setCpaGrokEnabled: vi.fn().mockResolvedValue({ changed: 0, skipped: 0, message: 'ok' }),
     scanCpaCodexDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
+    syncCpaCodexToLibrary: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: snapshot.accounts }),
     testCpaCodexAccounts: vi.fn().mockResolvedValue({ tested: 0, results: [], cancelled: false }),
     cancelCpaCodexTests: vi.fn().mockResolvedValue(undefined),
     deleteCpaCodexAccounts: vi.fn().mockResolvedValue({ deleted: 0, message: 'ok' }),
@@ -405,9 +407,13 @@ describe('App', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
+    fireEvent.click(screen.getByRole('button', { name: '同步全部到 aa' }))
+    await waitFor(() => expect(bridge.syncCpaCodexToLibrary).toHaveBeenCalledWith(undefined))
     const row = await screen.findByRole('row', { name: /cpa-codex@example\.com/ })
     fireEvent.click(row)
     expect(screen.getByLabelText('选择 CPA Codex cpa-codex@example.com')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: '同步选中到 aa' }))
+    await waitFor(() => expect(bridge.syncCpaCodexToLibrary).toHaveBeenCalledWith(['c'.repeat(64)]))
     fireEvent.click(screen.getByRole('button', { name: '停用 .json.0' }))
 
     await waitFor(() => expect(bridge.setCpaCodexEnabled).toHaveBeenCalledWith(['c'.repeat(64)], false))
@@ -562,6 +568,8 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
     fireEvent.click(screen.getByRole('navigation', { name: 'CPA 账号类型' }).querySelectorAll('button')[1])
     expect(await screen.findByText('cpa-grok@example.com')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '同步全部到 aa' }))
+    await waitFor(() => expect(bridge.syncCpaGrokToLibrary).toHaveBeenCalledWith(undefined))
     fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
 
     await waitFor(() => expect(bridge.testCpaGrokAccounts).toHaveBeenCalledWith(['9'.repeat(64)]))
@@ -813,17 +821,23 @@ describe('App', () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
     fireEvent.click(screen.getByLabelText('选择 person@example.com'))
+    fireEvent.click(screen.getByLabelText('选择 second@example.com'))
 
     fireEvent.click(screen.getByRole('button', { name: '导出账号' }))
     fireEvent.click(screen.getByRole('button', { name: 'SubAPI' }))
     fireEvent.click(screen.getByRole('button', { name: '合并单文件' }))
+    fireEvent.click(screen.getByLabelText('分别设置每个账号'))
+    fireEvent.change(screen.getByLabelText('person@example.com 的优先级'), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText('second@example.com 的优先级'), { target: { value: '20' } })
     fireEvent.click(screen.getByRole('button', { name: '选择目录并导出' }))
 
     await waitFor(() =>
       expect(window.codexSwitcher.exportAccounts).toHaveBeenCalledWith({
-        accountIds: ['account-a'],
+        accountIds: ['account-a', 'account-b'],
         format: 'sub2api',
-        layout: 'bundle'
+        layout: 'bundle',
+        defaultPriority: 10,
+        priorities: { 'account-a': 5, 'account-b': 20 }
       })
     )
   })

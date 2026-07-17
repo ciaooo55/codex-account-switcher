@@ -73,6 +73,43 @@ function successfulResult(accountId: string): TestResult {
 }
 
 describe('AccountManager', () => {
+  it('adds new CPA credentials without overwriting an existing aa account', async () => {
+    const fixture = await setup()
+    const managedDirectory = join(fixture.root, 'aa', 'codex')
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      managedImportDirectory: managedDirectory,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const first: NormalizedCredential = {
+      id: 'first', email: 'existing@example.com', accountId: 'workspace-existing', subject: 'existing-user',
+      accessToken: 'original-access', refreshToken: 'original-refresh', idToken: null, authKind: 'oauth',
+      oauthClientId: null, isFedRamp: null, planType: 'plus', lastRefresh: null,
+      accessExpiresAt: null, idExpiresAt: null, canRefresh: true,
+      sourcePath: 'cpa-existing.json', sourceFormat: 'json', sourceDialect: 'cpa'
+    }
+    await manager.importCredentialsAdditive([first])
+    const storedFirst = (await fixture.vault.list())[0]
+    const second: NormalizedCredential = {
+      ...first, id: 'second', email: 'new@example.com', accountId: 'workspace-new', subject: 'new-user',
+      accessToken: 'new-access', refreshToken: 'new-refresh', sourcePath: 'cpa-new.json'
+    }
+
+    const result = await manager.importCredentialsAdditive([
+      { ...storedFirst, accessToken: 'must-not-overwrite' },
+      second
+    ])
+
+    expect(result).toMatchObject({ imported: 1, skipped: 1 })
+    const stored = await fixture.vault.list()
+    expect(stored).toHaveLength(2)
+    expect(stored.find((item) => item.email === 'existing@example.com')?.accessToken).toBe('original-access')
+    expect(await readdir(managedDirectory)).toHaveLength(2)
+  })
+
   it('scans disabled .json.0 files and deduplicates them with enabled copies by email', async () => {
     const fixture = await setup()
     const accessToken = jwt({ sub: 'same-email', email: 'same@example.com' })

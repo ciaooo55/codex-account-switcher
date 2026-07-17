@@ -31,6 +31,8 @@ interface ExportAccountsOptions {
   format: CredentialExportFormat
   layout: CredentialExportLayout
   outputDirectory: string
+  defaultPriority?: number
+  priorities?: Record<string, number>
 }
 
 interface Sub2ApiAccount {
@@ -68,7 +70,7 @@ export function serializeCodexCredential(
   return codexCredentialDocument(credential).value
 }
 
-function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
+function sub2ApiAccount(credential: NormalizedCredential, priority: number): Sub2ApiAccount {
   const expiry = unixSeconds(credential.accessExpiresAt)
   const name = credential.email ?? `account-${credential.id.slice(0, 10)}`
   return {
@@ -108,7 +110,7 @@ function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
     },
     proxy_key: null,
     concurrency: 10,
-    priority: 1,
+    priority,
     rate_multiplier: 1,
     ...(expiry !== null ? { expires_at: expiry } : {}),
     auto_pause_on_expired: true
@@ -117,14 +119,18 @@ function sub2ApiAccount(credential: NormalizedCredential): Sub2ApiAccount {
 
 export function serializeSub2ApiBundle(
   credentials: readonly NormalizedCredential[],
-  exportedAt = new Date()
+  exportedAt = new Date(),
+  priorities: Readonly<Record<string, number>> = {},
+  defaultPriority = 10
 ): Sub2ApiBundle {
   return {
     type: 'sub2api-data',
     version: 1,
     exported_at: exportedAt.toISOString(),
     proxies: [],
-    accounts: credentials.map(sub2ApiAccount)
+    accounts: credentials.map((credential) =>
+      sub2ApiAccount(credential, priorities[credential.id] ?? defaultPriority)
+    )
   }
 }
 
@@ -189,7 +195,9 @@ async function atomicCreate(path: string, data: Uint8Array): Promise<void> {
 
 function archiveEntries(
   credentials: readonly NormalizedCredential[],
-  format: 'cpa' | 'codex'
+  format: 'cpa' | 'codex',
+  priorities: Readonly<Record<string, number>>,
+  defaultPriority: number
 ): Record<string, Uint8Array> {
   const entries: Record<string, Uint8Array> = {}
   const used = new Set<string>()
@@ -203,7 +211,9 @@ function archiveEntries(
     }
     used.add(name.toLowerCase())
     entries[name] = jsonBytes(
-      format === 'codex' ? serializeCodexCredential(credential) : serializeCpaCredential(credential)
+      format === 'codex'
+        ? serializeCodexCredential(credential)
+        : serializeCpaCredential(credential, priorities[credential.id] ?? defaultPriority)
     )
   }
   return entries
@@ -233,6 +243,8 @@ export class CredentialExportService {
     })
     const files: string[] = []
     const errors: string[] = []
+    const priorities = options.priorities ?? {}
+    const defaultPriority = options.defaultPriority ?? 10
 
     if (options.layout === 'bundle') {
       const now = this.now()
@@ -245,10 +257,10 @@ export class CredentialExportService {
       const path = await availablePath(options.outputDirectory, filename)
       const data =
         options.format === 'cpa'
-          ? zipSync(archiveEntries(credentials, 'cpa'), { level: 6 })
+          ? zipSync(archiveEntries(credentials, 'cpa', priorities, defaultPriority), { level: 6 })
           : options.format === 'codex'
-            ? zipSync(archiveEntries(credentials, 'codex'), { level: 6 })
-            : jsonBytes(serializeSub2ApiBundle(credentials, now))
+            ? zipSync(archiveEntries(credentials, 'codex', priorities, defaultPriority), { level: 6 })
+            : jsonBytes(serializeSub2ApiBundle(credentials, now, priorities, defaultPriority))
       await atomicCreate(path, data)
       files.push(path)
     } else {
@@ -259,10 +271,10 @@ export class CredentialExportService {
           const path = await availablePath(options.outputDirectory, filename)
           const value =
             options.format === 'cpa'
-              ? serializeCpaCredential(credential)
+              ? serializeCpaCredential(credential, priorities[credential.id] ?? defaultPriority)
               : options.format === 'codex'
                 ? serializeCodexCredential(credential)
-                : serializeSub2ApiBundle([credential], this.now())
+                : serializeSub2ApiBundle([credential], this.now(), priorities, defaultPriority)
           await atomicCreate(path, jsonBytes(value))
           files.push(path)
         } catch {

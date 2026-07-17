@@ -8,13 +8,15 @@ export interface CodexAuthDocument {
 }
 
 export function serializeCpaCredential(
-  credential: NormalizedCredential
-): Record<string, string | boolean> {
+  credential: NormalizedCredential,
+  priority?: number
+): Record<string, string | number | boolean> {
   const personalAccessToken =
     credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')
 
   return {
     type: 'codex',
+    ...(priority !== undefined ? { priority } : {}),
     ...(credential.email ? { email: credential.email } : {}),
     auth_mode: personalAccessToken ? 'personalAccessToken' : 'chatgpt',
     ...(personalAccessToken

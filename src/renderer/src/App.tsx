@@ -195,6 +195,9 @@ export function App(): React.JSX.Element {
     accountIds: string[]
     format: CredentialExportFormat
     layout: CredentialExportLayout
+    defaultPriority: number
+    individualPriorities: boolean
+    priorities: Record<string, number>
   } | null>(null)
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
   const [contextMenu, setContextMenu] = useState<{
@@ -353,13 +356,25 @@ export function App(): React.JSX.Element {
     }).sort(compareAccounts(accountSort))
   }, [accountSort, keyword, snapshot, statusFilter])
 
+  const accountById = useMemo(
+    () => new Map((snapshot?.accounts ?? []).map((account) => [account.id, account])),
+    [snapshot]
+  )
+
   const openExport = (ids?: string[]): void => {
     const accountIds = ids ?? (selected.size > 0 ? [...selected] : accounts.map((item) => item.id))
     if (accountIds.length === 0) {
       setMessage({ kind: 'error', text: '没有可导出的账号' })
       return
     }
-    setExportDialog({ accountIds, format: 'cpa', layout: 'separate' })
+    setExportDialog({
+      accountIds,
+      format: 'cpa',
+      layout: 'separate',
+      defaultPriority: 10,
+      individualPriorities: false,
+      priorities: Object.fromEntries(accountIds.map((id) => [id, 10]))
+    })
   }
 
   const submitExport = async (): Promise<void> => {
@@ -367,7 +382,20 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.exportAccounts(exportDialog)
+      const request = exportDialog.format === 'codex'
+        ? {
+            accountIds: exportDialog.accountIds,
+            format: exportDialog.format,
+            layout: exportDialog.layout
+          }
+        : {
+            accountIds: exportDialog.accountIds,
+            format: exportDialog.format,
+            layout: exportDialog.layout,
+            defaultPriority: exportDialog.defaultPriority,
+            ...(exportDialog.individualPriorities ? { priorities: exportDialog.priorities } : {})
+          }
+      const result = await window.codexSwitcher.exportAccounts(request)
       if (!result.cancelled) {
         setMessage({ kind: result.ok ? 'ok' : 'error', text: result.message })
         setExportDialog(null)
@@ -459,11 +487,15 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.exportAccountsToCpa(exportDialog.accountIds)
+      const result = await window.codexSwitcher.exportAccountsToCpa({
+        accountIds: exportDialog.accountIds,
+        defaultPriority: exportDialog.defaultPriority,
+        ...(exportDialog.individualPriorities ? { priorities: exportDialog.priorities } : {})
+      })
       await reload()
       setMessage({
         kind: result.errors.length ? 'warn' : 'ok',
-        text: `已导出 ${result.imported} 个到 CPA，重复跳过 ${result.skipped} 个`
+        text: `已导出 ${result.imported} 个到 CPA${result.skipped ? `，${result.skipped} 个已有账号已更新凭证和优先级` : ''}`
       })
       setExportDialog(null)
     } catch (error) {
@@ -1084,9 +1116,79 @@ export function App(): React.JSX.Element {
                 <button className={exportDialog.layout === 'bundle' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'bundle' })}>{exportDialog.format === 'sub2api' ? '合并单文件' : '合并 ZIP'}</button>
               </div>
             </div>
+            {exportDialog.format !== 'codex' && (
+              <div className="priority-editor">
+                <label className="priority-batch">
+                  <span>统一优先级</span>
+                  <input
+                    aria-label="统一优先级"
+                    type="number"
+                    min={0}
+                    max={1_000_000}
+                    step={1}
+                    value={exportDialog.defaultPriority}
+                    onChange={(event) => {
+                      const value = Math.max(0, Math.min(1_000_000, Math.trunc(Number(event.target.value) || 0)))
+                      setExportDialog((current) => current ? {
+                        ...current,
+                        defaultPriority: value,
+                        priorities: Object.fromEntries(current.accountIds.map((id) => [id, value]))
+                      } : null)
+                    }}
+                  />
+                </label>
+                <span className="priority-hint">
+                  {exportDialog.format === 'cpa'
+                    ? 'CPA 数值越大越优先，未设置时默认为 0。'
+                    : 'Sub2API 数值越小越优先，项目默认值为 50。'}
+                </span>
+                {exportDialog.accountIds.length > 1 && (
+                  <label className="priority-toggle">
+                    <input
+                      type="checkbox"
+                      checked={exportDialog.individualPriorities}
+                      onChange={(event) => setExportDialog({
+                        ...exportDialog,
+                        individualPriorities: event.target.checked
+                      })}
+                    />
+                    <span>分别设置每个账号</span>
+                  </label>
+                )}
+                {exportDialog.individualPriorities && (
+                  <div className="priority-account-list" aria-label="逐账号优先级">
+                    {exportDialog.accountIds.map((id) => {
+                      const account = accountById.get(id)
+                      const label = account?.email ?? account?.workspaceId ?? id
+                      return (
+                        <label key={id} className="priority-account-row">
+                          <span title={label}>{label}</span>
+                          <small>{account?.planType ?? '未知'}</small>
+                          <input
+                            aria-label={`${label} 的优先级`}
+                            type="number"
+                            min={0}
+                            max={1_000_000}
+                            step={1}
+                            value={exportDialog.priorities[id] ?? exportDialog.defaultPriority}
+                            onChange={(event) => {
+                              const value = Math.max(0, Math.min(1_000_000, Math.trunc(Number(event.target.value) || 0)))
+                              setExportDialog((current) => current ? {
+                                ...current,
+                                priorities: { ...current.priorities, [id]: value }
+                              } : null)
+                            }}
+                          />
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="export-warning">
               <CircleAlert size={17} />
-              <span>{exportDialog.format === 'codex' ? 'Codex 格式会按账号认证类型生成官方 auth.json 结构；多账号只能打包为 ZIP。' : '普通导出可选择任意目录；“直接导出到 CPA”仅写入设置中的 CPA 共享目录，并按账号稳定身份跳过重复。'}</span>
+              <span>{exportDialog.format === 'codex' ? 'Codex auth.json 没有优先级字段；多账号只能打包为 ZIP。' : '普通导出可选择任意目录；直接导出到 CPA 时，同账号不会重复创建文件，只更新凭证和优先级。'}</span>
             </div>
             <div className="panel-actions">
               <button onClick={closeExportDialog} disabled={busy}>取消</button>

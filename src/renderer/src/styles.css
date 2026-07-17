@@ -170,6 +170,16 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .paste-field textarea { width: 100%; min-height: 280px; resize: vertical; padding: 10px; line-height: 1.5; font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px; }
 .dialog-note { margin: 10px 0; color: #7f8b97; font-size: 11px; line-height: 1.5; }
 .option-group { display: grid; gap: 8px; margin-bottom: 16px; color: #9da8b3; font-size: 12px; }
+.priority-editor { display: grid; gap: 10px; margin: 2px 0 14px; padding: 14px 0; border-top: 1px solid #303840; border-bottom: 1px solid #303840; }
+.priority-batch { display: grid; grid-template-columns: minmax(0, 1fr) 110px; align-items: center; gap: 12px; color: #d4dce3; font-size: 12px; font-weight: 600; }
+.priority-batch input, .priority-account-row input { width: 100%; min-width: 0; height: 34px; padding: 0 9px; text-align: right; font-variant-numeric: tabular-nums; }
+.priority-hint { color: #84919d; font-size: 11px; line-height: 1.45; }
+.priority-toggle { display: inline-flex; align-items: center; gap: 8px; width: fit-content; color: #b8c2cb; font-size: 12px; cursor: pointer; }
+.priority-toggle input { width: 15px; height: 15px; margin: 0; accent-color: #4c91c5; }
+.priority-account-list { max-height: 230px; overflow: auto; border-top: 1px solid #303840; }
+.priority-account-row { display: grid; grid-template-columns: minmax(0, 1fr) 70px 90px; align-items: center; gap: 10px; min-height: 44px; border-bottom: 1px solid #293139; }
+.priority-account-row > span { overflow: hidden; color: #d8e0e6; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.priority-account-row small { overflow: hidden; color: #84919d; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .segmented-control { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 3px; background: #11161b; border: 1px solid #303840; border-radius: 7px; }
 .segmented-control.format-control { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .segmented-control.import-mode-control { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
@@ -454,6 +464,11 @@ td { color: #3b4851; border-color: #dce2e5; }
 .settings-panel input[readonly] { color: #5c6972; background: #f0f4f5; }
 .panel-header h2 { color: #27323a; }
 .settings-panel > label, .settings-grid label, .paste-field, .option-group, .repair-provider { color: #5f6d76; }
+.priority-editor { border-color: #d2dade; }
+.priority-batch, .priority-account-row > span { color: #35424a; }
+.priority-hint, .priority-account-row small { color: #71808a; }
+.priority-toggle { color: #52616a; }
+.priority-account-list, .priority-account-row { border-color: #d7dfe3; }
 .custom-api-panel, .auto-switch-panel { background: #f3f6f7; border-color: #d1dbe0; }
 .section-heading strong, .auto-switch-heading strong { color: #303c44; }
 .section-heading div > span, .auto-switch-heading span { color: #74828b; }

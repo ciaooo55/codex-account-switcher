@@ -37,6 +37,37 @@ async function setup() {
 }
 
 describe('GrokAccountManager', () => {
+  it('syncs all raw CPA files additively without deleting or overwriting either directory', async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'grok-cpa-source-'))
+    const targetRoot = await mkdtemp(join(tmpdir(), 'grok-aa-target-'))
+    roots.push(sourceRoot, targetRoot)
+    const source = new GrokAccountManager({
+      directory: () => sourceRoot,
+      fileNameStyle: 'cpa',
+      concurrency: () => 2,
+      statusStore: new GrokStatusStore(join(sourceRoot, 'status.json')),
+      tester: { test: vi.fn() }
+    })
+    const target = new GrokAccountManager({
+      directory: () => targetRoot,
+      fileNameStyle: 'library',
+      concurrency: () => 2,
+      statusStore: new GrokStatusStore(join(targetRoot, 'status.json')),
+      tester: { test: vi.fn() }
+    })
+    const sourcePath = join(sourceRoot, 'oauth-login-result.json')
+    const sourceText = JSON.stringify({
+      type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'sync-grok' }),
+      refresh_token: 'source-refresh', email: 'sync-grok@example.com'
+    })
+    await writeFile(sourcePath, sourceText)
+
+    expect(await source.copyAccountsTo(undefined, target)).toMatchObject({ imported: 1, skipped: 0 })
+    expect(await source.copyAccountsTo(undefined, target)).toMatchObject({ imported: 0, skipped: 1 })
+    expect(await readFile(sourcePath, 'utf8')).toBe(sourceText)
+    expect((await readdir(targetRoot)).filter((name) => name.endsWith('.json'))).toHaveLength(1)
+  })
+
   it('copies only selected accounts to a separate CPA manager and deduplicates repeat exports', async () => {
     const { source, manager } = await setup()
     const root = await mkdtemp(join(tmpdir(), 'grok-cpa-target-'))

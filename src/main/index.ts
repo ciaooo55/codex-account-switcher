@@ -832,13 +832,20 @@ async function main(): Promise<void> {
     return result
   })
   ipcMain.handle(ipcChannels.exportAccounts, async (_event, input: unknown) => {
+    const prioritySchema = z.number().int().min(0).max(1_000_000)
     const payload = z
       .object({
         accountIds: z.array(z.string().min(1)).min(1).max(20_000),
         format: z.enum(['cpa', 'sub2api', 'codex']),
-        layout: z.enum(['separate', 'bundle'])
+        layout: z.enum(['separate', 'bundle']),
+        defaultPriority: prioritySchema.optional(),
+        priorities: z.record(z.string().min(1), prioritySchema).optional()
       })
       .parse(input)
+    const selectedIds = new Set(payload.accountIds)
+    if (Object.keys(payload.priorities ?? {}).some((id) => !selectedIds.has(id))) {
+      throw new Error('逐账号优先级包含未选择的账号')
+    }
     let outputDirectory: string
     if (e2eMode && process.env.CODEX_SWITCHER_E2E_EXPORT_DIR) {
       outputDirectory = resolve(process.env.CODEX_SWITCHER_E2E_EXPORT_DIR)
@@ -864,14 +871,25 @@ async function main(): Promise<void> {
     return runTrackedFileOperation(() => exporter.exportAccounts({ ...payload, outputDirectory }))
   })
   ipcMain.handle(ipcChannels.exportAccountsToCpa, async (_event, input: unknown) => {
-    const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
+    const prioritySchema = z.number().int().min(0).max(1_000_000)
+    const payload = z.object({
+      accountIds: z.array(z.string().min(1)).min(1).max(20_000),
+      defaultPriority: prioritySchema.default(10),
+      priorities: z.record(z.string().min(1), prioritySchema).optional()
+    }).parse(input)
+    const selectedIds = new Set(payload.accountIds)
+    if (Object.keys(payload.priorities ?? {}).some((id) => !selectedIds.has(id))) {
+      throw new Error('逐账号优先级包含未选择的账号')
+    }
     const all = new Map((await vault.list()).map((credential) => [credential.id, credential]))
-    const credentials = [...new Set(ids)].map((id) => {
+    const credentials = [...new Set(payload.accountIds)].map((id) => {
       const credential = all.get(id)
       if (!credential) throw new Error(`账号不存在：${id}`)
       return credential
     })
-    return runTrackedFileOperation(() => cpaCodexManager.exportCredentials(credentials))
+    return runTrackedFileOperation(() =>
+      cpaCodexManager.exportCredentials(credentials, payload.defaultPriority, payload.priorities)
+    )
   })
   ipcMain.handle(ipcChannels.test, async (_event, input: unknown) => {
     if (testController) throw new Error('已有检测任务正在运行')
@@ -1082,6 +1100,11 @@ async function main(): Promise<void> {
     if (cpaGrokTestController) throw new Error('CPA Grok 检测正在运行')
     return runTrackedFileOperation(() => cpaGrokManager.scanDirectory())
   })
+  ipcMain.handle(ipcChannels.cpaGrokSyncToLibrary, (_event, input: unknown) => {
+    if (cpaGrokTestController) throw new Error('CPA Grok 检测正在运行')
+    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).optional().parse(input)
+    return runAccountLibraryMutation(() => cpaGrokManager.copyAccountsTo(ids, grokManager))
+  })
   ipcMain.handle(ipcChannels.cpaGrokDelete, (_event, input: unknown) => {
     if (cpaGrokTestController) throw new Error('CPA Grok 检测正在运行')
     const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input)
@@ -1116,6 +1139,11 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.cpaCodexScan, () => {
     if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
     return runTrackedFileOperation(() => cpaCodexManager.scanDirectory())
+  })
+  ipcMain.handle(ipcChannels.cpaCodexSyncToLibrary, (_event, input: unknown) => {
+    if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
+    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).optional().parse(input)
+    return runAccountLibraryMutation(() => cpaCodexManager.copyAccountsTo(ids, manager))
   })
   ipcMain.handle(ipcChannels.cpaCodexDelete, (_event, input: unknown) => {
     if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')

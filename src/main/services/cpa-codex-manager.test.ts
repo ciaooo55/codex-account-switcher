@@ -56,6 +56,34 @@ async function setup(statuses: TestResult['status'][] = ['valid']) {
 }
 
 describe('CpaCodexManager', () => {
+  it('reads raw CPA files for additive aa sync without modifying the CPA source', async () => {
+    const { library, manager } = await setup()
+    await mkdir(library, { recursive: true })
+    const source = join(library, 'oauth-login-result.json')
+    const sourceText = JSON.stringify({
+      type: 'codex',
+      access_token: token({ sub: 'sync-codex', email: 'sync-codex@example.com' }),
+      refresh_token: 'sync-refresh',
+      email: 'sync-codex@example.com'
+    })
+    await writeFile(source, sourceText)
+    const importCredentialsAdditive = vi.fn(async (values: readonly NormalizedCredential[]) => ({
+      imported: values.length,
+      skipped: 0,
+      errors: [],
+      accounts: []
+    }))
+
+    const synced = await manager.copyAccountsTo(undefined, { importCredentialsAdditive })
+
+    expect(synced).toMatchObject({ imported: 1, skipped: 0, errors: [] })
+    expect(importCredentialsAdditive).toHaveBeenCalledWith([
+      expect.objectContaining({ email: 'sync-codex@example.com' })
+    ])
+    expect(await readFile(source, 'utf8')).toBe(sourceText)
+    expect(await readdir(library)).toEqual(['oauth-login-result.json'])
+  })
+
   it('splits a multi-account file into canonical CPA Codex files without modifying the source', async () => {
     const { library, source, manager } = await setup()
     const sourceText = JSON.stringify(['one', 'two'].map((name) => ({
@@ -150,7 +178,7 @@ describe('CpaCodexManager', () => {
     expect((await manager.listAccounts())[0].disabled).toBe(true)
   })
 
-  it('skips an explicit CPA export when the same stable identity already exists', async () => {
+  it('updates priority in place when an explicit CPA export already exists', async () => {
     const { library, manager } = await setup()
     await mkdir(library, { recursive: true })
     const accessToken = token({ sub: 'existing-user', email: 'existing@example.com' })
@@ -164,10 +192,35 @@ describe('CpaCodexManager', () => {
     await writeFile(source, raw)
     const credential = parseCredentialText(raw, { sourcePath: source, format: 'json' }).credentials[0]
 
-    const exported = await manager.exportCredentials([credential, { ...credential }])
+    const exported = await manager.exportCredentials([credential, { ...credential }], 10)
 
     expect(exported).toMatchObject({ imported: 0, skipped: 1 })
     expect(await readdir(library)).toEqual(['third-party-name.json'])
+    expect(JSON.parse(await readFile(source, 'utf8'))).toMatchObject({
+      email: 'existing@example.com',
+      priority: 10
+    })
+  })
+
+  it('never overwrites a multi-account CPA source when exporting one matching account', async () => {
+    const { library, manager } = await setup()
+    await mkdir(library, { recursive: true })
+    const source = join(library, 'multi-account-source.json')
+    const sourceText = JSON.stringify(['one', 'two'].map((name) => ({
+      type: 'codex',
+      access_token: token({ sub: `multi-${name}`, email: `multi-${name}@example.com` }),
+      refresh_token: `refresh-${name}`,
+      email: `multi-${name}@example.com`
+    })))
+    await writeFile(source, sourceText)
+    const [first] = parseCredentialText(sourceText, { sourcePath: source, format: 'json' }).credentials
+
+    await manager.exportCredentials([first], 12)
+
+    expect(await readFile(source, 'utf8')).toBe(sourceText)
+    const exported = (await readdir(library)).find((name) => name.startsWith('codex-multi-one@'))
+    expect(exported).toBeDefined()
+    expect(JSON.parse(await readFile(join(library, exported!), 'utf8'))).toMatchObject({ priority: 12 })
   })
 
   it('normalizes an existing CPA JSON in the shared directory without leaving a duplicate', async () => {

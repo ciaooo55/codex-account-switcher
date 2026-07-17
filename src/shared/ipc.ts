@@ -8,6 +8,7 @@ import type {
   CpaCodexScanResult,
   CpaDirectoryStats,
   CredentialExportRequest,
+  CredentialPriorityRequest,
   CredentialExportResult,
   DeleteAccountsResult,
   CustomApiProfileInput,
@@ -102,7 +103,7 @@ export interface CodexSwitcherApi {
   completeOAuthAuthorization(sessionId: string, callbackInput: string): Promise<ScanResult>
   deleteAccounts(ids: string[]): Promise<DeleteAccountsResult>
   exportAccounts(request: CredentialExportRequest): Promise<CredentialExportResult>
-  exportAccountsToCpa(ids: string[]): Promise<CpaCodexScanResult>
+  exportAccountsToCpa(request: CredentialPriorityRequest): Promise<CpaCodexScanResult>
   testAccounts(ids?: string[]): Promise<BatchTestResult>
   cancelTests(): Promise<void>
   switchAccount(id: string, restart: boolean): Promise<SwitchResult>
@@ -120,11 +121,13 @@ export interface CodexSwitcherApi {
   exportGrokAccounts(ids: string[], layout: 'separate' | 'bundle'): Promise<string[] | null>
   exportGrokAccountsToCpa(ids: string[]): Promise<GrokScanResult>
   scanCpaGrokDirectory(): Promise<GrokScanResult>
+  syncCpaGrokToLibrary(ids?: string[]): Promise<GrokScanResult>
   deleteCpaGrokAccounts(ids: string[]): Promise<DeleteAccountsResult>
   testCpaGrokAccounts(ids?: string[]): Promise<GrokBatchTestResult>
   cancelCpaGrokTests(): Promise<void>
   setCpaGrokEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult>
   scanCpaCodexDirectory(): Promise<CpaCodexScanResult>
+  syncCpaCodexToLibrary(ids?: string[]): Promise<ScanResult>
   testCpaCodexAccounts(ids?: string[]): Promise<BatchTestResult>
   cancelCpaCodexTests(): Promise<void>
   deleteCpaCodexAccounts(ids: string[]): Promise<DeleteAccountsResult>
@@ -184,12 +187,14 @@ export const ipcChannels = {
   grokExportToCpa: 'grok:export-to-cpa',
   grokTestProgress: 'grok:test-progress',
   cpaGrokScan: 'cpa-grok:scan',
+  cpaGrokSyncToLibrary: 'cpa-grok:sync-to-library',
   cpaGrokDelete: 'cpa-grok:delete',
   cpaGrokTest: 'cpa-grok:test',
   cpaGrokCancelTest: 'cpa-grok:test-cancel',
   cpaGrokSetEnabled: 'cpa-grok:set-enabled',
   cpaGrokTestProgress: 'cpa-grok:test-progress',
   cpaCodexScan: 'cpa-codex:scan',
+  cpaCodexSyncToLibrary: 'cpa-codex:sync-to-library',
   cpaCodexTest: 'cpa-codex:test',
   cpaCodexCancelTest: 'cpa-codex:test-cancel',
   cpaCodexDelete: 'cpa-codex:delete',

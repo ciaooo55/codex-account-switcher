@@ -150,7 +150,7 @@ describe('credential serializers', () => {
         last_refresh: '2026-07-15T00:00:00Z'
       },
       concurrency: 10,
-      priority: 1,
+      priority: 10,
       rate_multiplier: 1,
       auto_pause_on_expired: true
     })
@@ -191,6 +191,8 @@ describe('CredentialExportService', () => {
       accountIds: ['account-a', 'account-b'],
       format: 'cpa',
       layout: 'separate',
+      defaultPriority: 7,
+      priorities: { 'account-b': 3 },
       outputDirectory: fixture.outputDirectory
     })
     const second = await fixture.service.exportAccounts({
@@ -210,8 +212,10 @@ describe('CredentialExportService', () => {
     ])
     expect(JSON.parse(await readFile(first.files[0], 'utf8'))).toMatchObject({
       type: 'codex',
-      email: 'person@example.com'
+      email: 'person@example.com',
+      priority: 7
     })
+    expect(JSON.parse(await readFile(first.files[1], 'utf8'))).toMatchObject({ priority: 3 })
     expect(JSON.stringify(first)).not.toContain('access-secret')
   })
 
@@ -243,12 +247,15 @@ describe('CredentialExportService', () => {
       accountIds: ['account-a', 'account-b'],
       format: 'sub2api',
       layout: 'bundle',
+      defaultPriority: 10,
+      priorities: { 'account-b': 4 },
       outputDirectory: fixture.outputDirectory
     })
     const payload = JSON.parse(await readFile(result.files[0], 'utf8'))
 
     expect(payload.type).toBe('sub2api-data')
     expect(payload.accounts).toHaveLength(2)
+    expect(payload.accounts.map((account: { priority: number }) => account.priority)).toEqual([10, 4])
     await expect(
       fixture.service.exportAccounts({
         accountIds: ['missing'],
@@ -265,6 +272,7 @@ describe('CredentialExportService', () => {
       accountIds: ['account-a'],
       format: 'codex',
       layout: 'separate',
+      defaultPriority: 99,
       outputDirectory: fixture.outputDirectory
     })
     const bundle = await fixture.service.exportAccounts({
@@ -279,6 +287,7 @@ describe('CredentialExportService', () => {
       auth_mode: 'chatgpt',
       tokens: { access_token: 'access-secret-a' }
     })
+    expect(JSON.parse(await readFile(separate.files[0], 'utf8'))).not.toHaveProperty('priority')
     const entries = unzipSync(new Uint8Array(await readFile(bundle.files[0])))
     expect(Object.keys(entries).sort()).toEqual([
       'auth-person@example.com.json',

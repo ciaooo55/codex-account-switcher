@@ -246,6 +246,18 @@ export class AccountManager {
     return this.importResolvedCredentials(parsed.credentials, parsed.errors)
   }
 
+  async importCredentialsAdditive(input: readonly NormalizedCredential[]): Promise<ScanResult> {
+    const credentials = dedupeCredentials(input)
+    const existing = dedupeCredentials(await this.options.vault.list())
+    const existingIds = new Set(existing.map((credential) => credential.id))
+    const fresh = credentials.filter((credential) => !existingIds.has(credential.id))
+    if (fresh.length === 0) {
+      return { imported: 0, skipped: credentials.length, errors: [], accounts: await this.listAccounts() }
+    }
+    const result = await this.importResolvedCredentials(fresh, [])
+    return { ...result, skipped: result.skipped + credentials.length - fresh.length }
+  }
+
   private async importResolvedCredentials(
     input: readonly NormalizedCredential[],
     errors: readonly string[]

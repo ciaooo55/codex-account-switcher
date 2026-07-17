@@ -13,12 +13,12 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 根据后端 `limit_window_seconds` 动态显示 5 小时、周额度及准确重置时间，并将“5 小时额度耗尽”和“周额度耗尽”保存为不同状态。
 - 并发检测全部或选中账号，支持取消；检测中的账号使用稳定状态指示，每完成一个账号立即显示状态、额度、重置时间和刷新时间。
 - 检测状态和额度结果持久保存到下次检测；支持按邮箱、workspace、计划、来源和错误搜索，并按账号状态筛选。
-- Codex 本地库、Grok 本地库、CPA Codex 与 CPA Grok 的凭据、删除记录和检测状态彼此独立；只有用户主动执行“导出到 CPA”才会把选定的本地账号写入 CPA 目录。
+- Codex 本地库、Grok 本地库、CPA Codex 与 CPA Grok 的凭据、删除记录和检测状态彼此独立；只有用户主动执行“导出到 CPA”才会把选定的本地账号写入 CPA 目录，也可手动将 CPA 新账号只增量同步到 `aa`。
 - 当前 `auth.json` 匹配到的 Codex 账号会置顶，并使用独立的青色整行高亮、“正在使用”徽标和摘要标记，避免与普通有效状态混淆。
 - Codex 账号库、CPA Codex、CPA Grok 和定时切换候选列表支持按可用性/恢复时间、账号等级、状态或邮箱排序；默认把可用账号聚合在前，额度耗尽账号按最早恢复时间排列。
 - 支持单击账号行直接累加多选，再次点击取消选择，复选框仍可用于全选和多选，并提供明确的整行选中高亮；右键可检测、启停、复制、删除或直接打开托管文件位置；删除前二次确认，删除会同步删除或重写 `aa` 中的托管文件，一文件多账号时只移除选中的账号，外部原始文件不受影响。
 - Codex 页面统一显示“未测试、有效、已失效、5 小时额度耗尽、周额度耗尽、未知错误”六类状态；只有明确的授权失败才判定为失效，网络、模型和接口异常归入未知错误并保留诊断详情。
-- 一键导出 CPA、SubAPI 或官方 Codex `auth.json`：支持每账号一个文件；CPA/Codex 多账号使用 ZIP，SubAPI 使用原生多账号 JSON。
+- 一键导出 CPA、SubAPI 或官方 Codex `auth.json`：支持每账号一个文件；CPA/Codex 多账号使用 ZIP，SubAPI 使用原生多账号 JSON。CPA/SubAPI 导出可统一设置优先级，也可为多选账号逐个设置；CPA 数值越大越优先，Sub2API 数值越小越优先，官方 Codex 格式不写该字段。
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
 - 完整 OAuth 账号使用标准 `chatgpt` 登录；只有 access token 的 CPA Team/K12 账号使用官方 Codex 源码定义的 `chatgptAuthTokens` 外部凭据结构，切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
@@ -35,7 +35,8 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 ## CPA 账号管理
 
 - CPA 页面包含 Codex 和 Grok 两个独立子页。两类账号共用 `E:\home\<当前用户名>\.cli-proxy-api`，但测试全部、测试选中、实时进度、取消和筛选互不串台，CPA 页面也不会写入 `.codex`。
-- 只有 CPA 页面中的明确管理操作，或 Codex/Grok 本地库的“导出到 CPA”会写共享目录；直接导出按提供商与邮箱去重，已有账号会跳过。
+- 只有 CPA 页面中的明确管理操作，或 Codex/Grok 本地库的“导出到 CPA”会写共享目录；直接导出按稳定身份去重，已有 Codex 账号会原位更新凭证和导出优先级，不创建副本。
+- CPA Codex 与 CPA Grok 子页都提供“同步全部到 aa”“同步选中到 aa”和右键单账号同步。同步直接读取 CPA 目录，只新增本地库不存在的凭证；相同账号跳过，不覆盖 aa 现有 token，不删除或改写 CPA 源文件，也不删除 aa 中任何内容。
 - 支持单选、多选或批量把规范托管文件从 `.json` 改为 `.json.0`，使 CPA 暂停读取；再次启用会恢复 `.json`。检测到 5 小时或周额度耗尽时自动改为 `.json.无用量`，Codex 明确无权限时改为 `.json.无权限`；后续检测恢复有效会自动还原 `.json`。
 - CPA 目录扫描、token 刷新和启停操作会把同一邮箱意外并存的 `.json`、`.json.0`、`.json.无用量`、`.json.无权限` 副本收敛为一个统一 CPA JSON；多账号文件会拆分成一账号一文件，字段标签误混入 token 值的旧文件会在解析后修复。共享目录之外的导入源文件不会被删除或改写。
 - 支持 CPA/CLIProxyAPI 扁平 xAI JSON、Sub2API `accounts[].credentials` 批量导出、对象数组、JSONL、文本、Markdown、静态 JS 和 ZIP。

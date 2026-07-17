@@ -348,19 +348,35 @@ export class GrokAccountManager {
     return paths
   }
 
-  async copyAccountsTo(ids: string[], target: GrokAccountManager): Promise<GrokScanResult> {
-    const uniqueIds = [...new Set(ids)]
+  async copyAccountsTo(ids: string[] | undefined, target: GrokAccountManager): Promise<GrokScanResult> {
+    const available = await this.listCredentials(false)
+    const uniqueIds = ids ? [...new Set(ids)] : available.map((credential) => credential.id)
     const wanted = new Set(uniqueIds)
     const selected = new Map(
-      (await this.listCredentials())
+      available
         .filter((credential) => wanted.has(credential.id))
         .map((credential) => [credential.id, credential])
     )
     const missing = uniqueIds.find((id) => !selected.has(id))
     if (missing) throw new Error(`Grok 账号不存在：${missing}`)
     const credentials = uniqueIds.map((id) => selected.get(id)!)
-    await target.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
-    return target.mergeImported(credentials, [])
+    return target.importCredentialsAdditive(credentials)
+  }
+
+  async importCredentialsAdditive(values: readonly GrokCredential[]): Promise<GrokScanResult> {
+    const incoming = dedupeGrokCredentials(values)
+    const existing = await this.listCredentials()
+    const existingIds = new Set(existing.map((credential) => credential.id))
+    const existingEmails = new Set(existing.flatMap((credential) => credential.email ? [credential.email.toLowerCase()] : []))
+    const fresh = incoming.filter((credential) =>
+      !existingIds.has(credential.id) && (!credential.email || !existingEmails.has(credential.email.toLowerCase()))
+    )
+    if (fresh.length === 0) {
+      return { imported: 0, skipped: incoming.length, errors: [], accounts: await this.listAccounts() }
+    }
+    await this.options.deletedStore?.removeMany(fresh.map((credential) => credential.id))
+    const result = await this.mergeImported(fresh, [])
+    return { ...result, skipped: result.skipped + incoming.length - fresh.length }
   }
 
   private async importPaths(
