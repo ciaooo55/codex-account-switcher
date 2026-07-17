@@ -424,7 +424,6 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       }
     })
 
-    await page.getByText('更多', { exact: true }).click()
     await page.getByRole('button', { name: '修复历史会话' }).click()
     await expect(page.getByRole('dialog', { name: '修复历史会话' })).toBeVisible()
     await page.getByRole('button', { name: '确认修复' }).click()

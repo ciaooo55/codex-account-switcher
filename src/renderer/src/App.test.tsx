@@ -717,9 +717,9 @@ describe('App', () => {
 
   it('previews and confirms Codex++ style historical session repair', async () => {
     render(<App />)
-    await screen.findByLabelText('选择 person@example.com')
+    const accountSelection = await screen.findByLabelText('选择 person@example.com')
 
-    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(accountSelection)
     fireEvent.click(screen.getByRole('button', { name: '修复历史会话' }))
 
     expect(await screen.findByRole('dialog', { name: '修复历史会话' })).toBeInTheDocument()

@@ -823,9 +823,6 @@ export function App(): React.JSX.Element {
             <button onClick={() => setSettingsOpen(true)} disabled={busy}>
               <KeyRound size={16} />自定义 API
             </button>
-            <button onClick={() => void openSessionRepair()} disabled={busy}>
-              <Wrench size={16} />修复历史会话
-            </button>
           </div>
         </details>
       </div>
@@ -840,6 +837,9 @@ export function App(): React.JSX.Element {
         </button>
         <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '按对应认证模式写入并重启 Codex' : undefined}>
           <RotateCcw size={16} />切换并重启
+        </button>
+        <button onClick={() => void openSessionRepair()} disabled={busy}>
+          <Wrench size={16} />修复历史会话
         </button>
         <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active}>
           <Trash2 size={16} />删除选中
