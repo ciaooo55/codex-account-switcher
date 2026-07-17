@@ -827,9 +827,13 @@ export function App(): React.JSX.Element {
         </details>
       </div>
 
-      {selected.size > 0 && <div className="selection-toolbar" aria-label="选中账号操作">
-        <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>{selected.size === 1 ? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span></div>
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active}>
+      <div className={`selection-toolbar${selected.size === 0 ? ' is-idle' : ''}`} aria-label="选中账号操作">
+        <div className="selection-summary">
+          <CheckCircle2 size={15} />
+          <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
+          <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
+        </div>
+        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Play size={16} />测试选中
         </button>
         <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '该认证模式写入后必须重启 Codex' : undefined}>
@@ -841,10 +845,10 @@ export function App(): React.JSX.Element {
         <button onClick={() => void openSessionRepair()} disabled={busy}>
           <Wrench size={16} />修复历史会话
         </button>
-        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active}>
+        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Trash2 size={16} />删除选中
         </button>
-      </div>}
+      </div>
 
       {snapshot.testing.active && (
         <div className="task-progress">

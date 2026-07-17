@@ -58,10 +58,13 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .toolbar-group:last-child { padding-right: 0; border-right: 0; }
 .toolbar-end { margin-left: auto; }
 .selection-toolbar { display: flex; align-items: center; gap: 7px; min-height: 50px; padding: 7px 14px; background: #14212a; border-bottom: 1px solid #315168; box-shadow: inset 3px 0 #4c9dc7; overflow-x: auto; }
+.selection-toolbar.is-idle { background: #171d21; border-bottom-color: #303940; box-shadow: inset 3px 0 #46535c; }
 .selection-summary { display: grid; grid-template-columns: 18px auto; align-items: center; column-gap: 7px; min-width: 210px; margin-right: auto; color: #b9def0; }
 .selection-summary > svg { grid-row: 1 / 3; color: #6cb9df; }
 .selection-summary strong { font-size: 11px; }
 .selection-summary span { max-width: 300px; color: #7795a5; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.selection-toolbar.is-idle .selection-summary { color: #bdc7ce; }
+.selection-toolbar.is-idle .selection-summary > svg, .selection-toolbar.is-idle .selection-summary span { color: #7f8b93; }
 .selection-toolbar > button { flex: 0 0 auto; }
 .action-menu { position: relative; margin-left: 0; }
 .action-menu summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 0 11px; color: #bdc7ce; background: #171e22; border: 1px solid #344049; border-radius: 5px; cursor: pointer; font-size: 12px; list-style: none; }
@@ -367,6 +370,9 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .danger-button:hover:not(:disabled) { color: #8f302f; border-color: #cf9693; background: #f6e2e1; }
 
 .selection-toolbar { background: #eaf3f7; border-color: #b8d3e0; box-shadow: inset 3px 0 #4d94b6; }
+.selection-toolbar.is-idle { background: #f1f4f5; border-color: #d5dde1; box-shadow: inset 3px 0 #9aa8b0; }
+.selection-toolbar.is-idle .selection-summary { color: #53616a; }
+.selection-toolbar.is-idle .selection-summary > svg, .selection-toolbar.is-idle .selection-summary span { color: #78858d; }
 .selection-summary { color: #315f75; }
 .selection-summary > svg { color: #397e9f; }
 .selection-summary span { color: #6d8795; }

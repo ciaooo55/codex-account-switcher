@@ -264,6 +264,10 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(await readdir(join(userData, 'grok-accounts'))).toEqual(cpaFilesBeforeImport)
     await page.getByRole('button', { name: /^Codex 账号库/ }).click()
 
+    await expect(page.getByText('未选择账号', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '测试选中' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '修复历史会话' })).toBeEnabled()
+
     const selectAllAccounts = page.getByLabel('选择全部')
     await selectAllAccounts.check()
     await selectAllAccounts.uncheck()

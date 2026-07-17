@@ -298,6 +298,12 @@ describe('App', () => {
     const firstRow = await screen.findByRole('row', { name: /person@example\.com/ })
     const secondRow = screen.getByRole('row', { name: /second@example\.com/ })
 
+    expect(screen.getByText('未选择账号')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试选中' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '切换账号' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '删除选中' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '修复历史会话' })).toBeEnabled()
+
     fireEvent.click(secondRow)
     expect(screen.getByLabelText('选择 second@example.com')).toBeChecked()
     expect(screen.getByLabelText('选择 person@example.com')).not.toBeChecked()
@@ -329,6 +335,8 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.queryByText('second@example.com')).not.toBeInTheDocument()
       expect(screen.queryByText('已选择 1 个账号')).not.toBeInTheDocument()
+      expect(screen.getByText('未选择账号')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '测试选中' })).toBeDisabled()
     })
   })
 

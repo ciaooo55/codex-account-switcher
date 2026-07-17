@@ -90,7 +90,10 @@ function sseError(text: string): UpstreamError | null {
 
 function quotaError(error: UpstreamError): boolean {
   const detail = `${error.code} ${error.message}`.toLowerCase()
-  return error.status === 429 ||
+  return error.status === 402 ||
+    error.status === 429 ||
+    detail.includes('payment_required') ||
+    detail.includes('payment required') ||
     detail.includes('free-usage-exhausted') ||
     detail.includes('included free usage') ||
     detail.includes('resource_exhausted') ||
@@ -269,7 +272,7 @@ export class GrokCredentialTester {
           store: false,
         }),
         signal
-      })
+      }, Math.max(this.options.timeoutMs, 60_000))
       if (!TRANSIENT_STATUS.has(probe.response.status) || attempt === 1) break
       await this.wait(300, signal)
     }
@@ -292,7 +295,7 @@ export class GrokCredentialTester {
     if (!completedProbe(probe)) {
       return result(credential, 'unknown_error', 'Grok 流式检测未返回完成事件', probe.response.status, false, usage)
     }
-    return result(credential, 'valid', '凭据、额度和真实请求均验证成功', probe.response.status, false, usage)
+    return result(credential, 'valid', '凭据直连、额度和真实请求均验证成功', probe.response.status, false, usage)
   }
 
   private async refresh(credential: GrokCredential, signal?: AbortSignal): Promise<GrokCredential> {
@@ -385,9 +388,9 @@ export class GrokCredentialTester {
     })
   }
 
-  private async fetchJson(url: string, init: RequestInit): Promise<FetchResult> {
+  private async fetchJson(url: string, init: RequestInit, timeoutMs = this.options.timeoutMs): Promise<FetchResult> {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), this.options.timeoutMs)
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
     const abort = (): void => controller.abort()
     init.signal?.addEventListener('abort', abort, { once: true })
     try {

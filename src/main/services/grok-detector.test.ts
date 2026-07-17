@@ -130,6 +130,18 @@ describe('GrokCredentialTester', () => {
     expect(tested).toMatchObject({ status: 'quota_exhausted_weekly', httpStatus: 429 })
   })
 
+  it('treats CPA-style 402 payment responses as exhausted usage', async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(200, { config: { currentPeriod: { end: '2026-07-23T00:00:00Z' } } }))
+      .mockResolvedValueOnce(response(200, { config: { monthlyLimit: 0, used: 0 } }))
+      .mockResolvedValueOnce(response(402, { error: { code: 'payment_required', message: 'included usage unavailable' } }))
+    const tester = new GrokCredentialTester({ timeoutMs: 5_000, fetch: request, cliBaseUrl: 'https://grok.test/v1' })
+
+    const tested = await tester.test(credential())
+
+    expect(tested).toMatchObject({ status: 'quota_exhausted_weekly', httpStatus: 402 })
+  })
+
   it('skips the probe when billing already reports exhausted included usage', async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response(200, { config: { creditUsagePercent: 100 } }))

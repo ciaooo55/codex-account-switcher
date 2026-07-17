@@ -228,6 +228,33 @@ describe('GrokAccountManager', () => {
     expect((await manager.listAccounts())[0].disabled).toBe(false)
   })
 
+  it('uses the no-permission suffix for rejected credentials and restores json after a valid retest', async () => {
+    const { library, source, manager, tester } = await setup()
+    await writeFile(source, JSON.stringify({
+      type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'denied-grok' }),
+      refresh_token: 'refresh', email: 'denied-grok@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+    const id = imported.accounts[0].id
+    tester.test
+      .mockResolvedValueOnce({
+        accountId: id, status: 'invalid', detail: 'permission denied',
+        checkedAt: new Date().toISOString(), httpStatus: 403, refreshed: false, usage: null
+      })
+      .mockResolvedValueOnce({
+        accountId: id, status: 'valid', detail: 'valid', checkedAt: new Date().toISOString(),
+        httpStatus: 200, refreshed: false, usage: null
+      })
+
+    await manager.testAccounts([id])
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无权限'))).toBe(true)
+    expect((await manager.listAccounts())[0].disabled).toBe(true)
+
+    await manager.testAccounts([id])
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无权限'))).toBe(false)
+    expect((await manager.listAccounts())[0].disabled).toBe(false)
+  })
+
   it('reconciles enabled and disabled canonical duplicates into one requested file', async () => {
     const { library, source, manager } = await setup()
     await writeFile(source, JSON.stringify({

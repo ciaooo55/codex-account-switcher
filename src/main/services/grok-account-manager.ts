@@ -298,6 +298,8 @@ export class GrokAccountManager {
         await this.options.statusStore.set(tested)
         if (tested.status === 'quota_exhausted_weekly' || tested.status === 'quota_exhausted_5h') {
           await this.setFileState([credential.id], 'no_usage')
+        } else if (tested.status === 'invalid' && (tested.httpStatus === 401 || tested.httpStatus === 403)) {
+          await this.setFileState([credential.id], 'no_permission')
         } else if (tested.status === 'valid') {
           await this.setFileState([credential.id], 'enabled')
         }
