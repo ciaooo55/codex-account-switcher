@@ -37,6 +37,38 @@ async function setup() {
 }
 
 describe('GrokAccountManager', () => {
+  it('copies only selected accounts to a separate CPA manager and deduplicates repeat exports', async () => {
+    const { source, manager } = await setup()
+    const root = await mkdtemp(join(tmpdir(), 'grok-cpa-target-'))
+    roots.push(root)
+    const cpaDirectory = join(root, 'cpa')
+    const cpa = new GrokAccountManager({
+      directory: () => cpaDirectory,
+      fileNameStyle: 'cpa',
+      concurrency: () => 2,
+      statusStore: new GrokStatusStore(join(root, 'status.json')),
+      tester: { test: vi.fn() }
+    })
+    const sourceText = JSON.stringify({
+      type: 'xai',
+      access_token: token({ iss: 'https://auth.x.ai', sub: 'copy-grok' }),
+      refresh_token: 'refresh',
+      email: 'copy-grok@example.com'
+    })
+    await writeFile(source, sourceText)
+    const imported = await manager.importFiles([source])
+
+    const first = await manager.copyAccountsTo([imported.accounts[0].id], cpa)
+    const second = await manager.copyAccountsTo([imported.accounts[0].id], cpa)
+
+    expect(first).toMatchObject({ imported: 1, skipped: 0 })
+    expect(second).toMatchObject({ imported: 0, skipped: 1 })
+    const files = await readdir(cpaDirectory)
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatch(/^grok-.*\.json$/)
+    expect(await readFile(source, 'utf8')).toBe(sourceText)
+  })
+
   it('splits a multi-account Sub2API source into normalized one-account CPA files and skips duplicates', async () => {
     const { library, source, manager } = await setup()
     const accounts = ['one', 'two'].map((name) => ({

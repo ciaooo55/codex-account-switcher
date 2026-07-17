@@ -26,6 +26,7 @@ const MANAGED_PREFIX = 'grok-'
 
 interface GrokManagerOptions {
   directory: () => string | Promise<string>
+  fileNameStyle?: 'library' | 'cpa'
   concurrency: () => number | Promise<number>
   statusStore: GrokStatusStore
   deletedStore?: {
@@ -48,7 +49,13 @@ function safePart(value: string): string {
   return cleaned.slice(0, 80) || 'unknown'
 }
 
-function managedName(credential: GrokCredential): string {
+function managedName(credential: GrokCredential, style: 'library' | 'cpa' = 'cpa'): string {
+  if (style === 'library') {
+    const identity = credential.email
+      ? safePart(credential.email)
+      : `unknown-${credential.id.slice(0, 10)}`
+    return `${identity}_${safePart(credential.planType ?? 'unknown')}.json`
+  }
   return `${MANAGED_PREFIX}${safePart(credential.email ?? credential.subject ?? 'unknown')}-${safePart(credential.planType ?? 'unknown')}-${credential.id.slice(0, 10)}.json`
 }
 
@@ -124,6 +131,10 @@ async function files(directory: string): Promise<string[]> {
 
 export class GrokAccountManager {
   constructor(private readonly options: GrokManagerOptions) {}
+
+  private managedName(credential: GrokCredential): string {
+    return managedName(credential, this.options.fileNameStyle)
+  }
 
   async scanDirectory(): Promise<GrokScanResult> {
     const directory = await this.directory()
@@ -208,7 +219,7 @@ export class GrokAccountManager {
         skipped += 1
         continue
       }
-      const target = statePath(join(directory, managedName(preferred.credential)), enabled)
+      const target = statePath(join(directory, this.managedName(preferred.credential)), enabled)
       const targetRecord = group.find((item) => resolve(item.path).toLowerCase() === resolve(target).toLowerCase())
       if (!targetRecord) {
         await rename(preferred.path, target)
@@ -278,7 +289,7 @@ export class GrokAccountManager {
     const directory = await this.directory()
     const records = (await this.managedCredentialRecords()).filter((item) => item.credential.id === credential.id)
     const record = this.dedupeRecords(records)[0]
-    const path = statePath(join(directory, managedName(credential)), !record?.disabled)
+    const path = statePath(join(directory, this.managedName(credential)), !record?.disabled)
     await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
     await Promise.all(records.filter((item) => resolve(item.path).toLowerCase() !== resolve(path).toLowerCase()).map((item) => rm(item.path, { force: true })))
   }
@@ -301,11 +312,26 @@ export class GrokAccountManager {
     }
     const paths: string[] = []
     for (const item of credentials) {
-      const path = join(directory, managedName(item))
+      const path = join(directory, this.managedName(item))
       await atomicWriteFile(path, serialized(item))
       paths.push(path)
     }
     return paths
+  }
+
+  async copyAccountsTo(ids: string[], target: GrokAccountManager): Promise<GrokScanResult> {
+    const uniqueIds = [...new Set(ids)]
+    const wanted = new Set(uniqueIds)
+    const selected = new Map(
+      (await this.listCredentials())
+        .filter((credential) => wanted.has(credential.id))
+        .map((credential) => [credential.id, credential])
+    )
+    const missing = uniqueIds.find((id) => !selected.has(id))
+    if (missing) throw new Error(`Grok 账号不存在：${missing}`)
+    const credentials = uniqueIds.map((id) => selected.get(id)!)
+    await target.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
+    return target.mergeImported(credentials, [])
   }
 
   private async importPaths(
@@ -371,7 +397,7 @@ export class GrokAccountManager {
     await mkdir(directory, { recursive: true })
     const targets = new Map<string, string>()
     for (const credential of merged) {
-      const path = statePath(join(directory, managedName(credential)), !stateById.get(credential.id))
+      const path = statePath(join(directory, this.managedName(credential)), !stateById.get(credential.id))
       await writeIfChanged(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
       targets.set(credential.id, path)
     }
@@ -436,12 +462,13 @@ export class GrokAccountManager {
     await mkdir(directory, { recursive: true })
     const result: Array<{ path: string; credential: GrokCredential; disabled: boolean }> = []
     for (const path of await files(directory)) {
-      if (formatForPath(path) !== 'json' || !basename(enabledPath(path)).startsWith(MANAGED_PREFIX)) continue
+      const fileName = basename(enabledPath(path))
+      if (formatForPath(path) !== 'json' || (this.options.fileNameStyle !== 'library' && !fileName.startsWith(MANAGED_PREFIX))) continue
       try {
         const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
         if (parsed.credentials.length !== 1) continue
         const credential = parsed.credentials[0]
-        if (basename(enabledPath(path)).toLowerCase() !== managedName(credential).toLowerCase()) continue
+        if (fileName.toLowerCase() !== this.managedName(credential).toLowerCase()) continue
         result.push({ path, credential, disabled: isDisabled(path) })
       } catch {
         // A similarly named user source file is not an application-managed credential.

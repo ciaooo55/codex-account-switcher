@@ -26,13 +26,13 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .app-header h1 { margin: 0; font-size: 16px; font-weight: 700; }
 .icon-button { width: 34px; padding: 0; }
 .view-tabs { display: flex; align-self: stretch; gap: 2px; padding: 2px; background: #0f1418; border: 1px solid #293239; border-radius: 6px; }
-.view-tabs button { position: relative; min-width: 118px; height: 100%; border: 0; border-radius: 4px; background: transparent; color: #929da5; }
+.view-tabs button { position: relative; min-width: 118px; height: 100%; border: 0; border-radius: 4px; background: transparent; color: #929da5; white-space: nowrap; }
 .view-tabs button:hover:not(:disabled) { background: #1a2227; border-color: transparent; }
 .view-tabs button.active { color: #f2f6f8; background: #242c33; }
 .view-tabs button.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: 3px; height: 2px; background: #59cf88; }
 .tab-count { min-width: 20px; padding: 1px 5px; color: #9dddb7; background: #173023; border: 1px solid #285c3d; border-radius: 8px; font-size: 9px; font-weight: 700; }
 .tab-count.grok { color: #c9c0ff; background: #27223a; border-color: #51467b; }
-.header-import-button { min-height: 36px; color: #f4fff8; background: #237247; border-color: #3a9b65; font-weight: 650; }
+.header-import-button { min-height: 36px; color: #f4fff8; background: #237247; border-color: #3a9b65; font-weight: 650; white-space: nowrap; }
 .header-import-button:hover:not(:disabled) { background: #2d9259; border-color: #51be7c; }
 .page-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .summary-band { display: grid; gap: 0; background: #101519; border-bottom: 1px solid #2b353c; }
@@ -304,6 +304,12 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 }
 
 @media (max-width: 1120px) {
+  .app-header { gap: 8px; padding-inline: 12px; }
+  .app-identity { flex: 0 0 32px; min-width: 32px; }
+  .app-header h1 { display: none; }
+  .view-tabs { flex: 1 1 auto; min-width: 0; }
+  .view-tabs button { flex: 1 1 0; min-width: 0; padding-inline: 7px; gap: 5px; font-size: 11px; }
+  .view-tabs .tab-count { display: none; }
   table:not(.automation-table) { min-width: 0; }
   table:not(.automation-table) th:nth-child(2) { width: 255px; }
   table:not(.automation-table) th:nth-child(3) { width: 145px; }

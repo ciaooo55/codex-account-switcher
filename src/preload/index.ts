@@ -35,6 +35,12 @@ const api: CodexSwitcherApi = {
   testGrokAccounts: (ids) => ipcRenderer.invoke(ipcChannels.grokTest, ids),
   cancelGrokTests: () => ipcRenderer.invoke(ipcChannels.grokCancelTest),
   exportGrokAccounts: (ids, layout) => ipcRenderer.invoke(ipcChannels.grokExport, { ids, layout }),
+  exportGrokAccountsToCpa: (ids) => ipcRenderer.invoke(ipcChannels.grokExportToCpa, ids),
+  scanCpaGrokDirectory: () => ipcRenderer.invoke(ipcChannels.cpaGrokScan),
+  deleteCpaGrokAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaGrokDelete, ids),
+  testCpaGrokAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaGrokTest, ids),
+  cancelCpaGrokTests: () => ipcRenderer.invoke(ipcChannels.cpaGrokCancelTest),
+  setCpaGrokEnabled: (ids, enabled) => ipcRenderer.invoke(ipcChannels.cpaGrokSetEnabled, { ids, enabled }),
   scanCpaCodexDirectory: () => ipcRenderer.invoke(ipcChannels.cpaCodexScan),
   testCpaCodexAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaCodexTest, ids),
   cancelCpaCodexTests: () => ipcRenderer.invoke(ipcChannels.cpaCodexCancelTest),
@@ -64,6 +70,11 @@ const api: CodexSwitcherApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: GrokTestProgress): void => listener(progress)
     ipcRenderer.on(ipcChannels.grokTestProgress, wrapped)
     return () => ipcRenderer.removeListener(ipcChannels.grokTestProgress, wrapped)
+  },
+  onCpaGrokTestProgress: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: GrokTestProgress): void => listener(progress)
+    ipcRenderer.on(ipcChannels.cpaGrokTestProgress, wrapped)
+    return () => ipcRenderer.removeListener(ipcChannels.cpaGrokTestProgress, wrapped)
   },
   onCpaCodexTestProgress: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: CpaCodexTestProgress): void => listener(progress)

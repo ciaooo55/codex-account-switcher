@@ -15,6 +15,7 @@ import type {
   GrokAccountSummary,
   GrokBatchTestResult,
   GrokScanResult,
+  LibraryImportResult,
   ManagedFileStateResult,
   OAuthAuthorizationSession,
   ScanResult,
@@ -72,8 +73,10 @@ export interface AppSnapshot {
   testing: TestProgress
   autoSwitch: AutoSwitchState
   grokAccounts: GrokAccountSummary[]
+  cpaGrokAccounts: GrokAccountSummary[]
   grokDirectory: string
   grokTesting: GrokTestProgress
+  cpaGrokTesting: GrokTestProgress
   cpaCodexAccounts: CpaCodexAccountSummary[]
   cpaCodexTesting: CpaCodexTestProgress
   cpaDirectoryStats: CpaDirectoryStats
@@ -91,9 +94,9 @@ export interface CodexSwitcherApi {
   importFiles(): Promise<ScanResult | null>
   importDirectory(): Promise<ScanResult | null>
   importPasted(text: string): Promise<ScanResult>
-  importAnyFiles(): Promise<ScanResult | null>
-  importAnyDirectory(): Promise<ScanResult | null>
-  importAnyPasted(text: string): Promise<ScanResult>
+  importAnyFiles(): Promise<LibraryImportResult | null>
+  importAnyDirectory(): Promise<LibraryImportResult | null>
+  importAnyPasted(text: string): Promise<LibraryImportResult>
   importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult>
   startOAuthAuthorization(): Promise<OAuthAuthorizationSession>
   completeOAuthAuthorization(sessionId: string, callbackInput: string): Promise<ScanResult>
@@ -115,6 +118,12 @@ export interface CodexSwitcherApi {
   testGrokAccounts(ids?: string[]): Promise<GrokBatchTestResult>
   cancelGrokTests(): Promise<void>
   exportGrokAccounts(ids: string[], layout: 'separate' | 'bundle'): Promise<string[] | null>
+  exportGrokAccountsToCpa(ids: string[]): Promise<GrokScanResult>
+  scanCpaGrokDirectory(): Promise<GrokScanResult>
+  deleteCpaGrokAccounts(ids: string[]): Promise<DeleteAccountsResult>
+  testCpaGrokAccounts(ids?: string[]): Promise<GrokBatchTestResult>
+  cancelCpaGrokTests(): Promise<void>
+  setCpaGrokEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult>
   scanCpaCodexDirectory(): Promise<CpaCodexScanResult>
   testCpaCodexAccounts(ids?: string[]): Promise<BatchTestResult>
   cancelCpaCodexTests(): Promise<void>
@@ -135,6 +144,7 @@ export interface CodexSwitcherApi {
   runAutoSwitchNow(): Promise<AutoSwitchRunResult>
   onTestProgress(listener: (progress: TestProgress) => void): () => void
   onGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
+  onCpaGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
   onCpaCodexTestProgress(listener: (progress: CpaCodexTestProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
   onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
@@ -170,7 +180,14 @@ export const ipcChannels = {
   grokTest: 'grok:test',
   grokCancelTest: 'grok:test-cancel',
   grokExport: 'grok:export',
+  grokExportToCpa: 'grok:export-to-cpa',
   grokTestProgress: 'grok:test-progress',
+  cpaGrokScan: 'cpa-grok:scan',
+  cpaGrokDelete: 'cpa-grok:delete',
+  cpaGrokTest: 'cpa-grok:test',
+  cpaGrokCancelTest: 'cpa-grok:test-cancel',
+  cpaGrokSetEnabled: 'cpa-grok:set-enabled',
+  cpaGrokTestProgress: 'cpa-grok:test-progress',
   cpaCodexScan: 'cpa-codex:scan',
   cpaCodexTest: 'cpa-codex:test',
   cpaCodexCancelTest: 'cpa-codex:test-cancel',

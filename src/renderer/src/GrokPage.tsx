@@ -170,8 +170,11 @@ function CpaCodexRow({ account, running, selected, toggle, now }: { account: Cpa
   </tr>
 }
 
-function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now() }: Props): React.JSX.Element {
-  const [selected, setSelected] = usePrunedSelection(snapshot.grokAccounts.map((account) => account.id))
+function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(), scope }: Props & { scope: 'library' | 'cpa' }): React.JSX.Element {
+  const cpa = scope === 'cpa'
+  const sourceAccounts = cpa ? snapshot.cpaGrokAccounts : snapshot.grokAccounts
+  const testing = cpa ? snapshot.cpaGrokTesting : snapshot.grokTesting
+  const [selected, setSelected] = usePrunedSelection(sourceAccounts.map((account) => account.id))
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<DisplayAccountStatus | ''>('')
   const [sort, setSort] = useState<AccountSortMode>('availability_reset')
@@ -194,11 +197,11 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
       window.removeEventListener('pointerdown', closeOutside)
     }
   }, [contextMenu])
-  const accounts = useMemo(() => snapshot.grokAccounts.filter((account) => {
+  const accounts = useMemo(() => sourceAccounts.filter((account) => {
     if (status && account.status !== status) return false
     const query = keyword.trim().toLowerCase()
     return !query || `${account.email ?? ''} ${account.subject ?? ''} ${account.teamId ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
-  }).sort(compareAccounts(sort)), [keyword, snapshot.grokAccounts, sort, status])
+  }).sort(compareAccounts(sort)), [keyword, sort, sourceAccounts, status])
   async function run<T>(operation: () => Promise<T>, success: string | ((result: T) => void), reload = true): Promise<void> {
     setBusy(true)
     onBusyChange?.(true)
@@ -214,29 +217,46 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
   const chosen = (): string[] => [...selected]
   const remove = async (ids = chosen()): Promise<void> => {
     if (!ids.length || !window.confirm(`确定删除选中的 ${ids.length} 个 Grok 账号吗？对应托管文件会同时删除。`)) return
-    await run(async () => { const result = await window.codexSwitcher.deleteGrokAccounts(ids); if (!result.deleted) throw new Error('没有删除任何账号'); setSelected(new Set()) }, 'Grok 账号已删除')
+    await run(async () => {
+      const result = cpa
+        ? await window.codexSwitcher.deleteCpaGrokAccounts(ids)
+        : await window.codexSwitcher.deleteGrokAccounts(ids)
+      if (!result.deleted) throw new Error('没有删除任何账号')
+      setSelected(new Set())
+    }, `Grok 账号已从${cpa ? ' CPA' : '本地账号库'}删除`)
   }
-  const setEnabled = (enabled: boolean, ids = chosen()): void => { void run(() => window.codexSwitcher.setGrokEnabled(ids, enabled), (result) => notify(result.changed ? 'ok' : 'warn', result.message)) }
+  const setEnabled = (enabled: boolean, ids = chosen()): void => { void run(() => cpa ? window.codexSwitcher.setCpaGrokEnabled(ids, enabled) : window.codexSwitcher.setGrokEnabled(ids, enabled), (result) => notify(result.changed ? 'ok' : 'warn', result.message)) }
+  const testAccounts = (ids: string[]) => cpa ? window.codexSwitcher.testCpaGrokAccounts(ids) : window.codexSwitcher.testGrokAccounts(ids)
+  const cancelTests = () => cpa ? window.codexSwitcher.cancelCpaGrokTests() : window.codexSwitcher.cancelGrokTests()
+  const scan = () => cpa ? window.codexSwitcher.scanCpaGrokDirectory() : window.codexSwitcher.scanGrokDirectory()
   const exportAccounts = async (layout: 'separate' | 'bundle', ids = selected.size ? chosen() : accounts.map((item) => item.id)): Promise<void> => { if (ids.length) await run(async () => { const paths = await window.codexSwitcher.exportGrokAccounts(ids, layout); if (!paths) throw new Error('已取消导出') }, layout === 'bundle' ? 'Sub2API 合并文件已导出' : 'CPA 单账号文件已导出', false) }
-  const count = (value: DisplayAccountStatus): number => snapshot.grokAccounts.filter((item) => item.status === value).length
+  const exportToCpa = async (ids = selected.size ? chosen() : accounts.map((item) => item.id)): Promise<void> => {
+    if (!ids.length) return
+    await run(
+      () => window.codexSwitcher.exportGrokAccountsToCpa(ids),
+      (result) => notify(result.errors.length ? 'warn' : 'ok', `已导出 ${result.imported} 个 Grok 账号到 CPA，重复跳过 ${result.skipped} 个`)
+    )
+  }
+  const count = (value: DisplayAccountStatus): number => sourceAccounts.filter((item) => item.status === value).length
   return <div className="page-view accounts-view grok-view cpa-provider-view">
-    <section className="library-overview"><div><span>Grok 唯一账号</span><strong>{snapshot.grokAccounts.length}</strong></div><div><span>Grok 凭据文件</span><strong>{snapshot.cpaDirectoryStats.grokFiles}</strong></div><div><span>已停用</span><strong>{snapshot.grokAccounts.filter((item) => item.disabled).length}</strong></div><div className="library-path"><span>CPA 共享目录</span><strong title={snapshot.grokDirectory}>{snapshot.grokDirectory}</strong></div></section>
-    <StatusFilterStrip value={status} counts={count} total={snapshot.grokAccounts.length} onChange={setStatus} label="Grok 账号状态" />
+    <section className="library-overview"><div><span>Grok 唯一账号</span><strong>{sourceAccounts.length}</strong></div><div><span>{cpa ? 'CPA 凭据文件' : '本地托管文件'}</span><strong>{cpa ? snapshot.cpaDirectoryStats.grokFiles : sourceAccounts.length}</strong></div><div><span>已停用</span><strong>{sourceAccounts.filter((item) => item.disabled).length}</strong></div><div className="library-path"><span>{cpa ? 'CPA 共享目录' : '本地账号目录'}</span><strong title={cpa ? snapshot.grokDirectory : `${snapshot.importDirectory}\\grok`}>{cpa ? snapshot.grokDirectory : `${snapshot.importDirectory}\\grok`}</strong></div></section>
+    <StatusFilterStrip value={status} counts={count} total={sourceAccounts.length} onChange={setStatus} label={`${cpa ? 'CPA ' : ''}Grok 账号状态`} />
     <div className="toolbar">
-      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.scanGrokDirectory(), 'Grok 扫描完成')} disabled={busy || snapshot.grokTesting.active}><RefreshCw size={16} />重新扫描</button></div>
-      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.testGrokAccounts(accounts.map((account) => account.id)), `Grok 当前筛选 ${accounts.length} 个账号检测完成`, false)} disabled={busy || snapshot.grokTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.grokTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelGrokTests()}><Square size={15} />取消</button>}</div>
+      <div className="toolbar-group"><button onClick={() => void run(scan, `${cpa ? 'CPA ' : ''}Grok 扫描完成`)} disabled={busy || testing.active}><RefreshCw size={16} />重新扫描</button></div>
+      <div className="toolbar-group"><button onClick={() => void run(() => testAccounts(accounts.map((account) => account.id)), `Grok 当前筛选 ${accounts.length} 个账号检测完成`, false)} disabled={busy || testing.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{testing.active && <button className="danger-button" onClick={() => void cancelTests()}><Square size={15} />取消</button>}</div>
     </div>
     {selected.size > 0 && <div className="selection-toolbar" aria-label="Grok 选中账号操作">
       <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>批量测试、导出或调整文件状态</span></div>
-      <button onClick={() => void run(() => window.codexSwitcher.testGrokAccounts(chosen()), 'Grok 选中检测完成', false)} disabled={busy || snapshot.grokTesting.active}><Play size={16} />测试选中</button>
-      <button onClick={() => setEnabled(true)} disabled={busy || snapshot.grokTesting.active}><Power size={16} />启用 .json</button>
-      <button onClick={() => setEnabled(false)} disabled={busy || snapshot.grokTesting.active}><PowerOff size={16} />停用 .json.0</button>
-      <button onClick={() => void exportAccounts('separate')} disabled={busy || snapshot.grokTesting.active}><Download size={16} />逐号导出</button>
-      <button onClick={() => void exportAccounts('bundle')} disabled={busy || snapshot.grokTesting.active}><FileArchive size={16} />合并导出</button>
-      <button className="danger-button" onClick={() => void remove()} disabled={busy || snapshot.grokTesting.active}><Trash2 size={16} />删除选中</button>
+      <button onClick={() => void run(() => testAccounts(chosen()), 'Grok 选中检测完成', false)} disabled={busy || testing.active}><Play size={16} />测试选中</button>
+      <button onClick={() => setEnabled(true)} disabled={busy || testing.active}><Power size={16} />启用 .json</button>
+      <button onClick={() => setEnabled(false)} disabled={busy || testing.active}><PowerOff size={16} />停用 .json.0</button>
+      {!cpa && <button onClick={() => void exportToCpa()} disabled={busy || testing.active}><Zap size={16} />导出到 CPA</button>}
+      {!cpa && <button onClick={() => void exportAccounts('separate')} disabled={busy || testing.active}><Download size={16} />逐号导出</button>}
+      {!cpa && <button onClick={() => void exportAccounts('bundle')} disabled={busy || testing.active}><FileArchive size={16} />合并导出</button>}
+      <button className="danger-button" onClick={() => void remove()} disabled={busy || testing.active}><Trash2 size={16} />删除选中</button>
     </div>}
-    {snapshot.grokTesting.active && <div className="task-progress"><div style={{ width: `${snapshot.grokTesting.total ? snapshot.grokTesting.done / snapshot.grokTesting.total * 100 : 0}%` }} /><span>{snapshot.grokTesting.done} / {snapshot.grokTesting.total}</span></div>}
-    <div className="filter-row"><label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 Grok 邮箱、团队或等级" /></label><select aria-label="Grok 账号排序" value={sort} onChange={(event) => setSort(event.target.value as AccountSortMode)}>{ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="selection-count">显示 {accounts.length} / {snapshot.grokAccounts.length} · 已选 {selected.size}</span></div>
+    {testing.active && <div className="task-progress"><div style={{ width: `${testing.total ? testing.done / testing.total * 100 : 0}%` }} /><span>{testing.done} / {testing.total}</span></div>}
+    <div className="filter-row"><label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 Grok 邮箱、团队或等级" /></label><select aria-label={`${cpa ? 'CPA ' : ''}Grok 账号排序`} value={sort} onChange={(event) => setSort(event.target.value as AccountSortMode)}>{ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="selection-count">显示 {accounts.length} / {sourceAccounts.length} · 已选 {selected.size}</span></div>
     <div className="table-wrap">
       <table>
         <thead><tr><th className="select-column"><input type="checkbox" aria-label="选择全部 Grok 账号" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th><th>账号</th><th>状态</th><th>等级</th><th>额度与重置</th><th>文件状态</th><th>托管文件</th></tr></thead>
@@ -245,10 +265,11 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
             <GrokRow
               key={account.id}
               account={account}
-              running={snapshot.grokTesting.runningIds.includes(account.id)}
+              running={testing.runningIds.includes(account.id)}
               selected={selected.has(account.id)}
               now={now}
               toggle={() => toggleSelection(setSelected, account.id)}
+              cpa={cpa}
               openContextMenu={(event) => {
                 event.preventDefault()
                 setSelected(new Set([account.id]))
@@ -264,7 +285,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
         </tbody>
       </table>
     </div>
-    {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="Grok 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}><div className="context-account">{contextMenu.account.email ?? contextMenu.account.subject ?? 'Grok 账号'}</div><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => window.codexSwitcher.testGrokAccounts([id]), 'Grok 账号检测完成') }}><TestTube2 size={15} />检测这个账号</button><button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button><button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportAccounts('separate', [id]) }}><Download size={15} />导出这个账号</button><button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void remove([id]) }}><Trash2 size={15} />删除这个账号</button></div>}
+    {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="Grok 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}><div className="context-account">{contextMenu.account.email ?? contextMenu.account.subject ?? 'Grok 账号'}</div><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => testAccounts([id]), 'Grok 账号检测完成') }}><TestTube2 size={15} />检测这个账号</button><button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button><button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button>{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportToCpa([id]) }}><Zap size={15} />导出到 CPA</button>}{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportAccounts('separate', [id]) }}><Download size={15} />导出这个账号</button>}<button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void remove([id]) }}><Trash2 size={15} />删除这个账号</button></div>}
   </div>
 }
 
@@ -273,6 +294,7 @@ function GrokRow({
   running,
   selected,
   now,
+  cpa,
   toggle,
   openContextMenu
 }: {
@@ -280,6 +302,7 @@ function GrokRow({
   running: boolean
   selected: boolean
   now: number
+  cpa: boolean
   toggle: () => void
   openContextMenu: (event: React.MouseEvent<HTMLTableRowElement>) => void
 }): React.JSX.Element {
@@ -298,12 +321,12 @@ function GrokRow({
       onContextMenu={openContextMenu}
     >
       <td><input type="checkbox" aria-label={`选择 Grok ${account.email ?? account.id}`} checked={selected} onClick={(event) => event.stopPropagation()} onChange={toggle} /></td>
-      <td><div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">CPA 已停用</span>}</div><div className="workspace-id">{account.subject ?? 'subject 未知'}{account.teamId ? ` · team ${account.teamId}` : ''}</div><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
+      <td><div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">{cpa ? 'CPA ' : ''}已停用</span>}</div><div className="workspace-id">{account.subject ?? 'subject 未知'}{account.teamId ? ` · team ${account.teamId}` : ''}</div><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
       <td>{running ? <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">检测完成后自动调整后缀</div></> : <><span className={`status status-${status}`}>{STATUS_LABELS[status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>}</td>
       <td>{account.planType ?? '未知'}</td>
       <td><Quota usage={account.usage} running={running} now={now} /></td>
       <td><strong className={account.disabled ? 'text-warn' : 'text-ok'}>{account.disabled ? '.json.0 停用' : '.json 启用'}</strong><div className="muted">检测 {time(account.lastCheckedAt)}</div></td>
-      <td><div className="source-path" title={account.sourcePath}>{sourceFileName(account.sourcePath)}</div><div className="source-tags"><span className="provider-label grok"><Zap size={11} />GROK</span><span className="format-label">CPA</span></div></td>
+      <td><div className="source-path" title={account.sourcePath}>{sourceFileName(account.sourcePath)}</div><div className="source-tags"><span className="provider-label grok"><Zap size={11} />GROK</span><span className="format-label">{cpa ? 'CPA' : 'AA'}</span></div></td>
     </tr>
   )
 }
@@ -319,9 +342,18 @@ export function CpaPage(props: Props): React.JSX.Element {
   return <div className="page-view cpa-view">
     <nav className="cpa-provider-tabs" aria-label="CPA 账号类型">
       <button className={provider === 'codex' ? 'active' : ''} aria-pressed={provider === 'codex'} onClick={() => setProvider('codex')}><Code2 size={16} />Codex <span>{props.snapshot.cpaCodexAccounts.length}</span></button>
-      <button className={provider === 'grok' ? 'active' : ''} aria-pressed={provider === 'grok'} onClick={() => setProvider('grok')}><Zap size={16} />Grok <span>{props.snapshot.grokAccounts.length}</span></button>
-      <div className="cpa-inventory"><strong>{props.snapshot.cpaDirectoryStats.credentialFiles}</strong> 个凭据文件 · <strong>{props.snapshot.cpaCodexAccounts.length + props.snapshot.grokAccounts.length}</strong> 个唯一账号 · <strong>{props.snapshot.cpaDirectoryStats.duplicateFiles}</strong> 个重复文件{props.snapshot.cpaDirectoryStats.mixedFiles ? ` · ${props.snapshot.cpaDirectoryStats.mixedFiles} 个混合文件` : ''}{props.snapshot.cpaDirectoryStats.unrecognizedFiles ? ` · ${props.snapshot.cpaDirectoryStats.unrecognizedFiles} 个未识别文件` : ''}</div>
+      <button className={provider === 'grok' ? 'active' : ''} aria-pressed={provider === 'grok'} onClick={() => setProvider('grok')}><Zap size={16} />Grok <span>{props.snapshot.cpaGrokAccounts.length}</span></button>
+      <div className="cpa-inventory"><strong>{props.snapshot.cpaDirectoryStats.credentialFiles}</strong> 个凭据文件 · <strong>{props.snapshot.cpaCodexAccounts.length + props.snapshot.cpaGrokAccounts.length}</strong> 个唯一账号 · <strong>{props.snapshot.cpaDirectoryStats.duplicateFiles}</strong> 个重复文件{props.snapshot.cpaDirectoryStats.mixedFiles ? ` · ${props.snapshot.cpaDirectoryStats.mixedFiles} 个混合文件` : ''}{props.snapshot.cpaDirectoryStats.unrecognizedFiles ? ` · ${props.snapshot.cpaDirectoryStats.unrecognizedFiles} 个未识别文件` : ''}</div>
     </nav>
-    {provider === 'codex' ? <CpaCodexPanel {...timedProps} /> : <GrokPanel {...timedProps} />}
+    {provider === 'codex' ? <CpaCodexPanel {...timedProps} /> : <GrokPanel {...timedProps} scope="cpa" />}
   </div>
+}
+
+export function GrokLibraryPage(props: Props): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(interval)
+  }, [])
+  return <GrokPanel {...props} scope="library" now={now} />
 }

@@ -38,6 +38,7 @@ import type {
   CredentialExportFormat,
   CredentialExportLayout,
   OAuthAuthorizationSession,
+  LibraryImportResult,
   RefreshTokenClientMode,
   ScanResult,
   SessionRepairPreview,
@@ -46,7 +47,7 @@ import type {
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
 import { displayStatus, STATUS_LABELS } from './account-status'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
-import { CpaPage } from './GrokPage'
+import { CpaPage, GrokLibraryPage } from './GrokPage'
 import { useDialogFocus } from './hooks/useDialogFocus'
 import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
 
@@ -177,7 +178,7 @@ export function App(): React.JSX.Element {
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
   const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
-  const [activeView, setActiveView] = useState<'accounts' | 'cpa' | 'automation'>('accounts')
+  const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'cpa' | 'automation'>('accounts')
   const [automationKeyword, setAutomationKeyword] = useState('')
   const [automationSort, setAutomationSort] = useState<AccountSortMode>('availability_reset')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -274,6 +275,15 @@ export function App(): React.JSX.Element {
         return { ...current, cpaCodexAccounts, cpaCodexTesting }
       })
     )
+    const stopCpaGrokTesting = window.codexSwitcher.onCpaGrokTestProgress((cpaGrokTesting) =>
+      setSnapshot((current) => {
+        if (!current) return current
+        const cpaGrokAccounts = cpaGrokTesting.updatedAccount
+          ? current.cpaGrokAccounts.map((account) => account.id === cpaGrokTesting.updatedAccount?.id ? cpaGrokTesting.updatedAccount : account)
+          : current.cpaGrokAccounts
+        return { ...current, cpaGrokAccounts, cpaGrokTesting }
+      })
+    )
     const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
       if (!autoSwitch.running) void reload(true)
@@ -283,6 +293,7 @@ export function App(): React.JSX.Element {
       stopUpdates()
       stopGrokTesting()
       stopCpaCodexTesting()
+      stopCpaGrokTesting()
       stopAutoSwitch()
     }
   }, [])
@@ -368,18 +379,21 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const importMessage = (result: ScanResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
+  const importMessage = (result: ScanResult | LibraryImportResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
     const total = result.imported + result.skipped
+    const detail = 'grokImported' in result
+      ? `Codex 新增 ${result.codexImported}、重复 ${result.codexSkipped}；Grok 新增 ${result.grokImported}、重复 ${result.grokSkipped}`
+      : `Codex 新增 ${result.imported}、重复 ${result.skipped}`
     return {
       kind: result.errors.length > 0 ? 'warn' : 'ok',
       text: total === 0
-        ? `${source}：未识别到 Codex 账号`
-        : `${source}：导入 ${result.imported} 个 Codex 账号，重复跳过 ${result.skipped} 个`
+        ? `${source}：未识别到 Codex 或 Grok 账号`
+        : `${source}：${detail}${result.errors.length ? `；${result.errors.length} 个文件存在问题` : ''}`
     }
   }
 
   const runAccountImport = async (
-    action: () => Promise<ScanResult | null>,
+    action: () => Promise<ScanResult | LibraryImportResult | null>,
     source: string
   ): Promise<boolean> => {
     setBusy(true)
@@ -713,8 +727,11 @@ export function App(): React.JSX.Element {
           <button className={activeView === 'accounts' ? 'active' : ''} aria-pressed={activeView === 'accounts'} onClick={() => setActiveView('accounts')}>
             <ListChecks size={16} />Codex 账号库 <span className="tab-count">{snapshot.accounts.length}</span>
           </button>
+          <button className={activeView === 'grok' ? 'active' : ''} aria-pressed={activeView === 'grok'} onClick={() => setActiveView('grok')}>
+            <Zap size={16} />Grok 账号库 <span className="tab-count grok">{snapshot.grokAccounts.length}</span>
+          </button>
           <button className={activeView === 'cpa' ? 'active' : ''} aria-pressed={activeView === 'cpa'} onClick={() => setActiveView('cpa')}>
-            <Zap size={16} />CPA 账号管理 <span className="tab-count grok">{snapshot.cpaCodexAccounts.length + snapshot.grokAccounts.length}</span>
+            <PackageOpen size={16} />CPA 账号管理 <span className="tab-count">{snapshot.cpaCodexAccounts.length + snapshot.cpaGrokAccounts.length}</span>
           </button>
           <button className={activeView === 'automation' ? 'active' : ''} aria-pressed={activeView === 'automation'} onClick={() => setActiveView('automation')}>
             <TimerReset size={16} />定时切换
@@ -750,7 +767,7 @@ export function App(): React.JSX.Element {
         <div><span>账号库</span><strong>{snapshot.accounts.length} 个账号</strong></div>
         <div className="current-summary library-path"><span>当前正在使用</span><strong><BadgeCheck size={14} />{snapshot.accounts.find((item) => item.active)?.email ?? '未知 / API 模式'}</strong></div>
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
-        <div className="library-path"><span>本地账号目录</span><strong title={snapshot.importDirectory}>{snapshot.importDirectory}</strong></div>
+        <div className="library-path"><span>本地账号目录</span><strong title={`${snapshot.importDirectory}\\codex`}>{snapshot.importDirectory}\\codex</strong></div>
       </section>
       <StatusFilterStrip
         value={statusFilter}
@@ -901,7 +918,14 @@ export function App(): React.JSX.Element {
           </tbody>
         </table>
       </div>
-      </div> : activeView === 'cpa' ? (
+      </div> : activeView === 'grok' ? (
+        <GrokLibraryPage
+          snapshot={snapshot}
+          onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
+          notify={(kind, text) => setMessage({ kind, text })}
+          onBusyChange={setBusy}
+        />
+      ) : activeView === 'cpa' ? (
         <CpaPage
           snapshot={snapshot}
           onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
@@ -984,14 +1008,14 @@ export function App(): React.JSX.Element {
         <div className="repair-backdrop" role="presentation">
           <section ref={importDialogRef} className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号" tabIndex={-1}>
             <div className="panel-header">
-              <div><h2>导入 Codex 账号</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span>统一清洗后保存到应用 aa 账号库</span></div></div>
+              <div><h2>导入账号到本地库</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span className="provider-label grok"><Zap size={11} />Grok</span><span>自动分类保存到 aa，不修改 CPA 目录</span></div></div>
               <button className="icon-button" title="关闭" aria-label="关闭导入账号" onClick={() => closeImportDialog()} disabled={busy}>
                 <X size={18} />
               </button>
             </div>
             <div className="import-source-actions">
-              <button aria-label="导入多个文件" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyFiles(), '文件导入完成')} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>保存到 aa</small></span></button>
-              <button aria-label="导入文件夹" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归保存到 aa</small></span></button>
+              <button aria-label="导入多个文件" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyFiles(), '文件导入完成')} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>Codex / Grok 自动分类</small></span></button>
+              <button aria-label="导入文件夹" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别并保存到 aa</small></span></button>
             </div>
             <div className="import-divider"><span>或粘贴凭据</span></div>
             <div className="option-group import-method-group">
@@ -1002,7 +1026,7 @@ export function App(): React.JSX.Element {
                 <button className={pasteImportMode === 'codex' ? 'selected' : ''} onClick={() => setPasteImportMode('codex')}>Codex RT</button>
                 <button className={pasteImportMode === 'mobile' ? 'selected' : ''} onClick={() => setPasteImportMode('mobile')}>移动端 RT</button>
               </div>
-              <small>{pasteImportMode === 'auto' ? 'JSON、JSONL、CPA、Sub2API、裸 AT/PAT；发现 RT 时自动尝试匹配客户端' : pasteImportMode === 'oauth' ? '使用 Codex CLI 的 PKCE 参数打开 OpenAI 官方授权页，token 仅在主进程中交换' : pasteImportMode === 'codex' ? '每行一个 rt.1...，使用 Codex CLI 客户端刷新并保存旋转后的新 RT' : '每行一个 rt.1...，使用 OpenAI 移动端客户端刷新并保存对应 client_id'}</small>
+              <small>{pasteImportMode === 'auto' ? '同时识别 Codex 与 Grok 的 JSON、JSONL、CPA、Sub2API、裸 AT/PAT；仅写入本地 aa 分类目录' : pasteImportMode === 'oauth' ? '使用 Codex CLI 的 PKCE 参数打开 OpenAI 官方授权页，token 仅在主进程中交换' : pasteImportMode === 'codex' ? '每行一个 rt.1...，使用 Codex CLI 客户端刷新并保存旋转后的新 RT' : '每行一个 rt.1...，使用 OpenAI 移动端客户端刷新并保存对应 client_id'}</small>
             </div>
             {pasteImportMode === 'oauth' && (
               <div className="oauth-import-step">
@@ -1018,7 +1042,7 @@ export function App(): React.JSX.Element {
                 aria-label="凭据文本"
                 value={pasteText}
                 onChange={(event) => setPasteText(event.target.value)}
-                placeholder={pasteImportMode === 'auto' ? '粘贴 Codex JSON、JSONL、CPA、SubAPI、裸 AT/PAT/RT、键值文本或静态 JS' : pasteImportMode === 'oauth' ? '粘贴浏览器最后的 http://localhost:1455/auth/callback?code=...&state=... 地址' : '每行粘贴一个 OpenAI Refresh Token（rt.1...）'}
+                placeholder={pasteImportMode === 'auto' ? '粘贴 Codex / Grok JSON、JSONL、CPA、SubAPI、裸 AT/PAT/RT、键值文本或静态 JS' : pasteImportMode === 'oauth' ? '粘贴浏览器最后的 http://localhost:1455/auth/callback?code=...&state=... 地址' : '每行粘贴一个 OpenAI Refresh Token（rt.1...）'}
               />
             </label>
             <div className="panel-actions">

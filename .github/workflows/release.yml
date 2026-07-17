@@ -116,6 +116,11 @@ jobs:
             Assert-ApplicationPresent 'Current-user update'
             if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Current-user update did not preserve aa.' }
 
+            Remove-Item -LiteralPath $exe -Force
+            Invoke-SilentInstaller 'Current-user incomplete-uninstall recovery' 'currentuser' $true
+            Assert-ApplicationPresent 'Current-user incomplete-uninstall recovery'
+            if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Incomplete-uninstall recovery did not preserve aa.' }
+
             $brokenLocation = $testInstall -replace '^([A-Za-z]):', '$1'
             New-Item -Path $machineAppKey -Force | Out-Null
             Set-ItemProperty -Path $machineAppKey -Name InstallLocation -Value $brokenLocation

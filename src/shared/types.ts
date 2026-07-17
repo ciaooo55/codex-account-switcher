@@ -301,6 +301,18 @@ export interface ScanResult {
   accounts: AccountSummary[]
 }
 
+export interface LibraryImportResult {
+  imported: number
+  skipped: number
+  errors: string[]
+  codexImported: number
+  codexSkipped: number
+  grokImported: number
+  grokSkipped: number
+  accounts: AccountSummary[]
+  grokAccounts: GrokAccountSummary[]
+}
+
 export interface DeleteAccountsResult {
   deleted: number
   message: string

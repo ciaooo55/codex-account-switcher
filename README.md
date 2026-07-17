@@ -4,16 +4,16 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 
 ## 主要功能
 
-- Codex 账号库可导入单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、嵌套 Codex、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录；`aa` 中统一保存为每账号一个无私有 schema、无空字段的 CPA 兼容 JSON。
+- 统一导入入口可选择单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、Codex/Grok 混合文件、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录。
 - 支持直接粘贴混有 Markdown 代码块或说明文字的凭据内容，清洗后提取有效账号。
 - 对齐 Sub2API 的 OpenAI 导入方式：浏览器 PKCE 授权、Codex CLI Refresh Token、OpenAI 移动端 Refresh Token、Codex JSON / 裸 Access Token 批量、Personal Access Token（`at-...`）。RT 支持每行一个、带等级标签、Markdown 转义字符和重复项；兑换后保存旋转的新 RT 及对应 `client_id`。
-- 所有成功导入或粘贴的凭据都会清洗为统一的一账号一 JSON，保存到程序所在目录的 `aa`；文件名为 `邮箱_等级.json`，无等级时使用 `unknown`。外部源文件只参与一次导入，删除或移动源文件不影响账号库。
+- 所有成功导入或粘贴的凭据都会清洗为统一的一账号一 JSON：Codex 保存到程序目录的 `aa/codex`，Grok 保存到 `aa/grok`；文件名为 `邮箱_等级.json`，无等级时使用 `unknown`。外部源文件只参与一次导入，删除或移动源文件不影响账号库。
 - 从 JWT 与文件字段提取邮箱、workspace 和过期时间；每个账号库内部按“提供商 + 规范化邮箱”保持唯一，重复项自动选择 token 更完整、刷新时间更新的凭据。Codex 与 Grok 使用独立命名空间，不会互相覆盖。
 - 按 CPA 流程先读取 `wham/usage` 的完整额度与重置时间；额度可用时再调用 Codex compact 做真实验证，已明确耗尽时直接保留准确的 5h/周状态；401 时刷新并完整重试。
 - 根据后端 `limit_window_seconds` 动态显示 5 小时、周额度及准确重置时间，并将“5 小时额度耗尽”和“周额度耗尽”保存为不同状态。
 - 并发检测全部或选中账号，支持取消；检测中的账号使用稳定状态指示，每完成一个账号立即显示状态、额度、重置时间和刷新时间。
 - 检测状态和额度结果持久保存到下次检测；支持按邮箱、workspace、计划、来源和错误搜索，并按账号状态筛选。
-- Codex 主库、CPA Codex 与 CPA Grok 的凭据、删除记录和检测状态彼此独立；只有用户主动执行“导出到 CPA”才会把 Codex 主库账号写入 CPA 目录。
+- Codex 本地库、Grok 本地库、CPA Codex 与 CPA Grok 的凭据、删除记录和检测状态彼此独立；只有用户主动执行“导出到 CPA”才会把选定的本地账号写入 CPA 目录。
 - 当前 `auth.json` 匹配到的 Codex 账号会置顶，并使用独立的青色整行高亮、“正在使用”徽标和摘要标记，避免与普通有效状态混淆。
 - Codex 账号库、CPA Codex、CPA Grok 和定时切换候选列表支持按可用性/恢复时间、账号等级、状态或邮箱排序；默认把可用账号聚合在前，额度耗尽账号按最早恢复时间排列。
 - 支持单击账号行直接累加多选，再次点击取消选择，复选框仍可用于全选和多选，并提供明确的整行选中高亮；删除前二次确认，删除会同步删除或重写 `aa` 中的托管文件，一文件多账号时只移除选中的账号，外部原始文件不受影响。
@@ -22,7 +22,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
 - 完整 OAuth 账号使用标准 `chatgpt` 登录；只有 access token 的 CPA Team/K12 账号使用官方 Codex 源码定义的 `chatgptAuthTokens` 外部凭据结构，切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
-- 顶部可在浅色和深色工作台主题之间切换，选择保存在本机并在下次启动时恢复。
+- 顶部提供 Codex 账号库、Grok 账号库、CPA 账号管理、定时切换四个独立页面，并可在浅色和深色工作台主题之间切换；窄窗口下导航保持单行，选择保存在本机并在下次启动时恢复。
 - 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 点击最小化会保留窗口并正常缩到任务栏；点击关闭才会释放主界面并转入系统托盘，只保留主进程定时任务。托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出。
@@ -35,7 +35,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 ## CPA 账号管理
 
 - CPA 页面包含 Codex 和 Grok 两个独立子页。两类账号共用 `E:\home\<当前用户名>\.cli-proxy-api`，但测试全部、测试选中、实时进度、取消和筛选互不串台，CPA 页面也不会写入 `.codex`。
-- 只有 CPA 页面中的明确管理操作或 Codex 账号库的“直接导出到 CPA”会写共享目录；直接导出按提供商与邮箱去重，已有账号会跳过。
+- 只有 CPA 页面中的明确管理操作，或 Codex/Grok 本地库的“导出到 CPA”会写共享目录；直接导出按提供商与邮箱去重，已有账号会跳过。
 - 支持单选、多选或批量把规范托管文件从 `.json` 改为 `.json.0`，使 CPA 暂停读取；再次启用会恢复 `.json`。只有周额度耗尽会在测试后自动停用，5 小时额度耗尽不会；后续测试发现周额度恢复时会自动启用。
 - CPA 目录扫描、token 刷新和启停操作会把同一邮箱意外并存的 `.json` / `.json.0` 副本收敛为一个统一 CPA JSON；多账号文件会拆分成一账号一文件，字段标签误混入 token 值的旧文件会在解析后修复。共享目录之外的导入源文件不会被删除或改写。
 - 支持 CPA/CLIProxyAPI 扁平 xAI JSON、Sub2API `accounts[].credentials` 批量导出、对象数组、JSONL、文本、Markdown、静态 JS 和 ZIP。
@@ -69,13 +69,14 @@ npm run package:win
 
 构建产物位于 `release`：
 
-- `Codex-Account-Switcher-Setup-0.10.1.exe`：安装版
-- `Codex-Account-Switcher-Portable-0.10.1.exe`：便携版
+- `Codex-Account-Switcher-Setup-<版本>.exe`：安装版
+- `Codex-Account-Switcher-Portable-<版本>.exe`：便携版
 
 ## 默认路径
 
 - 导入文件默认目录：上次选择的目录；新安装默认 `E:\home\<当前用户名>\.cli-proxy-api`
-- 应用托管凭证库：安装版为安装目录下的 `aa`，便携版为 EXE 同目录下的 `aa`
+- Codex 本地凭证库：安装版为安装目录下的 `aa/codex`，便携版为 EXE 同目录下的 `aa/codex`
+- Grok 本地凭证库：安装版为安装目录下的 `aa/grok`，便携版为 EXE 同目录下的 `aa/grok`
 - CPA Codex/Grok 共享凭证库：默认 `E:\home\<当前用户名>\.cli-proxy-api`
 - Codex 凭据：自动查找 `CODEX_HOME` 或当前用户 `.codex\auth.json`
 - Codex 配置：与自动发现的凭据位于同一个 `.codex\config.toml`
