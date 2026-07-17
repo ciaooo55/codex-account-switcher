@@ -44,6 +44,21 @@ interface TestOptions {
   onProgress?: (progress: { done: number; total: number; runningIds: string[]; updatedAccount?: GrokAccountSummary }) => void
 }
 
+type ManagedFileState = 'enabled' | 'disabled' | 'no_permission' | 'no_usage'
+
+interface ManagedRecord {
+  path: string
+  credential: GrokCredential
+  disabled: boolean
+  fileState: ManagedFileState
+}
+
+const FILE_STATE_SUFFIXES: ReadonlyArray<readonly [ManagedFileState, string]> = [
+  ['disabled', '.0'],
+  ['no_permission', '.无权限'],
+  ['no_usage', '.无用量']
+]
+
 function safePart(value: string): string {
   const cleaned = value.toLowerCase().replace(/[^a-z0-9@._+-]+/g, '-').replace(/^-+|-+$/g, '')
   return cleaned.slice(0, 80) || 'unknown'
@@ -59,21 +74,26 @@ function managedName(credential: GrokCredential, style: 'library' | 'cpa' = 'cpa
   return `${MANAGED_PREFIX}${safePart(credential.email ?? credential.subject ?? 'unknown')}-${safePart(credential.planType ?? 'unknown')}-${credential.id.slice(0, 10)}.json`
 }
 
-function isDisabled(path: string): boolean {
-  return path.toLowerCase().endsWith('.json.0')
+function fileState(path: string): ManagedFileState {
+  const lower = path.toLowerCase()
+  return FILE_STATE_SUFFIXES.find(([, suffix]) => lower.endsWith(`.json${suffix}`))?.[0] ?? 'enabled'
 }
 
-function enabledPath(path: string): string {
-  return isDisabled(path) ? path.slice(0, -2) : path
+function canonicalPath(path: string): string {
+  const state = fileState(path)
+  if (state === 'enabled') return path
+  const suffix = FILE_STATE_SUFFIXES.find(([candidate]) => candidate === state)![1]
+  return path.slice(0, -suffix.length)
 }
 
-function statePath(path: string, enabled: boolean): string {
-  const base = enabledPath(path)
-  return enabled ? base : `${base}.0`
+function statePath(path: string, state: ManagedFileState): string {
+  const base = canonicalPath(path)
+  const suffix = FILE_STATE_SUFFIXES.find(([candidate]) => candidate === state)?.[1] ?? ''
+  return `${base}${suffix}`
 }
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
-  if (isDisabled(path)) return 'json'
+  if (fileState(path) !== 'enabled') return 'json'
   return FORMATS[extname(path).toLowerCase()]
 }
 
@@ -201,6 +221,10 @@ export class GrokAccountManager {
   }
 
   async setEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult> {
+    return this.setFileState(ids, enabled ? 'enabled' : 'disabled')
+  }
+
+  private async setFileState(ids: string[], state: ManagedFileState): Promise<ManagedFileStateResult> {
     const selected = new Set(ids)
     const records = (await this.managedCredentialRecords()).filter((item) => selected.has(item.credential.id))
     const recordsById = new Map<string, typeof records>()
@@ -219,7 +243,7 @@ export class GrokAccountManager {
         skipped += 1
         continue
       }
-      const target = statePath(join(directory, this.managedName(preferred.credential)), enabled)
+      const target = statePath(join(directory, this.managedName(preferred.credential)), state)
       const targetRecord = group.find((item) => resolve(item.path).toLowerCase() === resolve(target).toLowerCase())
       if (!targetRecord) {
         await rename(preferred.path, target)
@@ -238,7 +262,7 @@ export class GrokAccountManager {
     return {
       changed,
       skipped,
-      message: `${enabled ? '启用' : '停用'} ${changed} 个 Grok 文件${skipped ? `，跳过 ${skipped}` : ''}`
+      message: `${state === 'enabled' ? '启用' : state === 'disabled' ? '停用' : state === 'no_permission' ? '标记无权限' : '标记无用量'} ${changed} 个 Grok 文件${skipped ? `，跳过 ${skipped}` : ''}`
     }
   }
 
@@ -272,8 +296,11 @@ export class GrokAccountManager {
         }
         results.push(tested)
         await this.options.statusStore.set(tested)
-        if (tested.status === 'quota_exhausted_weekly') await this.setEnabled([credential.id], false)
-        else if (tested.status === 'valid') await this.setEnabled([credential.id], true)
+        if (tested.status === 'quota_exhausted_weekly' || tested.status === 'quota_exhausted_5h') {
+          await this.setFileState([credential.id], 'no_usage')
+        } else if (tested.status === 'valid') {
+          await this.setFileState([credential.id], 'enabled')
+        }
         running.delete(credential.id)
         done += 1
         const updatedAccount = (await this.listAccounts()).find((item) => item.id === credential.id)
@@ -289,7 +316,7 @@ export class GrokAccountManager {
     const directory = await this.directory()
     const records = (await this.managedCredentialRecords()).filter((item) => item.credential.id === credential.id)
     const record = this.dedupeRecords(records)[0]
-    const path = statePath(join(directory, this.managedName(credential)), !record?.disabled)
+    const path = statePath(join(directory, this.managedName(credential)), record?.fileState ?? 'enabled')
     await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
     await Promise.all(records.filter((item) => resolve(item.path).toLowerCase() !== resolve(path).toLowerCase()).map((item) => rm(item.path, { force: true })))
   }
@@ -389,15 +416,15 @@ export class GrokAccountManager {
     const existingIds = new Set(existing.map((item) => item.id))
     const importedCount = imported.filter((item) => !existingIds.has(item.id)).length
     const merged = dedupeGrokCredentials([...existing, ...imported])
-    const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.disabled]))
+    const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.fileState]))
     for (const credential of imported) {
-      if (!stateById.has(credential.id)) stateById.set(credential.id, isDisabled(credential.sourcePath))
+      if (!stateById.has(credential.id)) stateById.set(credential.id, fileState(credential.sourcePath))
     }
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     const targets = new Map<string, string>()
     for (const credential of merged) {
-      const path = statePath(join(directory, this.managedName(credential)), !stateById.get(credential.id))
+      const path = statePath(join(directory, this.managedName(credential)), stateById.get(credential.id) ?? 'enabled')
       await writeIfChanged(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
       targets.set(credential.id, path)
     }
@@ -448,8 +475,8 @@ export class GrokAccountManager {
     return dedupeGrokCredentials(result)
   }
 
-  private dedupeRecords(records: Array<{ path: string; credential: GrokCredential; disabled: boolean }>): Array<{ path: string; credential: GrokCredential; disabled: boolean }> {
-    const preferred = new Map<string, { path: string; credential: GrokCredential; disabled: boolean }>()
+  private dedupeRecords(records: ManagedRecord[]): ManagedRecord[] {
+    const preferred = new Map<string, ManagedRecord>()
     for (const record of records) {
       const current = preferred.get(record.credential.id)
       if (!current || (current.disabled && !record.disabled)) preferred.set(record.credential.id, record)
@@ -457,19 +484,20 @@ export class GrokAccountManager {
     return [...preferred.values()]
   }
 
-  private async managedCredentialRecords(): Promise<Array<{ path: string; credential: GrokCredential; disabled: boolean }>> {
+  private async managedCredentialRecords(): Promise<ManagedRecord[]> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    const result: Array<{ path: string; credential: GrokCredential; disabled: boolean }> = []
+    const result: ManagedRecord[] = []
     for (const path of await files(directory)) {
-      const fileName = basename(enabledPath(path))
+      const fileName = basename(canonicalPath(path))
       if (formatForPath(path) !== 'json' || (this.options.fileNameStyle !== 'library' && !fileName.startsWith(MANAGED_PREFIX))) continue
       try {
         const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
         if (parsed.credentials.length !== 1) continue
         const credential = parsed.credentials[0]
         if (fileName.toLowerCase() !== this.managedName(credential).toLowerCase()) continue
-        result.push({ path, credential, disabled: isDisabled(path) })
+        const state = fileState(path)
+        result.push({ path, credential, disabled: state !== 'enabled', fileState: state })
       } catch {
         // A similarly named user source file is not an application-managed credential.
       }

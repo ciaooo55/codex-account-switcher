@@ -26,7 +26,7 @@ async function collectManagedFiles(directory: string): Promise<string[]> {
     for (const entry of await readdir(current, { withFileTypes: true })) {
       const path = join(current, entry.name)
       if (entry.isDirectory()) stack.push(path)
-      else if (entry.isFile() && (MANAGED_EXTENSIONS.has(extname(entry.name).toLowerCase()) || /\.json\.0$/i.test(entry.name))) files.push(path)
+      else if (entry.isFile() && (MANAGED_EXTENSIONS.has(extname(entry.name).toLowerCase()) || /\.json\.(?:0|无权限|无用量)$/i.test(entry.name))) files.push(path)
     }
   }
   return files

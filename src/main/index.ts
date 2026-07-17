@@ -1,6 +1,6 @@
 import { mkdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, extname, join, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app,
@@ -21,6 +21,7 @@ import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types
 import { AccountManager } from './services/account-manager'
 import { AutoSwitchScheduler } from './services/auto-switch'
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
+import { discoverCpaDirectory } from './services/cpa-paths'
 import { CodexProcessManager } from './services/codex-process'
 import { CpaCodexManager } from './services/cpa-codex-manager'
 import { readCpaDirectoryStats } from './services/cpa-directory-stats'
@@ -253,6 +254,27 @@ async function main(): Promise<void> {
     : app.isPackaged
       ? resolve(process.env.PORTABLE_EXECUTABLE_DIR ?? dirname(process.execPath))
       : resolve(currentDirectory, '../..')
+  if (e2eMode) await mkdir(initialSettings.grokDirectory, { recursive: true })
+  let discoveredCpaDirectory = await discoverCpaDirectory({
+    homeDirectory,
+    configuredDirectory: initialSettings.grokDirectory,
+    applicationDirectory
+  })
+  if (!discoveredCpaDirectory && !e2eMode) {
+    const selected = await dialog.showOpenDialog({
+      title: '未找到 CPA 凭证目录，请选择 CLIProxyAPI 的 auth-dir',
+      defaultPath: initialSettings.grokDirectory,
+      buttonLabel: '使用此目录',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    discoveredCpaDirectory = selected.canceled
+      ? join(homeDirectory, '.cli-proxy-api')
+      : selected.filePaths[0]
+  }
+  if (discoveredCpaDirectory) await mkdir(discoveredCpaDirectory, { recursive: true })
+  if (discoveredCpaDirectory && resolve(discoveredCpaDirectory) !== resolve(initialSettings.grokDirectory)) {
+    initialSettings = await settingsStore.update({ grokDirectory: discoveredCpaDirectory })
+  }
   const importDirectory = join(applicationDirectory, 'aa')
   const codexImportDirectory = join(importDirectory, 'codex')
   const grokImportDirectory = join(importDirectory, 'grok')
@@ -1215,6 +1237,34 @@ async function main(): Promise<void> {
       return { ok: true, message: '已打开源文件位置' }
     } catch {
       return { ok: false, message: '账号源文件已不存在' }
+    }
+  })
+  ipcMain.handle(ipcChannels.revealManagedSource, async (_event, input: unknown) => {
+    const { scope, id } = z.object({
+      scope: z.enum(['grok', 'cpa-grok', 'cpa-codex']),
+      id: z.string().min(1)
+    }).parse(input)
+    const settings = await settingsStore.get()
+    const root = scope === 'grok' ? grokImportDirectory : settings.grokDirectory
+    const accounts = scope === 'grok'
+      ? await grokManager.listAccounts()
+      : scope === 'cpa-grok'
+        ? await cpaGrokManager.listAccounts()
+        : await cpaCodexManager.listAccounts()
+    const sourcePath = accounts.find((account) => account.id === id)?.sourcePath
+    if (!sourcePath) return { ok: false, message: '账号托管文件不存在' }
+    const normalizedRoot = resolve(root)
+    const normalizedSource = resolve(sourcePath)
+    const relativePath = relative(normalizedRoot, normalizedSource)
+    if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+      return { ok: false, message: '账号文件不在受管理目录内' }
+    }
+    try {
+      if (!(await stat(normalizedSource)).isFile()) return { ok: false, message: '账号托管文件不是文件' }
+      shell.showItemInFolder(normalizedSource)
+      return { ok: true, message: '已打开账号文件位置' }
+    } catch {
+      return { ok: false, message: '账号托管文件已不存在' }
     }
   })
   ipcMain.handle(ipcChannels.sessionRepairPreview, async (_event, input: unknown) => {

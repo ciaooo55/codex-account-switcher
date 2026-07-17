@@ -207,6 +207,7 @@ function api(): CodexSwitcherApi {
     chooseAccountDirectory: vi.fn().mockResolvedValue(null),
     chooseGrokDirectory: vi.fn().mockResolvedValue(null),
     revealSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
+    revealManagedSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     previewSessionRepair: vi.fn().mockResolvedValue({
       snapshotId: 'snapshot-a',
       currentProvider: 'openai',
@@ -403,6 +404,10 @@ describe('App', () => {
 
     await waitFor(() => expect(bridge.setCpaCodexEnabled).toHaveBeenCalledWith(['c'.repeat(64)], false))
     expect(bridge.setGrokEnabled).not.toHaveBeenCalled()
+
+    fireEvent.contextMenu(await screen.findByRole('row', { name: /cpa-codex@example\.com/ }), { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: '打开文件位置' }))
+    await waitFor(() => expect(bridge.revealManagedSource).toHaveBeenCalledWith('cpa-codex', 'c'.repeat(64)))
   })
 
   it('imports every supported file from a selected folder', async () => {
@@ -553,6 +558,10 @@ describe('App', () => {
 
     await waitFor(() => expect(bridge.testCpaGrokAccounts).toHaveBeenCalledWith(['9'.repeat(64)]))
     expect(bridge.testGrokAccounts).not.toHaveBeenCalled()
+
+    fireEvent.contextMenu(await screen.findByRole('row', { name: /cpa-grok@example\.com/ }), { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: '打开文件位置' }))
+    await waitFor(() => expect(bridge.revealManagedSource).toHaveBeenCalledWith('cpa-grok', '9'.repeat(64)))
   })
 
   it('deletes selected accounts only after confirmation', async () => {

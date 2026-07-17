@@ -135,6 +135,7 @@ export interface CodexSwitcherApi {
   chooseAccountDirectory(): Promise<string | null>
   chooseGrokDirectory(): Promise<string | null>
   revealSource(id: string): Promise<RestartResult>
+  revealManagedSource(scope: 'grok' | 'cpa-grok' | 'cpa-codex', id: string): Promise<RestartResult>
   previewSessionRepair(targetProvider?: string): Promise<SessionRepairPreview>
   applySessionRepair(snapshotId: string, targetProvider: string): Promise<SessionRepairResult>
   getUpdateState(): Promise<UpdateState>
@@ -200,6 +201,7 @@ export const ipcChannels = {
   settingsChooseDirectory: 'settings:choose-directory',
   settingsChooseGrokDirectory: 'settings:choose-grok-directory',
   revealSource: 'accounts:reveal-source',
+  revealManagedSource: 'accounts:reveal-managed-source',
   sessionRepairPreview: 'sessions:repair-preview',
   sessionRepairApply: 'sessions:repair-apply',
   testProgress: 'accounts:test-progress',

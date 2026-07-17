@@ -72,6 +72,27 @@ describe('readCpaDirectoryStats', () => {
     })
   })
 
+  it('includes CPA status-suffixed Codex files in inventory totals', async () => {
+    const root = await directory()
+    await writeFile(join(root, 'limited.json.无用量'), JSON.stringify({
+      type: 'codex',
+      email: 'limited@example.com',
+      access_token: token({ sub: 'limited-user', email: 'limited@example.com' })
+    }))
+    await writeFile(join(root, 'forbidden.json.无权限'), JSON.stringify({
+      type: 'codex',
+      email: 'forbidden@example.com',
+      access_token: token({ sub: 'forbidden-user', email: 'forbidden@example.com' })
+    }))
+
+    await expect(readCpaDirectoryStats(root)).resolves.toMatchObject({
+      credentialFiles: 2,
+      codexFiles: 2,
+      duplicateFiles: 0,
+      unrecognizedFiles: 0
+    })
+  })
+
   it('inspects supported entries inside zip imports', async () => {
     const root = await directory()
     const archive = zipSync({

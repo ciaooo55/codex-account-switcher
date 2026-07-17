@@ -52,6 +52,7 @@ const api: CodexSwitcherApi = {
   chooseAccountDirectory: () => ipcRenderer.invoke(ipcChannels.settingsChooseDirectory),
   chooseGrokDirectory: () => ipcRenderer.invoke(ipcChannels.settingsChooseGrokDirectory),
   revealSource: (id) => ipcRenderer.invoke(ipcChannels.revealSource, id),
+  revealManagedSource: (scope, id) => ipcRenderer.invoke(ipcChannels.revealManagedSource, { scope, id }),
   previewSessionRepair: (targetProvider) =>
     ipcRenderer.invoke(ipcChannels.sessionRepairPreview, targetProvider),
   applySessionRepair: (snapshotId, targetProvider) =>

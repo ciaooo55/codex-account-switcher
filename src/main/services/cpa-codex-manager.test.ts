@@ -75,7 +75,7 @@ describe('CpaCodexManager', () => {
     expect(imported.accounts.map((item) => item.planType).sort()).toEqual(['plus', 'team'])
   })
 
-  it('automatically disables weekly exhausted files and restores them when quota returns', async () => {
+  it('marks weekly exhausted files as no usage and restores them when quota returns', async () => {
     const { library, source, manager } = await setup(['quota_exhausted_weekly', 'valid'])
     await writeFile(source, JSON.stringify({
       type: 'codex', access_token: token({ sub: 'quota', email: 'quota@example.com' }),
@@ -85,15 +85,15 @@ describe('CpaCodexManager', () => {
     const id = imported.accounts[0].id
 
     await manager.testAccounts([id])
-    expect((await readdir(library)).some((name) => name.endsWith('.json.0'))).toBe(true)
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(true)
     expect((await manager.listAccounts())[0]).toMatchObject({ disabled: true, status: 'quota_exhausted_weekly' })
 
     await manager.testAccounts([id])
-    expect((await readdir(library)).some((name) => name.endsWith('.json.0'))).toBe(false)
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(false)
     expect((await manager.listAccounts())[0]).toMatchObject({ disabled: false, status: 'valid' })
   })
 
-  it('keeps five-hour exhausted files enabled and supports explicit batch toggles', async () => {
+  it('marks five-hour exhausted files as no usage and supports explicit batch toggles', async () => {
     const { library, source, manager } = await setup(['quota_exhausted_5h'])
     await writeFile(source, JSON.stringify({
       type: 'codex', access_token: token({ sub: 'five-hour', email: 'five@example.com' }),
@@ -103,11 +103,32 @@ describe('CpaCodexManager', () => {
     const id = imported.accounts[0].id
 
     await manager.testAccounts([id])
-    expect((await manager.listAccounts())[0]).toMatchObject({ disabled: false, status: 'quota_exhausted_5h' })
+    expect((await manager.listAccounts())[0]).toMatchObject({ disabled: true, status: 'quota_exhausted_5h' })
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(true)
     expect((await manager.setEnabled([id], false)).changed).toBe(1)
     expect((await manager.listAccounts())[0].disabled).toBe(true)
     expect((await manager.setEnabled([id], true)).changed).toBe(1)
     expect((await readdir(library)).every((name) => !name.endsWith('.json.0'))).toBe(true)
+  })
+
+  it('marks accounts without Codex permission and restores them after a valid retest', async () => {
+    const { library, source, manager } = await setup(['no_permission', 'valid'])
+    await writeFile(source, JSON.stringify({
+      type: 'codex', access_token: token({ sub: 'forbidden', email: 'forbidden@example.com' }),
+      refresh_token: 'refresh', email: 'forbidden@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+    const id = imported.accounts[0].id
+
+    await manager.testAccounts([id])
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无权限'))).toBe(true)
+    expect((await manager.listAccounts())[0]).toMatchObject({ disabled: true, status: 'no_permission' })
+
+    await manager.testAccounts([id])
+    expect(await readdir(library)).toEqual([
+      expect.stringMatching(/^codex-forbidden@example\.com-unknown-[a-f0-9]{10}\.json$/)
+    ])
+    expect((await manager.listAccounts())[0]).toMatchObject({ disabled: false, status: 'valid' })
   })
 
   it('reconciles enabled and disabled canonical duplicates into one requested file', async () => {

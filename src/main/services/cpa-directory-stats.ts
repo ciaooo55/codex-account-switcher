@@ -27,7 +27,7 @@ interface FileCredentialIds {
 }
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
-  if (/\.json\.0$/i.test(path)) return 'json'
+  if (/\.json\.(?:0|无权限|无用量)$/i.test(path)) return 'json'
   return FORMATS[extname(path).toLowerCase()]
 }
 

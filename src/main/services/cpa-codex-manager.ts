@@ -53,7 +53,16 @@ interface ManagedRecord {
   path: string
   credential: NormalizedCredential
   disabled: boolean
+  fileState: CpaFileState
 }
+
+type CpaFileState = 'enabled' | 'disabled' | 'no_permission' | 'no_usage'
+
+const FILE_STATE_SUFFIXES: ReadonlyArray<readonly [CpaFileState, string]> = [
+  ['disabled', '.0'],
+  ['no_permission', '.无权限'],
+  ['no_usage', '.无用量']
+]
 
 function safePart(value: string): string {
   const cleaned = value.toLowerCase().replace(/[^a-z0-9@._+-]+/g, '-').replace(/^-+|-+$/g, '')
@@ -64,21 +73,27 @@ function managedName(credential: NormalizedCredential): string {
   return `${MANAGED_PREFIX}${safePart(credential.email ?? credential.subject ?? 'unknown')}-${safePart(credential.planType ?? 'unknown')}-${credential.id.slice(0, 10)}.json`
 }
 
-function isDisabled(path: string): boolean {
-  return path.toLowerCase().endsWith('.json.0')
+function fileState(path: string): CpaFileState {
+  const lower = path.toLowerCase()
+  const matched = FILE_STATE_SUFFIXES.find(([, suffix]) => lower.endsWith(`.json${suffix}`))
+  return matched?.[0] ?? 'enabled'
 }
 
-function enabledPath(path: string): string {
-  return isDisabled(path) ? path.slice(0, -2) : path
+function canonicalPath(path: string): string {
+  const state = fileState(path)
+  if (state === 'enabled') return path
+  const suffix = FILE_STATE_SUFFIXES.find(([candidate]) => candidate === state)![1]
+  return path.slice(0, -suffix.length)
 }
 
-function statePath(path: string, enabled: boolean): string {
-  const base = enabledPath(path)
-  return enabled ? base : `${base}.0`
+function statePath(path: string, state: CpaFileState): string {
+  const base = canonicalPath(path)
+  const suffix = FILE_STATE_SUFFIXES.find(([candidate]) => candidate === state)?.[1] ?? ''
+  return `${base}${suffix}`
 }
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
-  if (isDisabled(path)) return 'json'
+  if (fileState(path) !== 'enabled') return 'json'
   return FORMATS[extname(path).toLowerCase()]
 }
 
@@ -198,7 +213,7 @@ export class CpaCodexManager {
     await this.options.deletedStore?.addMany([...selected])
     try {
       for (const path of paths) {
-        if (!/\.json(?:\.0)?$/i.test(path)) continue
+        if (!/\.json(?:\.0|\.无权限|\.无用量)?$/i.test(path)) continue
         const text = await readFile(path, 'utf8').catch(() => null)
         if (text === null) continue
         const format = formatForPath(path)
@@ -211,10 +226,10 @@ export class CpaCodexManager {
         const containsGrok = parseGrokCredentialText(text, { sourcePath: path, format: 'json' }).credentials.length > 0
         if (containsGrok) continue
 
-        const disabled = isDisabled(path)
+        const previousState = fileState(path)
         await rm(path, { force: true })
         for (const credential of remaining) {
-          const target = statePath(join(directory, managedName(credential)), !disabled)
+          const target = statePath(join(directory, managedName(credential)), previousState)
           await atomicWriteFile(target, serialized({
             ...credential,
             sourcePath: target,
@@ -237,6 +252,10 @@ export class CpaCodexManager {
   }
 
   async setEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult> {
+    return this.setFileState(ids, enabled ? 'enabled' : 'disabled')
+  }
+
+  private async setFileState(ids: string[], state: CpaFileState): Promise<ManagedFileStateResult> {
     const selected = new Set(ids)
     const records = (await this.managedRecords()).filter((item) => selected.has(item.credential.id))
     const recordsById = new Map<string, ManagedRecord[]>()
@@ -255,7 +274,7 @@ export class CpaCodexManager {
         skipped += 1
         continue
       }
-      const target = statePath(join(directory, managedName(preferred.credential)), enabled)
+      const target = statePath(join(directory, managedName(preferred.credential)), state)
       const targetRecord = group.find((item) => resolve(item.path).toLowerCase() === resolve(target).toLowerCase())
       if (!targetRecord) {
         await rename(preferred.path, target)
@@ -274,7 +293,7 @@ export class CpaCodexManager {
     return {
       changed,
       skipped,
-      message: `${enabled ? '启用' : '停用'} ${changed} 个 CPA Codex 文件${skipped ? `，跳过 ${skipped}` : ''}`
+      message: `${state === 'enabled' ? '启用' : state === 'disabled' ? '停用' : state === 'no_permission' ? '标记无权限' : '标记无用量'} ${changed} 个 CPA Codex 文件${skipped ? `，跳过 ${skipped}` : ''}`
     }
   }
 
@@ -326,14 +345,19 @@ export class CpaCodexManager {
     const records = (await this.managedRecords()).filter((item) => item.credential.id === credential.id)
     const record = this.dedupeRecords(records)[0]
     const directory = await this.directory()
-    const path = statePath(join(directory, managedName(credential)), !record?.disabled)
+    const path = statePath(join(directory, managedName(credential)), record?.fileState ?? 'enabled')
     await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
     await Promise.all(records.filter((item) => resolve(item.path).toLowerCase() !== resolve(path).toLowerCase()).map((item) => rm(item.path, { force: true })))
   }
 
   private async applyQuotaFileState(id: string, status: AccountStatus): Promise<void> {
-    if (status === 'quota_exhausted_weekly') await this.setEnabled([id], false)
-    else if (status === 'valid') await this.setEnabled([id], true)
+    if (['quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly'].includes(status)) {
+      await this.setFileState([id], 'no_usage')
+    } else if (status === 'no_permission') {
+      await this.setFileState([id], 'no_permission')
+    } else if (status === 'valid') {
+      await this.setFileState([id], 'enabled')
+    }
   }
 
   private async importPaths(paths: string[]): Promise<CpaCodexScanResult> {
@@ -380,15 +404,15 @@ export class CpaCodexManager {
     const existingIds = new Set(existing.map((item) => item.id))
     const importedCount = imported.filter((item) => !existingIds.has(item.id)).length
     const merged = dedupeCredentials([...existing, ...imported])
-    const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.disabled]))
+    const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.fileState]))
     for (const credential of imported) {
-      if (!stateById.has(credential.id)) stateById.set(credential.id, isDisabled(credential.sourcePath))
+      if (!stateById.has(credential.id)) stateById.set(credential.id, fileState(credential.sourcePath))
     }
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
     const targets = new Map<string, string>()
     for (const credential of merged) {
-      const path = statePath(join(directory, managedName(credential)), !stateById.get(credential.id))
+      const path = statePath(join(directory, managedName(credential)), stateById.get(credential.id) ?? 'enabled')
       await writeIfChanged(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
       targets.set(credential.id, path)
     }
@@ -435,13 +459,14 @@ export class CpaCodexManager {
     await mkdir(directory, { recursive: true })
     const result: ManagedRecord[] = []
     for (const path of await files(directory)) {
-      if (!basename(enabledPath(path)).startsWith(MANAGED_PREFIX) || formatForPath(path) !== 'json') continue
+      if (!basename(canonicalPath(path)).startsWith(MANAGED_PREFIX) || formatForPath(path) !== 'json') continue
       try {
         const parsed = parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
         if (parsed.credentials.length !== 1) continue
         const credential = parsed.credentials[0]
-        if (basename(enabledPath(path)).toLowerCase() !== managedName(credential).toLowerCase()) continue
-        result.push({ path, credential, disabled: isDisabled(path) })
+        if (basename(canonicalPath(path)).toLowerCase() !== managedName(credential).toLowerCase()) continue
+        const state = fileState(path)
+        result.push({ path, credential, disabled: state !== 'enabled', fileState: state })
       } catch {
         // Similar user filenames are not treated as managed CPA files.
       }

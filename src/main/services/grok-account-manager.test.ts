@@ -201,7 +201,7 @@ describe('GrokAccountManager', () => {
     expect((await readdir(library)).filter((name) => name !== 'grok-user-backup.json')).toEqual([])
   })
 
-  it('uses json.0 for weekly exhaustion and restores json after a valid retest', async () => {
+  it('uses the no-usage suffix for weekly exhaustion and restores json after a valid retest', async () => {
     const { library, source, manager, tester } = await setup()
     await writeFile(source, JSON.stringify({
       type: 'xai', access_token: token({ iss: 'https://auth.x.ai', sub: 'quota-grok' }),
@@ -220,11 +220,11 @@ describe('GrokAccountManager', () => {
       })
 
     await manager.testAccounts([id])
-    expect((await readdir(library)).some((name) => name.endsWith('.json.0'))).toBe(true)
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(true)
     expect((await manager.listAccounts())[0].disabled).toBe(true)
 
     await manager.testAccounts([id])
-    expect((await readdir(library)).some((name) => name.endsWith('.json.0'))).toBe(false)
+    expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(false)
     expect((await manager.listAccounts())[0].disabled).toBe(false)
   })
 
