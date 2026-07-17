@@ -300,6 +300,24 @@ describe('App', () => {
     expect(screen.getByLabelText('选择 second@example.com')).toBeChecked()
   })
 
+  it('prunes selections that disappear after a rescan', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    const secondRow = await screen.findByRole('row', { name: /second@example\.com/ })
+    fireEvent.click(secondRow)
+    expect(screen.getByText('已选择 1 个账号')).toBeInTheDocument()
+
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      accounts: snapshot.accounts.filter((account) => account.id !== 'account-b')
+    })
+    fireEvent.click(screen.getByRole('button', { name: '重新扫描' }))
+
+    await waitFor(() => expect(screen.queryByText('second@example.com')).not.toBeInTheDocument())
+    expect(screen.queryByText('已选择 1 个账号')).not.toBeInTheDocument()
+  })
+
   it('keeps Codex and Grok test-all actions isolated by page', async () => {
     const bridge = api()
     const grokSnapshot: AppSnapshot = {
@@ -682,6 +700,20 @@ describe('App', () => {
     await waitFor(() =>
       expect(window.codexSwitcher.importAnyPasted).toHaveBeenCalledWith('{"access_token":"secret"}')
     )
+  })
+
+  it('clears pasted credentials when the import dialog is dismissed with Escape', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    const input = screen.getByLabelText('凭据文本')
+    fireEvent.change(input, { target: { value: 'rt.1.temporary-secret' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '导入账号' })).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    expect(screen.getByLabelText('凭据文本')).toHaveValue('')
   })
 
   it('imports mobile refresh tokens using the explicit Sub2API client mode', async () => {

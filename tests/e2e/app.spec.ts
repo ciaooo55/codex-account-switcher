@@ -225,6 +225,10 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       has: page.getByLabel(`选择 ${email}`, { exact: true })
     }).first()
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
+    await expect(page.locator('meta[http-equiv="Content-Security-Policy"]')).toHaveAttribute(
+      'content',
+      /default-src 'self'/
+    )
 
     await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.minimize())
     await expect.poll(() => electronApp.evaluate(({ BrowserWindow }) => ({
@@ -236,6 +240,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByRole('button', { name: '导入账号' }).click()
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'import-dialog.png'), fullPage: true })
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: '导入账号' })).toHaveCount(0)
+    await page.getByRole('button', { name: '导入账号' }).click()
     await page.getByRole('button', { name: '导入文件夹' }).click()
     await expect(page.getByText(/导入 1 个 Codex 账号，重复跳过 0 个/)).toBeVisible()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
@@ -272,6 +279,18 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByRole('button', { name: '测试当前页面全部' }).click()
     await expect(page.getByText('检测中').first()).toBeVisible()
+    const blockedRestart = await page.evaluate(() => window.codexSwitcher.restartCodex())
+    expect(blockedRestart).toMatchObject({ ok: false })
+    expect(blockedRestart.message).toContain('账号检测正在运行')
+    const blockedRepair = await page.evaluate(async () => {
+      try {
+        await window.codexSwitcher.previewSessionRepair('openai')
+        return null
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    })
+    expect(blockedRepair).toContain('账号检测正在运行')
     await expect(page.getByText('77%').first()).toBeVisible()
     await expect(page.getByText('剩余 24 小时').first()).toBeVisible()
     await expect(page.getByText('剩余 30 分钟').first()).toBeVisible()

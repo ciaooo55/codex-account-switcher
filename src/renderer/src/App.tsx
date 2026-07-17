@@ -32,7 +32,6 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AppSnapshot, UpdateState } from '../../shared/ipc'
 import type {
-  AccountStatus,
   AccountSummary,
   AppSettings,
   DisplayAccountStatus,
@@ -45,16 +44,11 @@ import type {
   UsageWindow
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
+import { displayStatus, STATUS_LABELS } from './account-status'
+import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { CpaPage } from './GrokPage'
-
-const STATUS_LABELS: Record<DisplayAccountStatus, string> = {
-  untested: '未测试',
-  valid: '有效',
-  quota_exhausted_5h: '5 小时额度耗尽',
-  quota_exhausted_weekly: '周额度耗尽',
-  invalid: '已失效',
-  unknown_error: '未知错误'
-}
+import { useDialogFocus } from './hooks/useDialogFocus'
+import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
 
 type ThemeMode = 'light' | 'dark'
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
@@ -66,13 +60,6 @@ function initialTheme(): ThemeMode {
   } catch {
     return 'light'
   }
-}
-
-function displayStatus(status: AccountStatus): DisplayAccountStatus {
-  if (status === 'untested' || status === 'valid' || status === 'quota_exhausted_5h' || status === 'quota_exhausted_weekly') return status
-  if (status === 'quota_exhausted') return 'quota_exhausted_5h'
-  if (['invalid', 'no_permission', 'workspace_deactivated', 'non_refreshable'].includes(status)) return 'invalid'
-  return 'unknown_error'
 }
 
 function dateTime(value: string | null): string {
@@ -186,7 +173,7 @@ export function App(): React.JSX.Element {
     return value
   })
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = usePrunedSelection(snapshot?.accounts.map((account) => account.id) ?? [])
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
   const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
@@ -216,6 +203,28 @@ export function App(): React.JSX.Element {
   } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const [clock, setClock] = useState(() => Date.now())
+
+  const closeImportDialog = (force = false): void => {
+    if (busy && !force) return
+    setImportOpen(false)
+    setPasteText('')
+    setOauthSession(null)
+  }
+  const closeExportDialog = (): void => {
+    if (!busy) setExportDialog(null)
+  }
+  const closeRepairDialog = (): void => {
+    if (!busy) setRepairPreview(null)
+  }
+  const closeSettingsDialog = (force = false): void => {
+    if (busy && !force) return
+    setSettingsOpen(false)
+    setCustomApiKey('')
+  }
+  const importDialogRef = useDialogFocus<HTMLElement>(importOpen, closeImportDialog)
+  const exportDialogRef = useDialogFocus<HTMLElement>(Boolean(exportDialog), closeExportDialog)
+  const repairDialogRef = useDialogFocus<HTMLElement>(Boolean(repairPreview), closeRepairDialog)
+  const settingsDialogRef = useDialogFocus<HTMLElement>(settingsOpen, closeSettingsDialog)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -384,7 +393,7 @@ export function App(): React.JSX.Element {
       await reload()
       setMessage(importMessage(result, source))
       const recognized = result.imported + result.skipped > 0
-      if (recognized) setImportOpen(false)
+      if (recognized) closeImportDialog(true)
       return recognized
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
@@ -551,12 +560,7 @@ export function App(): React.JSX.Element {
   }
 
   const toggle = (id: string): void => {
-    setSelected((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+    toggleSelection(setSelected, id)
   }
 
   const selectAccountRow = (id: string): void => toggle(id)
@@ -706,13 +710,13 @@ export function App(): React.JSX.Element {
           <div className="identity-title"><span className="product-mark"><Code2 size={17} /></span><h1>Codex Account Switcher</h1></div>
         </div>
         <nav className="view-tabs" aria-label="主页面">
-          <button className={activeView === 'accounts' ? 'active' : ''} onClick={() => setActiveView('accounts')}>
+          <button className={activeView === 'accounts' ? 'active' : ''} aria-pressed={activeView === 'accounts'} onClick={() => setActiveView('accounts')}>
             <ListChecks size={16} />Codex 账号库 <span className="tab-count">{snapshot.accounts.length}</span>
           </button>
-          <button className={activeView === 'cpa' ? 'active' : ''} onClick={() => setActiveView('cpa')}>
+          <button className={activeView === 'cpa' ? 'active' : ''} aria-pressed={activeView === 'cpa'} onClick={() => setActiveView('cpa')}>
             <Zap size={16} />CPA 账号管理 <span className="tab-count grok">{snapshot.cpaCodexAccounts.length + snapshot.grokAccounts.length}</span>
           </button>
-          <button className={activeView === 'automation' ? 'active' : ''} onClick={() => setActiveView('automation')}>
+          <button className={activeView === 'automation' ? 'active' : ''} aria-pressed={activeView === 'automation'} onClick={() => setActiveView('automation')}>
             <TimerReset size={16} />定时切换
           </button>
         </nav>
@@ -748,14 +752,13 @@ export function App(): React.JSX.Element {
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
         <div className="library-path"><span>本地账号目录</span><strong title={snapshot.importDirectory}>{snapshot.importDirectory}</strong></div>
       </section>
-      <div className="status-filter-strip" aria-label="Codex 账号状态">
-        <button className={statusFilter === '' ? 'active' : ''} onClick={() => setStatusFilter('')}><span>全部</span><strong>{snapshot.accounts.length}</strong></button>
-        {Object.entries(STATUS_LABELS).map(([value, label]) => <button
-          key={value}
-          className={`${statusFilter === value ? 'active ' : ''}filter-${value}`}
-          onClick={() => setStatusFilter(value as DisplayAccountStatus)}
-        ><span>{label}</span><strong>{counts[value] ?? 0}</strong></button>)}
-      </div>
+      <StatusFilterStrip
+        value={statusFilter}
+        counts={(status) => counts[status] ?? 0}
+        total={snapshot.accounts.length}
+        onChange={setStatusFilter}
+        label="Codex 账号状态"
+      />
 
       <div className="toolbar codex-toolbar">
         <div className="toolbar-group">
@@ -878,6 +881,7 @@ export function App(): React.JSX.Element {
                 <td>
                   <div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.active && <span className="active-badge"><BadgeCheck size={12} />正在使用</span>}</div>
                   <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {switchCapability(account)}</div>
+                  <div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div>
                 </td>
                 <td>
                   {running ? (
@@ -902,6 +906,7 @@ export function App(): React.JSX.Element {
           snapshot={snapshot}
           onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
           notify={(kind, text) => setMessage({ kind, text })}
+          onBusyChange={setBusy}
         />
       ) : (
         <main className="page-view automation-view">
@@ -977,10 +982,10 @@ export function App(): React.JSX.Element {
 
       {importOpen && (
         <div className="repair-backdrop" role="presentation">
-          <section className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号">
+          <section ref={importDialogRef} className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号" tabIndex={-1}>
             <div className="panel-header">
               <div><h2>导入 Codex 账号</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span>统一清洗后保存到应用 aa 账号库</span></div></div>
-              <button className="icon-button" title="关闭" aria-label="关闭导入账号" onClick={() => setImportOpen(false)} disabled={busy}>
+              <button className="icon-button" title="关闭" aria-label="关闭导入账号" onClick={() => closeImportDialog()} disabled={busy}>
                 <X size={18} />
               </button>
             </div>
@@ -1017,7 +1022,7 @@ export function App(): React.JSX.Element {
               />
             </label>
             <div className="panel-actions">
-              <button onClick={() => setImportOpen(false)} disabled={busy}>取消</button>
+              <button onClick={() => closeImportDialog()} disabled={busy}>取消</button>
               <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim() || (pasteImportMode === 'oauth' && !oauthSession)}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
                 {pasteImportMode === 'oauth' ? '完成授权并导入' : '清洗并导入'}
@@ -1029,10 +1034,10 @@ export function App(): React.JSX.Element {
 
       {exportDialog && (
         <div className="repair-backdrop" role="presentation">
-          <section className="compact-dialog" role="dialog" aria-modal="true" aria-label="导出账号">
+          <section ref={exportDialogRef} className="compact-dialog" role="dialog" aria-modal="true" aria-label="导出账号" tabIndex={-1}>
             <div className="panel-header">
               <h2>导出 {exportDialog.accountIds.length} 个账号</h2>
-              <button className="icon-button" title="关闭" aria-label="关闭账号导出" onClick={() => setExportDialog(null)} disabled={busy}>
+              <button className="icon-button" title="关闭" aria-label="关闭账号导出" onClick={closeExportDialog} disabled={busy}>
                 <X size={18} />
               </button>
             </div>
@@ -1056,7 +1061,7 @@ export function App(): React.JSX.Element {
               <span>{exportDialog.format === 'codex' ? 'Codex 格式会按账号认证类型生成官方 auth.json 结构；多账号只能打包为 ZIP。' : '普通导出可选择任意目录；“直接导出到 CPA”仅写入设置中的 CPA 共享目录，并按账号稳定身份跳过重复。'}</span>
             </div>
             <div className="panel-actions">
-              <button onClick={() => setExportDialog(null)} disabled={busy}>取消</button>
+              <button onClick={closeExportDialog} disabled={busy}>取消</button>
               {exportDialog.format === 'cpa' && <button onClick={() => void submitExportToCpa()} disabled={busy}>
                 <Zap size={16} />直接导出到 CPA
               </button>}
@@ -1114,10 +1119,12 @@ export function App(): React.JSX.Element {
       {repairPreview && (
         <div className="repair-backdrop" role="presentation">
           <section
+            ref={repairDialogRef}
             className="repair-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="repair-title"
+            tabIndex={-1}
           >
             <div className="panel-header">
               <h2 id="repair-title">修复历史会话</h2>
@@ -1125,7 +1132,7 @@ export function App(): React.JSX.Element {
                 className="icon-button"
                 title="关闭"
                 aria-label="关闭会话修复"
-                onClick={() => setRepairPreview(null)}
+                onClick={closeRepairDialog}
                 disabled={busy}
               >
                 <X size={18} />
@@ -1174,7 +1181,7 @@ export function App(): React.JSX.Element {
               写入前会校验快照并创建备份，写入后会再次扫描确认结果。Codex 运行时也可修复；被占用的文件会跳过并明确提示。
             </div>
             <div className="panel-actions">
-              <button onClick={() => setRepairPreview(null)} disabled={busy}>取消</button>
+              <button onClick={closeRepairDialog} disabled={busy}>取消</button>
               <button
                 className="primary-button"
                 onClick={() => void applySessionRepair()}
@@ -1190,8 +1197,8 @@ export function App(): React.JSX.Element {
 
       {settingsOpen && (
         <div className="modal-backdrop" role="presentation">
-          <section className="settings-panel" role="dialog" aria-modal="true" aria-label="设置">
-            <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" onClick={() => setSettingsOpen(false)}><X size={18} /></button></div>
+          <section ref={settingsDialogRef} className="settings-panel" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
+            <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" aria-label="关闭设置" onClick={() => closeSettingsDialog()}><X size={18} /></button></div>
             <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
             <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
             <label>CPA 共享账号目录（Codex + Grok）<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><button title="选择 CPA 共享目录" onClick={async () => { const path = await window.codexSwitcher.chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
@@ -1251,7 +1258,7 @@ export function App(): React.JSX.Element {
                 </button>
               )}
             </section>
-            <div className="panel-actions"><button onClick={() => setSettingsOpen(false)} disabled={busy}>取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); setSettingsOpen(false) }, '设置已保存')}>保存设置</button></div>
+            <div className="panel-actions"><button onClick={() => closeSettingsDialog()} disabled={busy}>取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}>保存设置</button></div>
           </section>
         </div>
       )}

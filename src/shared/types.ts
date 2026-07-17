@@ -233,6 +233,7 @@ export interface CpaDirectoryStats {
   grokFiles: number
   duplicateFiles: number
   unrecognizedFiles: number
+  mixedFiles?: number
 }
 
 export interface ManagedFileStateResult {

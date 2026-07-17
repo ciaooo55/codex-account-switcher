@@ -1,4 +1,4 @@
-import { mkdir, readdir, stat } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +23,7 @@ import { AutoSwitchScheduler } from './services/auto-switch'
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { CodexProcessManager } from './services/codex-process'
 import { CpaCodexManager } from './services/cpa-codex-manager'
+import { readCpaDirectoryStats } from './services/cpa-directory-stats'
 import { CredentialTester } from './services/detector'
 import { CredentialExportService } from './services/exporter'
 import { GrokAccountManager } from './services/grok-account-manager'
@@ -58,6 +59,10 @@ let trayBackgroundHintShown = false
 let switchOperationActive = false
 let accountLibraryOperationActive = false
 let autoSwitchOperationActive = false
+let sessionRepairOperationActive = false
+let restartOperationActive = false
+let updateInstallOperationActive = false
+let auxiliaryLibraryOperationCount = 0
 let testController: AbortController | null = null
 let grokTestController: AbortController | null = null
 let cpaCodexTestController: AbortController | null = null
@@ -267,7 +272,9 @@ async function main(): Promise<void> {
           ? {
               compactUrl: `${testApiBase}/compact`,
               usageUrl: `${testApiBase}/usage`,
-              refreshUrl: `${testApiBase}/oauth/token`
+              refreshUrl: `${testApiBase}/oauth/token`,
+              personalAccessTokenWhoamiUrl: `${testApiBase}/personal-access-token/whoami`,
+              queryResetCredits: false
             }
           : {}),
         onCredentialUpdated: (updated) => vault.upsertMany([updated])
@@ -356,7 +363,9 @@ async function main(): Promise<void> {
             ? {
                 compactUrl: `${testApiBase}/compact`,
                 usageUrl: `${testApiBase}/usage`,
-                refreshUrl: `${testApiBase}/oauth/token`
+                refreshUrl: `${testApiBase}/oauth/token`,
+                personalAccessTokenWhoamiUrl: `${testApiBase}/personal-access-token/whoami`,
+                queryResetCredits: false
               }
             : {}),
           onCredentialUpdated: (updated) => cpaCodexManager.upsertRefreshed(updated)
@@ -417,6 +426,34 @@ async function main(): Promise<void> {
     } finally {
       accountLibraryOperationActive = false
     }
+  }
+
+  const runTrackedFileOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    auxiliaryLibraryOperationCount += 1
+    try {
+      return await operation()
+    } finally {
+      auxiliaryLibraryOperationCount -= 1
+    }
+  }
+
+  const runningTask = (): string | null => {
+    if (updateInstallOperationActive) return '更新安装正在启动'
+    if (sessionRepairOperationActive) return '历史会话修复正在运行'
+    if (restartOperationActive) return 'Codex 重启正在运行'
+    if (testController) return 'Codex 账号检测正在运行'
+    if (grokTestController) return 'Grok 账号检测正在运行'
+    if (cpaCodexTestController) return 'CPA Codex 账号检测正在运行'
+    if (switchOperationActive) return '账号切换或恢复正在运行'
+    if (accountLibraryOperationActive) return 'Codex 账号库操作正在运行'
+    if (auxiliaryLibraryOperationCount > 0) return '账号文件操作正在运行'
+    if (autoSwitchOperationActive) return '自动检测或切换正在运行'
+    return null
+  }
+
+  const assertNoRunningTask = (action: string): void => {
+    const task = runningTask()
+    if (task) throw new Error(`${task}，暂时不能${action}`)
   }
 
   const initialScan = runAccountLibraryMutation(async () => {
@@ -485,9 +522,8 @@ async function main(): Promise<void> {
   const autoSwitchScheduler = new AutoSwitchScheduler({
     getSettings: () => settingsStore.get(),
     execute: async () => {
-      if (testController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
-        throw new Error('其他账号任务正在运行，本次自动检查已跳过')
-      }
+      const task = runningTask()
+      if (task) throw new Error(`${task}，本次自动检查已跳过`)
       autoSwitchOperationActive = true
       const settings = await settingsStore.get()
       sendProgress({ active: true, done: 0, total: settings.autoSwitchAccountIds.length + 1, runningIds: [], updatedAccount: null })
@@ -592,26 +628,6 @@ async function main(): Promise<void> {
     return updateCheckPromise
   }
 
-  const cpaDirectoryStats = async (
-    directory: string,
-    codexAccounts: number,
-    grokAccounts: number
-  ) => {
-    const entries = await readdir(directory, { recursive: true, withFileTypes: true }).catch(() => [])
-    const names = entries
-      .filter((entry) => entry.isFile() && /\.(?:json(?:\.0)?|jsonl|txt|md|[cm]?js|zip)$/i.test(entry.name))
-      .map((entry) => entry.name.toLowerCase())
-    const codexFiles = names.filter((name) => name.startsWith('codex-')).length
-    const grokFiles = names.filter((name) => name.startsWith('grok-')).length
-    return {
-      credentialFiles: names.length,
-      codexFiles,
-      grokFiles,
-      duplicateFiles: Math.max(0, codexFiles - codexAccounts) + Math.max(0, grokFiles - grokAccounts),
-      unrecognizedFiles: Math.max(0, names.length - codexFiles - grokFiles)
-    }
-  }
-
   ipcMain.handle(ipcChannels.snapshot, async () => {
     await Promise.all([initialScan, initialGrokScan, initialCpaCodexScan])
     const settings = await settingsStore.get()
@@ -632,7 +648,7 @@ async function main(): Promise<void> {
       grokTesting: grokProgress,
       cpaCodexAccounts,
       cpaCodexTesting: cpaCodexProgress,
-      cpaDirectoryStats: await cpaDirectoryStats(settings.grokDirectory, cpaCodexAccounts.length, grokAccounts.length),
+      cpaDirectoryStats: await readCpaDirectoryStats(settings.grokDirectory),
       customApi
     }
   })
@@ -762,7 +778,7 @@ async function main(): Promise<void> {
       }
       outputDirectory = selected.filePaths[0]
     }
-    return exporter.exportAccounts({ ...payload, outputDirectory })
+    return runTrackedFileOperation(() => exporter.exportAccounts({ ...payload, outputDirectory }))
   })
   ipcMain.handle(ipcChannels.exportAccountsToCpa, async (_event, input: unknown) => {
     const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
@@ -772,7 +788,7 @@ async function main(): Promise<void> {
       if (!credential) throw new Error(`账号不存在：${id}`)
       return credential
     })
-    return cpaCodexManager.exportCredentials(credentials)
+    return runTrackedFileOperation(() => cpaCodexManager.exportCredentials(credentials))
   })
   ipcMain.handle(ipcChannels.test, async (_event, input: unknown) => {
     if (testController) throw new Error('已有检测任务正在运行')
@@ -809,18 +825,8 @@ async function main(): Promise<void> {
     testController?.abort()
   })
   ipcMain.handle(ipcChannels.switchAccount, async (_event, input: unknown) => {
-    if (testController) {
-      return { ok: false, message: '账号检测进行中，暂时不能切换账号', backupPath: null }
-    }
-    if (switchOperationActive) {
-      return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
-    }
-    if (accountLibraryOperationActive) {
-      return { ok: false, message: '账号库正在导入、扫描或删除，暂时不能切换账号', backupPath: null }
-    }
-    if (autoSwitchOperationActive) {
-      return { ok: false, message: '自动检测或切换正在运行', backupPath: null }
-    }
+    const task = runningTask()
+    if (task) return { ok: false, message: `${task}，暂时不能切换账号`, backupPath: null }
     const payload = z.object({ id: z.string().min(1), restart: z.boolean() }).parse(input)
     switchOperationActive = true
     try {
@@ -841,15 +847,8 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.restore, async (_event, input: unknown) => {
-    if (testController) {
-      return { ok: false, message: '账号检测进行中，暂时不能恢复配置', backupPath: null }
-    }
-    if (switchOperationActive) {
-      return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
-    }
-    if (autoSwitchOperationActive) {
-      return { ok: false, message: '自动检测或切换正在运行', backupPath: null }
-    }
+    const task = runningTask()
+    if (task) return { ok: false, message: `${task}，暂时不能恢复配置`, backupPath: null }
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
     try {
@@ -864,15 +863,8 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.restoreApiMode, async (_event, input: unknown) => {
-    if (testController) {
-      return { ok: false, message: '账号检测进行中，暂时不能恢复 API 模式', backupPath: null }
-    }
-    if (switchOperationActive) {
-      return { ok: false, message: '已有账号切换或恢复操作正在执行', backupPath: null }
-    }
-    if (autoSwitchOperationActive) {
-      return { ok: false, message: '自动检测或切换正在运行', backupPath: null }
-    }
+    const task = runningTask()
+    if (task) return { ok: false, message: `${task}，暂时不能恢复 API 模式`, backupPath: null }
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
     try {
@@ -891,9 +883,8 @@ async function main(): Promise<void> {
     return customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
   })
   ipcMain.handle(ipcChannels.customApiSwitch, async (_event, input: unknown) => {
-    if (testController || switchOperationActive || autoSwitchOperationActive) {
-      return { ok: false, message: '账号任务正在运行，暂时不能切换 API', backupPath: null }
-    }
+    const task = runningTask()
+    if (task) return { ok: false, message: `${task}，暂时不能切换 API`, backupPath: null }
     const payload = z.object({
       profile: z.object({
         baseUrl: z.string().url().max(2048),
@@ -928,7 +919,7 @@ async function main(): Promise<void> {
 
   ipcMain.handle(ipcChannels.grokScan, () => {
     if (grokTestController) throw new Error('Grok 检测正在运行')
-    return grokManager.scanDirectory()
+    return runTrackedFileOperation(() => grokManager.scanDirectory())
   })
   ipcMain.handle(ipcChannels.grokImport, async () => {
     if (grokTestController) throw new Error('Grok 检测正在运行')
@@ -937,7 +928,7 @@ async function main(): Promise<void> {
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
     })
-    return selected.canceled ? null : grokManager.importFiles(selected.filePaths)
+    return selected.canceled ? null : runTrackedFileOperation(() => grokManager.importFiles(selected.filePaths))
   })
   ipcMain.handle(ipcChannels.grokImportDirectory, async () => {
     if (grokTestController) throw new Error('Grok 检测正在运行')
@@ -947,15 +938,17 @@ async function main(): Promise<void> {
       defaultPath: settings.grokDirectory,
       properties: ['openDirectory']
     })
-    return selected.canceled ? null : grokManager.importDirectory(selected.filePaths[0])
+    return selected.canceled ? null : runTrackedFileOperation(() => grokManager.importDirectory(selected.filePaths[0]))
   })
   ipcMain.handle(ipcChannels.grokImportPasted, (_event, input: unknown) => {
     if (grokTestController) throw new Error('Grok 检测正在运行')
-    return grokManager.importPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input))
+    const text = z.string().min(1).max(100 * 1024 * 1024).parse(input)
+    return runTrackedFileOperation(() => grokManager.importPasted(text))
   })
   ipcMain.handle(ipcChannels.grokDelete, (_event, input: unknown) => {
     if (grokTestController) throw new Error('Grok 检测正在运行')
-    return grokManager.deleteAccounts(z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input))
+    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input)
+    return runTrackedFileOperation(() => grokManager.deleteAccounts(ids))
   })
   ipcMain.handle(ipcChannels.grokSetEnabled, (_event, input: unknown) => {
     if (grokTestController) throw new Error('Grok 检测正在运行')
@@ -963,7 +956,7 @@ async function main(): Promise<void> {
       ids: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000),
       enabled: z.boolean()
     }).parse(input)
-    return grokManager.setEnabled(payload.ids, payload.enabled)
+    return runTrackedFileOperation(() => grokManager.setEnabled(payload.ids, payload.enabled))
   })
   ipcMain.handle(ipcChannels.grokTest, async (_event, input: unknown) => {
     if (grokTestController) throw new Error('已有 Grok 检测任务正在运行')
@@ -994,17 +987,18 @@ async function main(): Promise<void> {
       defaultPath: settings.grokDirectory,
       properties: ['openDirectory', 'createDirectory']
     })
-    return selected.canceled ? null : grokManager.exportAccounts(payload.ids, payload.layout, selected.filePaths[0])
+    return selected.canceled
+      ? null
+      : runTrackedFileOperation(() => grokManager.exportAccounts(payload.ids, payload.layout, selected.filePaths[0]))
   })
   ipcMain.handle(ipcChannels.cpaCodexScan, () => {
     if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
-    return cpaCodexManager.scanDirectory()
+    return runTrackedFileOperation(() => cpaCodexManager.scanDirectory())
   })
   ipcMain.handle(ipcChannels.cpaCodexDelete, (_event, input: unknown) => {
     if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
-    return cpaCodexManager.deleteAccounts(
-      z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input)
-    )
+    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000).parse(input)
+    return runTrackedFileOperation(() => cpaCodexManager.deleteAccounts(ids))
   })
   ipcMain.handle(ipcChannels.cpaCodexSetEnabled, (_event, input: unknown) => {
     if (cpaCodexTestController) throw new Error('CPA Codex 检测正在运行')
@@ -1012,7 +1006,7 @@ async function main(): Promise<void> {
       ids: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000),
       enabled: z.boolean()
     }).parse(input)
-    return cpaCodexManager.setEnabled(payload.ids, payload.enabled)
+    return runTrackedFileOperation(() => cpaCodexManager.setEnabled(payload.ids, payload.enabled))
   })
   ipcMain.handle(ipcChannels.cpaCodexTest, async (_event, input: unknown) => {
     if (cpaCodexTestController) throw new Error('已有 CPA Codex 检测任务正在运行')
@@ -1042,11 +1036,18 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.cpaCodexCancelTest, () => cpaCodexTestController?.abort())
-  ipcMain.handle(ipcChannels.restart, () => processManager.restart())
-  ipcMain.handle(ipcChannels.settingsUpdate, async (_event, input: unknown) => {
-    if (testController || grokTestController || cpaCodexTestController || switchOperationActive || accountLibraryOperationActive || autoSwitchOperationActive) {
-      throw new Error('账号任务正在运行，暂时不能修改设置')
+  ipcMain.handle(ipcChannels.restart, async () => {
+    const task = runningTask()
+    if (task) return { ok: false, message: `${task}，暂时不能重启 Codex` }
+    restartOperationActive = true
+    try {
+      return await processManager.restart()
+    } finally {
+      restartOperationActive = false
     }
+  })
+  ipcMain.handle(ipcChannels.settingsUpdate, async (_event, input: unknown) => {
+    assertNoRunningTask('修改设置')
     let patch = z
       .object({
         accountDirectory: z.string().max(32_767).optional(),
@@ -1122,7 +1123,13 @@ async function main(): Promise<void> {
       .regex(/^[A-Za-z0-9_.-]+$/)
       .optional()
       .parse(input)
-    return (await sessionRepairService()).preview(targetProvider)
+    assertNoRunningTask('预览历史会话修复')
+    sessionRepairOperationActive = true
+    try {
+      return await (await sessionRepairService()).preview(targetProvider)
+    } finally {
+      sessionRepairOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.sessionRepairApply, async (_event, input: unknown) => {
     const payload = z
@@ -1131,10 +1138,11 @@ async function main(): Promise<void> {
         targetProvider: z.string().regex(/^[A-Za-z0-9_.-]+$/)
       })
       .parse(input)
-    if (testController || switchOperationActive || autoSwitchOperationActive) {
+    const task = runningTask()
+    if (task) {
       return {
         ok: false,
-        message: '账号检测、切换或恢复进行中，暂时不能修复会话',
+        message: `${task}，暂时不能修复会话`,
         targetProvider: payload.targetProvider,
         changedSessionFiles: 0,
         sqliteRowsUpdated: 0,
@@ -1142,7 +1150,12 @@ async function main(): Promise<void> {
         backupPath: null
       }
     }
-    return (await sessionRepairService()).apply(payload.snapshotId, payload.targetProvider)
+    sessionRepairOperationActive = true
+    try {
+      return await (await sessionRepairService()).apply(payload.snapshotId, payload.targetProvider)
+    } finally {
+      sessionRepairOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.updateGetState, () => updateState)
   ipcMain.handle(ipcChannels.updateCheck, () => checkForUpdates())
@@ -1193,9 +1206,15 @@ async function main(): Promise<void> {
     if (updateState.status !== 'downloaded' || !downloadedInstallerPath) {
       throw new Error('安装包尚未下载完成')
     }
-    await launchInstallerAndDelete(downloadedInstallerPath, dirname(process.execPath))
-    isQuitting = true
-    app.quit()
+    assertNoRunningTask('安装更新')
+    updateInstallOperationActive = true
+    try {
+      await launchInstallerAndDelete(downloadedInstallerPath, dirname(process.execPath))
+      isQuitting = true
+      app.quit()
+    } finally {
+      updateInstallOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.autoSwitchRun, () => autoSwitchScheduler.runNow(true))
 
