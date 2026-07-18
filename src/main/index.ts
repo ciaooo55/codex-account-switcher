@@ -63,6 +63,7 @@ let switchOperationActive = false
 let accountLibraryOperationActive = false
 let autoSwitchOperationActive = false
 let sessionRepairOperationActive = false
+let conversationDeleteOperationActive = false
 let restartOperationActive = false
 let updateInstallOperationActive = false
 let auxiliaryLibraryOperationCount = 0
@@ -495,6 +496,7 @@ async function main(): Promise<void> {
 
   const runningTask = (): string | null => {
     if (updateInstallOperationActive) return '更新安装正在启动'
+    if (conversationDeleteOperationActive) return '对话删除正在运行'
     if (sessionRepairOperationActive) return '历史会话修复正在运行'
     if (restartOperationActive) return 'Codex 重启正在运行'
     if (testController) return 'Codex 账号检测正在运行'
@@ -1381,6 +1383,16 @@ async function main(): Promise<void> {
     }
     shell.showItemInFolder(sourcePath)
     return { ok: true, message: '已打开对话文件位置' }
+  })
+  ipcMain.handle(ipcChannels.conversationDelete, async (_event, input: unknown) => {
+    const ids = z.array(z.string().min(1).max(200)).min(1).max(5_000).parse(input)
+    assertNoRunningTask('删除对话')
+    conversationDeleteOperationActive = true
+    try {
+      return await (await conversationManager()).delete(ids, (path) => shell.trashItem(path))
+    } finally {
+      conversationDeleteOperationActive = false
+    }
   })
   ipcMain.handle(ipcChannels.sessionRepairPreview, async (_event, input: unknown) => {
     const payload = z.object({

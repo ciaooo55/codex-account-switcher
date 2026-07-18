@@ -189,6 +189,7 @@ export function App(): React.JSX.Element {
   const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
   const [testMode, setTestMode] = useState<CodexTestMode>('full')
   const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'cpa' | 'automation'>('accounts')
+  const [grokViewRevision, setGrokViewRevision] = useState(0)
   const [automationKeyword, setAutomationKeyword] = useState('')
   const [automationSort, setAutomationSort] = useState<AccountSortMode>('availability_reset')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -488,7 +489,20 @@ export function App(): React.JSX.Element {
         setMessage({ kind: 'warn', text: '已取消操作' })
         return false
       }
-      await reload()
+      const mixedResult = 'grokImported' in result
+      applySnapshotPatch(mixedResult
+        ? { accounts: result.accounts, grokAccounts: result.grokAccounts }
+        : { accounts: result.accounts })
+      const codexImported = mixedResult ? result.codexImported : result.imported
+      const grokImported = mixedResult ? result.grokImported : 0
+      if (grokImported > 0) setGrokViewRevision((current) => current + 1)
+      if (codexImported > 0) {
+        setKeyword('')
+        setStatusFilter('')
+        setActiveView('accounts')
+      } else if (grokImported > 0) {
+        setActiveView('grok')
+      }
       setMessage(importMessage(result, source))
       const recognized = result.imported + result.skipped > 0
       if (recognized) closeImportDialog(true)
@@ -1027,6 +1041,7 @@ export function App(): React.JSX.Element {
       </div>
       </div> : activeView === 'grok' ? (
         <GrokLibraryPage
+          key={grokViewRevision}
           snapshot={snapshot}
           onSnapshot={(patch) => applySnapshotPatch(patch)}
           notify={(kind, text) => setMessage({ kind, text })}

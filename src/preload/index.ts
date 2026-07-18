@@ -61,6 +61,7 @@ const api: CodexSwitcherApi = {
     ipcRenderer.invoke(ipcChannels.conversationList, { query, offset, limit, force }),
   getConversation: (id) => ipcRenderer.invoke(ipcChannels.conversationDetail, id),
   revealConversation: (id) => ipcRenderer.invoke(ipcChannels.conversationReveal, id),
+  deleteConversations: (ids) => ipcRenderer.invoke(ipcChannels.conversationDelete, ids),
   previewSessionRepair: (targetProvider, threadIds) =>
     ipcRenderer.invoke(ipcChannels.sessionRepairPreview, { targetProvider, threadIds }),
   applySessionRepair: (snapshotId, targetProvider, threadIds) =>

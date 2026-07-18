@@ -412,3 +412,12 @@ export interface ConversationDetail {
   totalMessages: number
   truncated: boolean
 }
+
+export interface DeleteConversationsResult {
+  deleted: number
+  failed: number
+  deletedIds: string[]
+  indexEntriesChanged: number
+  errors: string[]
+  message: string
+}

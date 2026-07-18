@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSnapshot, CodexSwitcherApi, TestProgress } from '../../shared/ipc'
 import { App } from './App'
@@ -245,6 +245,14 @@ function api(): CodexSwitcherApi {
       truncated: false
     }),
     revealConversation: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
+    deleteConversations: vi.fn().mockResolvedValue({
+      deleted: 1,
+      failed: 0,
+      deletedIds: ['thread-one'],
+      indexEntriesChanged: 4,
+      errors: [],
+      message: '已将 1 个对话移入 Windows 回收站；已清理 4 条本地索引。'
+    }),
     previewSessionRepair: vi.fn().mockResolvedValue({
       snapshotId: 'snapshot-a',
       currentProvider: 'openai',
@@ -486,6 +494,39 @@ describe('App', () => {
 
     await waitFor(() => expect(window.codexSwitcher.importAnyDirectory).toHaveBeenCalledTimes(1))
     expect(await screen.findByText('文件夹导入完成：Codex 新增 2、重复 0；Grok 新增 0、重复 0')).toBeInTheDocument()
+  })
+
+  it('shows newly imported Codex accounts even when the previous filter hid untested rows', async () => {
+    const bridge = api()
+    const importedAccount = {
+      ...snapshot.accounts[1],
+      id: 'account-new',
+      email: 'newly-imported@example.com',
+      sourcePath: 'E:\\accounts\\newly-imported.json'
+    }
+    vi.mocked(bridge.importAnyDirectory).mockResolvedValue({
+      imported: 1,
+      skipped: 0,
+      errors: [],
+      codexImported: 1,
+      codexSkipped: 0,
+      grokImported: 0,
+      grokSkipped: 0,
+      accounts: [...snapshot.accounts, importedAccount],
+      grokAccounts: []
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.change(screen.getByLabelText('Codex 状态筛选'), { target: { value: 'valid' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索邮箱、文件或错误'), { target: { value: 'person' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
+
+    expect(await screen.findByLabelText('选择 newly-imported@example.com')).toBeInTheDocument()
+    expect(screen.getByLabelText('Codex 状态筛选')).toHaveValue('')
+    expect(screen.getByPlaceholderText('搜索邮箱、文件或错误')).toHaveValue('')
   })
 
   it('does not report success when the file picker is cancelled', async () => {
@@ -863,6 +904,42 @@ describe('App', () => {
       undefined,
       ['thread-one']
     ))
+  })
+
+  it('deletes selected Codex conversations only after confirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const bridge = window.codexSwitcher
+    vi.mocked(bridge.listConversations)
+      .mockResolvedValueOnce({
+        items: [{
+          id: 'thread-one',
+          title: '修复账号切换',
+          cwd: 'C:\\work',
+          provider: 'custom',
+          createdAt: '2026-07-15T00:00:00Z',
+          updatedAt: '2026-07-16T00:00:00Z',
+          archived: false,
+          sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
+          sizeBytes: 1024
+        }],
+        total: 1,
+        offset: 0,
+        hasMore: false
+      })
+      .mockResolvedValue({ items: [], total: 0, offset: 0, hasMore: false })
+
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.click(screen.getByRole('button', { name: '对话管理' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Codex 对话管理' })
+    await within(dialog).findByText('修复账号切换')
+    fireEvent.click(within(dialog).getByRole('button', { name: '选择 修复账号切换' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除选中' }))
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Windows 回收站'))
+    await waitFor(() => expect(bridge.deleteConversations).toHaveBeenCalledWith(['thread-one']))
+    expect(await screen.findByText(/已将 1 个对话移入 Windows 回收站/)).toBeInTheDocument()
+    confirm.mockRestore()
   })
 
   it('imports cleaned credentials pasted by the user', async () => {

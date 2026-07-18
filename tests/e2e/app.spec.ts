@@ -114,6 +114,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       `${JSON.stringify({ type: 'session_meta', payload: { id: 'thread-e2e', cwd: 'C:/work', model_provider: 'custom' } })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'unchanged' } })}\n`,
       'utf8'
     )
+    await writeFile(
+      join(codexHome, 'sessions', '2026', 'rollout-delete-e2e.jsonl'),
+      `${JSON.stringify({ type: 'session_meta', payload: { id: 'thread-delete-e2e', cwd: 'C:/delete', model_provider: 'custom' } })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'delete me' } })}\n`,
+      'utf8'
+    )
     const db = new DatabaseSync(join(codexHome, 'state_5.sqlite'))
     db.exec(
       'CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, has_user_event INTEGER, cwd TEXT)'
@@ -123,6 +128,12 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       'custom',
       0,
       'C:/old'
+    )
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run(
+      'thread-delete-e2e',
+      'custom',
+      1,
+      'C:/delete'
     )
     db.close()
     await writeFile(
@@ -438,6 +449,21 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '对话管理' }).click()
     const conversationDialog = page.getByRole('dialog', { name: 'Codex 对话管理' })
     await expect(conversationDialog).toBeVisible()
+    await conversationDialog.getByPlaceholder('搜索标题、工作区或供应商').fill('delete me')
+    const deleteConversationRow = conversationDialog.locator('.conversation-row').filter({ hasText: 'delete me' })
+    await expect(deleteConversationRow).toBeVisible()
+    await conversationDialog.getByLabel('选择 delete me').click()
+    page.once('dialog', (dialog) => dialog.accept())
+    await conversationDialog.getByRole('button', { name: '删除选中' }).click()
+    await expect(conversationDialog.getByText('已将 1 个对话移入 Windows 回收站')).toBeVisible()
+    await expect(deleteConversationRow).toHaveCount(0)
+    await expect(readFile(join(codexHome, 'sessions', '2026', 'rollout-delete-e2e.jsonl'), 'utf8')).rejects.toThrow()
+    const deletedThreadDb = new DatabaseSync(join(codexHome, 'state_5.sqlite'))
+    expect(
+      deletedThreadDb.prepare('SELECT COUNT(*) AS count FROM threads WHERE id = ?').get('thread-delete-e2e')
+    ).toMatchObject({ count: 0 })
+    deletedThreadDb.close()
+
     await conversationDialog.getByPlaceholder('搜索标题、工作区或供应商').fill('unchanged')
     const conversationRow = conversationDialog.locator('.conversation-row').filter({ hasText: 'unchanged' })
     await expect(conversationRow).toBeVisible()

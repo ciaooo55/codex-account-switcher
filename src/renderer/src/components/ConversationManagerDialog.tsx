@@ -1,11 +1,14 @@
 import {
+  CheckCircle2,
   CheckSquare2,
+  CircleAlert,
   FolderOpen,
   LoaderCircle,
   MessagesSquare,
   RefreshCw,
   Search,
   Square,
+  Trash2,
   Wrench,
   X
 } from 'lucide-react'
@@ -41,7 +44,9 @@ export function ConversationManagerDialog({ onClose, onSync }: Props): React.JSX
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [loadingList, setLoadingList] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
   const requestVersion = useRef(0)
   const detailRequestVersion = useRef(0)
   const dialogRef = useDialogFocus<HTMLElement>(true, onClose)
@@ -98,6 +103,40 @@ export function ConversationManagerDialog({ onClose, onSync }: Props): React.JSX
     })
   }
 
+  const deleteConversations = async (ids: string[]): Promise<void> => {
+    const uniqueIds = [...new Set(ids)]
+    if (uniqueIds.length === 0) return
+    const confirmed = window.confirm(
+      `确定删除选中的 ${uniqueIds.length} 个 Codex 对话吗？\n\n` +
+      '对话文件会移入 Windows 回收站，同时清理 Codex 本地索引。此操作不会删除工作区或项目文件。'
+    )
+    if (!confirmed) return
+
+    setDeleting(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.codexSwitcher.deleteConversations(uniqueIds)
+      const deleted = new Set(result.deletedIds)
+      setSelected((current) => new Set([...current].filter((id) => !deleted.has(id))))
+      if (detail && deleted.has(detail.conversation.id)) {
+        detailRequestVersion.current += 1
+        setDetail(null)
+      }
+      await load(true, false)
+      setNotice({
+        kind: result.failed > 0 || result.errors.length > 0 ? 'warn' : 'ok',
+        text: result.errors.length > 0
+          ? `${result.message} 首项：${result.errors[0]}`
+          : result.message
+      })
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="repair-backdrop" role="presentation">
       <section ref={dialogRef} className="conversation-dialog" role="dialog" aria-modal="true" aria-labelledby="conversation-title" tabIndex={-1}>
@@ -116,19 +155,29 @@ export function ConversationManagerDialog({ onClose, onSync }: Props): React.JSX
             <Search size={16} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、工作区或供应商" />
           </label>
-          <button title="重新扫描" aria-label="重新扫描对话" onClick={() => void load(true, false)} disabled={loadingList}>
+          <button title="重新扫描" aria-label="重新扫描对话" onClick={() => void load(true, false)} disabled={loadingList || deleting}>
             {loadingList ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
           </button>
           <span className="conversation-selection">已选 {selected.size}</span>
-          <button onClick={() => onSync([...selected])} disabled={selected.size === 0}>
+          <button onClick={() => onSync([...selected])} disabled={selected.size === 0 || deleting}>
             <Wrench size={16} />同步选中
           </button>
-          <button className="primary-button" onClick={() => onSync()}>
+          <button className="danger-button" onClick={() => void deleteConversations([...selected])} disabled={selected.size === 0 || deleting}>
+            {deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
+            {deleting ? '正在删除' : '删除选中'}
+          </button>
+          <button className="primary-button" onClick={() => onSync()} disabled={deleting}>
             <Wrench size={16} />同步全部
           </button>
         </div>
 
-        {error && <div className="conversation-error">{error}</div>}
+        {notice && (
+          <div className={`conversation-notice ${notice.kind}`}>
+            {notice.kind === 'ok' ? <CheckCircle2 size={15} /> : <CircleAlert size={15} />}
+            <span>{notice.text}</span>
+          </div>
+        )}
+        {error && <div className="conversation-error"><CircleAlert size={15} /><span>{error}</span></div>}
         <div className="conversation-layout">
           <aside className="conversation-list" aria-label="Codex 对话列表">
             {result?.items.map((conversation) => (
@@ -145,6 +194,7 @@ export function ConversationManagerDialog({ onClose, onSync }: Props): React.JSX
                 <button
                   className="conversation-check"
                   aria-label={`${selected.has(conversation.id) ? '取消选择' : '选择'} ${conversation.title}`}
+                  disabled={deleting}
                   onClick={(event) => { event.stopPropagation(); toggle(conversation.id) }}
                 >
                   {selected.has(conversation.id) ? <CheckSquare2 size={17} /> : <Square size={17} />}
@@ -173,9 +223,14 @@ export function ConversationManagerDialog({ onClose, onSync }: Props): React.JSX
               <>
                 <div className="conversation-detail-header">
                   <div><strong>{detail.conversation.title}</strong><span>{detail.totalMessages} 条消息</span></div>
-                  <button title="打开文件位置" aria-label="打开对话文件位置" onClick={() => void window.codexSwitcher.revealConversation(detail.conversation.id)}>
-                    <FolderOpen size={16} />
-                  </button>
+                  <div className="conversation-detail-actions">
+                    <button title="打开文件位置" aria-label="打开对话文件位置" disabled={deleting} onClick={() => void window.codexSwitcher.revealConversation(detail.conversation.id)}>
+                      <FolderOpen size={16} />
+                    </button>
+                    <button className="danger-button" title="删除当前对话" aria-label="删除当前对话" disabled={deleting} onClick={() => void deleteConversations([detail.conversation.id])}>
+                      {deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
+                    </button>
+                  </div>
                 </div>
                 {detail.truncated && <div className="conversation-warning">对话较大，仅显示前 {detail.messages.length} 条和限定长度的正文。</div>}
                 <div className="conversation-messages">

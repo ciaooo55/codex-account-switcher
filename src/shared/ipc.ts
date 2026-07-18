@@ -13,6 +13,7 @@ import type {
   CredentialExportResult,
   ConversationDetail,
   ConversationListResult,
+  DeleteConversationsResult,
   DeleteAccountsResult,
   CustomApiProfileInput,
   CustomApiProfileSummary,
@@ -149,6 +150,7 @@ export interface CodexSwitcherApi {
   listConversations(query?: string, offset?: number, limit?: number, force?: boolean): Promise<ConversationListResult>
   getConversation(id: string): Promise<ConversationDetail>
   revealConversation(id: string): Promise<RestartResult>
+  deleteConversations(ids: string[]): Promise<DeleteConversationsResult>
   previewSessionRepair(targetProvider?: string, threadIds?: string[]): Promise<SessionRepairPreview>
   applySessionRepair(snapshotId: string, targetProvider: string, threadIds?: string[]): Promise<SessionRepairResult>
   getUpdateState(): Promise<UpdateState>
@@ -221,6 +223,7 @@ export const ipcChannels = {
   conversationList: 'sessions:list',
   conversationDetail: 'sessions:detail',
   conversationReveal: 'sessions:reveal',
+  conversationDelete: 'sessions:delete',
   sessionRepairPreview: 'sessions:repair-preview',
   sessionRepairApply: 'sessions:repair-apply',
   testProgress: 'accounts:test-progress',
