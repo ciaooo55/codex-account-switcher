@@ -238,6 +238,70 @@ describe('parseCredentialText', () => {
     })
   })
 
+  it('parses a large Sub2API admin export without applying the static JS node limit', () => {
+    const clientId = 'app_custom_sub2api_client'
+    const accounts = Array.from({ length: 751 }, (_, index) => ({
+      name: `large-${index}@example.com`,
+      platform: 'openai',
+      type: 'oauth',
+      priority: 1,
+      concurrency: 10,
+      credentials: {
+        access_token: jwt({
+          sub: `large-user-${index}`,
+          exp: 1_900_000_000,
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: `large-workspace-${index}`,
+            chatgpt_plan_type: 'k12'
+          }
+        }),
+        refresh_token: `large-refresh-${index}`,
+        chatgpt_account_id: `large-workspace-${index}`,
+        client_id: clientId,
+        expires_at: 1_900_000_000,
+        model_mapping: {
+          'gpt-5.2': 'gpt-5.2',
+          'gpt-5.3-codex': 'gpt-5.3-codex',
+          'gpt-5.4': 'gpt-5.4',
+          'gpt-5.4-mini': 'gpt-5.4-mini',
+          'gpt-5.5': 'gpt-5.5',
+          'gpt-5.6-sol': 'gpt-5.6-sol',
+          'gpt-5.6-luna': 'gpt-5.6-luna',
+          'gpt-5.6-terra': 'gpt-5.6-terra'
+        }
+      }
+    }))
+
+    const result = parseCredentialText(JSON.stringify({
+      type: 'sub2api-data',
+      version: 1,
+      exported_at: '2026-07-18T09:57:29Z',
+      proxies: [],
+      accounts
+    }), {
+      sourcePath: 'sub2api-admin-data-payload.json',
+      format: 'json'
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.credentials).toHaveLength(751)
+    expect(result.credentials[0]).toMatchObject({
+      email: 'large-0@example.com',
+      accountId: 'large-workspace-0',
+      subject: 'large-user-0',
+      planType: 'k12',
+      refreshToken: 'large-refresh-0',
+      oauthClientId: clientId,
+      sourceDialect: 'sub2api'
+    })
+    expect(result.credentials[750]).toMatchObject({
+      email: 'large-750@example.com',
+      accountId: 'large-workspace-750',
+      subject: 'large-user-750',
+      oauthClientId: clientId
+    })
+  })
+
   it('parses legacy and API-wrapped Sub2API bundles', () => {
     const result = parseCredentialText(
       JSON.stringify({

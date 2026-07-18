@@ -523,6 +523,100 @@ describe('AccountManager', () => {
     })
   })
 
+  it('imports a large Sub2API bundle directly without exchanging its refresh tokens', async () => {
+    const fixture = await setup()
+    const sourcePath = join(fixture.root, 'sub2api-admin-data-payload.json')
+    const clientId = 'app_custom_sub2api_client'
+    const accounts = Array.from({ length: 751 }, (_, index) => ({
+      name: `bundle-${index}@example.com`,
+      platform: 'openai',
+      type: 'oauth',
+      credentials: {
+        access_token: jwt({
+          sub: `bundle-user-${index}`,
+          exp: 1_900_000_000,
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: `bundle-workspace-${index}`,
+            chatgpt_plan_type: 'k12'
+          }
+        }),
+        refresh_token: `bundle-refresh-${index}`,
+        chatgpt_account_id: `bundle-workspace-${index}`,
+        client_id: clientId,
+        model_mapping: {
+          'gpt-5.2': 'gpt-5.2',
+          'gpt-5.3-codex': 'gpt-5.3-codex',
+          'gpt-5.4': 'gpt-5.4',
+          'gpt-5.4-mini': 'gpt-5.4-mini',
+          'gpt-5.5': 'gpt-5.5',
+          'gpt-5.6-sol': 'gpt-5.6-sol',
+          'gpt-5.6-luna': 'gpt-5.6-luna',
+          'gpt-5.6-terra': 'gpt-5.6-terra'
+        }
+      }
+    }))
+    await writeFile(sourcePath, JSON.stringify({
+      type: 'sub2api-data',
+      version: 1,
+      accounts
+    }))
+    const refreshTokenImporter = {
+      resolve: vi.fn().mockResolvedValue({
+        credentials: [],
+        errors: ['should not be called'],
+        total: 751
+      })
+    }
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      refreshTokenImporter,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.importFiles([sourcePath])
+
+    expect(result).toMatchObject({ imported: 751, skipped: 0, errors: [] })
+    expect(refreshTokenImporter.resolve).not.toHaveBeenCalled()
+    expect(await fixture.vault.list()).toHaveLength(751)
+    expect((await fixture.vault.list())[0].oauthClientId).toBe(clientId)
+  })
+
+  it('does not exchange refresh tokens when a structured access-token file exceeds parser limits', async () => {
+    const fixture = await setup()
+    const accessToken = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({
+      sub: 'deep-structured-user'
+    })).toString('base64url')}.signature`
+    let nested: unknown = {
+      access_token: accessToken,
+      refresh_token: 'rt.1.must-not-be-exchanged'
+    }
+    for (let index = 0; index < 80; index += 1) nested = { nested }
+    const refreshTokenImporter = {
+      resolve: vi.fn().mockResolvedValue({
+        credentials: [],
+        errors: ['should not be called'],
+        total: 1
+      })
+    }
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      refreshTokenImporter,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.importPasted(JSON.stringify(nested))
+
+    expect(result).toMatchObject({ imported: 0, skipped: 0 })
+    expect(result.errors).toHaveLength(1)
+    expect(refreshTokenImporter.resolve).not.toHaveBeenCalled()
+  })
+
   it('marks the credential matching the current auth.json as active', async () => {
     const fixture = await setup()
     const idToken = jwt({ sub: 'user-a', email: 'person@example.com' })

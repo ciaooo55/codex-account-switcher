@@ -31,7 +31,8 @@ const ACCESS_TOKEN_KEYS = [
 const REFRESH_TOKEN_KEYS = ['refresh_token', 'refreshToken'] as const
 const ID_TOKEN_KEYS = ['id_token', 'idToken'] as const
 const MAX_PARSE_DEPTH = 64
-const MAX_PARSE_NODES = 10_000
+const MAX_CREDENTIAL_VALUE_NODES = 250_000
+const MAX_STATIC_JS_NODES = 10_000
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -433,7 +434,7 @@ function validateValueLimits(values: readonly unknown[]): void {
       throw new RangeError('Credential data exceeds maximum depth')
     }
     nodes += 1
-    if (nodes > MAX_PARSE_NODES) {
+    if (nodes > MAX_CREDENTIAL_VALUE_NODES) {
       throw new RangeError('Credential data exceeds maximum node count')
     }
 
@@ -759,7 +760,7 @@ function validateAstLimits(program: AstNode): void {
       throw new RangeError('Static JavaScript exceeds maximum depth')
     }
     nodes += 1
-    if (nodes > MAX_PARSE_NODES) {
+    if (nodes > MAX_STATIC_JS_NODES) {
       throw new RangeError('Static JavaScript exceeds maximum node count')
     }
 

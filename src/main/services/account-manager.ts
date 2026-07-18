@@ -97,6 +97,8 @@ const MAX_ZIP_ENTRY_BYTES = 20 * 1024 * 1024
 const MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_SOURCE_FILE_BYTES = 100 * 1024 * 1024
 const SWITCH_REFRESH_GRACE_MS = 2 * 60 * 1_000
+const EMBEDDED_ACCESS_TOKEN_PATTERN =
+  /["']?(?:access_token|accessToken|personal_access_token|personalAccessToken|OPENAI_ACCESS_TOKEN|token)["']?\s*[:=]\s*["']?\s*(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|at-[A-Za-z0-9._~+/=-]{8,})/i
 const STATUSES_REQUIRING_SWITCH_VALIDATION = new Set<TestResult['status']>([
   'workspace_deactivated',
   'no_permission',
@@ -109,6 +111,10 @@ function credentialNeedsRefresh(credential: NormalizedCredential, now = Date.now
   if (!credential.accessExpiresAt) return false
   const expiresAt = Date.parse(credential.accessExpiresAt)
   return Number.isFinite(expiresAt) && expiresAt <= now + SWITCH_REFRESH_GRACE_MS
+}
+
+function shouldAttemptRefreshTokenImport(text: string): boolean {
+  return !EMBEDDED_ACCESS_TOKEN_PATTERN.test(text)
 }
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
@@ -223,7 +229,11 @@ export class AccountManager {
       format: 'paste'
     })
     let recognized = parsed.credentials.length
-    if (parsed.credentials.length === 0 && this.options.refreshTokenImporter) {
+    if (
+      parsed.credentials.length === 0 &&
+      this.options.refreshTokenImporter &&
+      shouldAttemptRefreshTokenImport(text)
+    ) {
       const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto')
       if (refreshed.total > 0) {
         parsed = refreshed
@@ -578,7 +588,11 @@ export class AccountManager {
       if (metadata.size > MAX_SOURCE_FILE_BYTES) throw new Error('账号文件超过 100MB 安全限制')
       const text = await readFile(path, 'utf8')
       const parsed = parseCredentialText(text, { sourcePath: path, format })
-      if (parsed.credentials.length > 0 || !this.options.refreshTokenImporter) return parsed
+      if (
+        parsed.credentials.length > 0 ||
+        !this.options.refreshTokenImporter ||
+        !shouldAttemptRefreshTokenImport(text)
+      ) return parsed
       const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto', {
         sourcePath: path,
         format
@@ -613,13 +627,17 @@ export class AccountManager {
     for (const [entryName, bytes] of Object.entries(entries)) {
       const entryFormat = formatForPath(entryName)
       if (!entryFormat || entryFormat === 'zip') continue
-      const parsed = parseCredentialText(strFromU8(bytes), {
+      const entryText = strFromU8(bytes)
+      const parsed = parseCredentialText(entryText, {
         sourcePath: `${path}::${entryName}`,
         format: entryFormat
       })
-      const resolved = parsed.credentials.length > 0 || !this.options.refreshTokenImporter
+      const resolved =
+        parsed.credentials.length > 0 ||
+        !this.options.refreshTokenImporter ||
+        !shouldAttemptRefreshTokenImport(entryText)
         ? parsed
-        : await this.options.refreshTokenImporter.resolve(strFromU8(bytes), 'auto', {
+        : await this.options.refreshTokenImporter.resolve(entryText, 'auto', {
             sourcePath: `${path}::${entryName}`,
             format: entryFormat
           })

@@ -1,6 +1,7 @@
 import type { LibraryImportResult, ScanResult, GrokScanResult } from '../../shared/types'
 
 const NO_CODEX_CREDENTIAL = /^No usable credentials found in /i
+const NO_GROK_CREDENTIAL = /^未在 .+ 中找到 Grok 凭据$/
 
 export function combineLibraryImportResults(
   codex: ScanResult,
@@ -10,7 +11,7 @@ export function combineLibraryImportResults(
     grok.imported + grok.skipped
   const recognized = recognizedCount > 0
   const errors = [...codex.errors, ...grok.errors].filter((error) =>
-    !recognized || !NO_CODEX_CREDENTIAL.test(error)
+    !recognized || (!NO_CODEX_CREDENTIAL.test(error) && !NO_GROK_CREDENTIAL.test(error))
   )
 
   return {
