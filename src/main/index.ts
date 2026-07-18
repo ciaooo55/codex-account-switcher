@@ -19,7 +19,7 @@ import { z } from 'zod'
 import { ipcChannels, type CpaCodexTestProgress, type GrokTestProgress, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
-import { AutoSwitchScheduler } from './services/auto-switch'
+import { AutoSwitchScheduler, shouldNotifyAutoSwitchCompletion } from './services/auto-switch'
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { discoverCpaDirectory } from './services/cpa-paths'
 import { CodexProcessManager } from './services/codex-process'
@@ -609,11 +609,8 @@ async function main(): Promise<void> {
     },
     onState: (state) => {
       mainWindow?.webContents.send(ipcChannels.autoSwitchState, state)
-      if (previousAutoSwitchState?.running && !state.running && !isQuitting) {
-        showTrayMessage(
-          state.lastSwitchedAccountId ? '自动切换完成' : '后台检查完成',
-          state.lastMessage
-        )
+      if (shouldNotifyAutoSwitchCompletion(previousAutoSwitchState, state, isQuitting)) {
+        showTrayMessage('自动切换完成', state.lastMessage)
       }
       previousAutoSwitchState = state
       void rebuildTrayMenu()

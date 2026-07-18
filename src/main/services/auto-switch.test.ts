@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AppSettings } from '../../shared/types'
-import { AutoSwitchScheduler } from './auto-switch'
+import { AutoSwitchScheduler, shouldNotifyAutoSwitchCompletion } from './auto-switch'
 
 function settings(enabled = true): AppSettings {
   return {
@@ -22,6 +22,31 @@ function settings(enabled = true): AppSettings {
 }
 
 describe('AutoSwitchScheduler', () => {
+  it('only requests a tray notification after an account was actually switched', () => {
+    const running = {
+      enabled: true,
+      running: true,
+      nextCheckAt: null,
+      lastCheckAt: null,
+      lastMessage: '正在检查当前账号',
+      lastSwitchedAccountId: null
+    }
+    const unchanged = {
+      ...running,
+      running: false,
+      lastMessage: '当前账号无需切换'
+    }
+    const switched = {
+      ...unchanged,
+      lastMessage: '已自动切换账号',
+      lastSwitchedAccountId: 'b'.repeat(64)
+    }
+
+    expect(shouldNotifyAutoSwitchCompletion(running, unchanged)).toBe(false)
+    expect(shouldNotifyAutoSwitchCompletion(running, switched)).toBe(true)
+    expect(shouldNotifyAutoSwitchCompletion(running, switched, true)).toBe(false)
+  })
+
   it('publishes a checked result and schedules the next run', async () => {
     vi.useFakeTimers()
     const states = [] as ReturnType<AutoSwitchScheduler['getState']>[]

@@ -7,6 +7,14 @@ interface AutoSwitchSchedulerOptions {
   now?: () => Date
 }
 
+export function shouldNotifyAutoSwitchCompletion(
+  previous: AutoSwitchState | null,
+  current: AutoSwitchState,
+  quitting = false
+): boolean {
+  return !quitting && Boolean(previous?.running && !current.running && current.lastSwitchedAccountId)
+}
+
 export class AutoSwitchScheduler {
   private timer: NodeJS.Timeout | null = null
   private stopped = false
