@@ -12,6 +12,7 @@ import {
   KeyRound,
   ListChecks,
   LoaderCircle,
+  MessagesSquare,
   MoreHorizontal,
   Moon,
   PackageOpen,
@@ -52,6 +53,7 @@ import {
   CODEX_TEST_MODE_SUCCESS,
   CodexTestModeControl
 } from './components/CodexTestModeControl'
+import { ConversationManagerDialog } from './components/ConversationManagerDialog'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { CpaPage, GrokLibraryPage } from './GrokPage'
 import { useDialogFocus } from './hooks/useDialogFocus'
@@ -195,6 +197,8 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
+  const [repairThreadIds, setRepairThreadIds] = useState<string[] | undefined>(undefined)
+  const [conversationOpen, setConversationOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteImportMode, setPasteImportMode] = useState<PasteImportMode>('auto')
@@ -227,7 +231,10 @@ export function App(): React.JSX.Element {
     if (!busy) setExportDialog(null)
   }
   const closeRepairDialog = (): void => {
-    if (!busy) setRepairPreview(null)
+    if (!busy) {
+      setRepairPreview(null)
+      setRepairThreadIds(undefined)
+    }
   }
   const closeSettingsDialog = (force = false): void => {
     if (busy && !force) return
@@ -739,11 +746,18 @@ export function App(): React.JSX.Element {
     void action()
   }
 
-  const openSessionRepair = async (targetProvider?: string): Promise<void> => {
+  const openSessionRepair = async (
+    targetProvider?: string,
+    threadIds?: string[]
+  ): Promise<void> => {
     setBusy(true)
     setMessage(null)
     try {
-      setRepairPreview(await window.codexSwitcher.previewSessionRepair(targetProvider))
+      const selectedThreadIds = threadIds ?? repairThreadIds
+      setRepairThreadIds(selectedThreadIds)
+      setRepairPreview(selectedThreadIds?.length
+        ? await window.codexSwitcher.previewSessionRepair(targetProvider, selectedThreadIds)
+        : await window.codexSwitcher.previewSessionRepair(targetProvider))
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -756,12 +770,19 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.applySessionRepair(
-        repairPreview.snapshotId,
-        repairPreview.targetProvider
-      )
+      const result = repairThreadIds?.length
+        ? await window.codexSwitcher.applySessionRepair(
+            repairPreview.snapshotId,
+            repairPreview.targetProvider,
+            repairThreadIds
+          )
+        : await window.codexSwitcher.applySessionRepair(
+            repairPreview.snapshotId,
+            repairPreview.targetProvider
+          )
       if (!result.ok) throw new Error(result.message)
       setRepairPreview(null)
+      setRepairThreadIds(undefined)
       setMessage({ kind: 'ok', text: result.message })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
@@ -919,6 +940,9 @@ export function App(): React.JSX.Element {
         </button>
         <button onClick={() => void openSessionRepair()} disabled={busy}>
           <Wrench size={16} />修复历史会话
+        </button>
+        <button onClick={() => setConversationOpen(true)} disabled={busy}>
+          <MessagesSquare size={16} />对话管理
         </button>
         <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Trash2 size={16} />删除选中
@@ -1295,6 +1319,16 @@ export function App(): React.JSX.Element {
         </div>
       )}
 
+      {conversationOpen && (
+        <ConversationManagerDialog
+          onClose={() => setConversationOpen(false)}
+          onSync={(threadIds) => {
+            setConversationOpen(false)
+            void openSessionRepair(undefined, threadIds)
+          }}
+        />
+      )}
+
       {repairPreview && (
         <div className="repair-backdrop" role="presentation">
           <section
@@ -1323,7 +1357,7 @@ export function App(): React.JSX.Element {
                 aria-label="目标供应商"
                 value={repairPreview.targetProvider}
                 disabled={busy}
-                onChange={(event) => void openSessionRepair(event.target.value)}
+                onChange={(event) => void openSessionRepair(event.target.value, repairThreadIds)}
               >
                 {repairPreview.availableProviders.map((provider) => (
                   <option key={provider} value={provider}>
@@ -1357,7 +1391,9 @@ export function App(): React.JSX.Element {
               </div>
             )}
             <div className="repair-note">
-              写入前会校验快照并创建备份，写入后会再次扫描确认结果。Codex 运行时也可修复；被占用的文件会跳过并明确提示。
+              {repairThreadIds?.length
+                ? `将同步选中的 ${repairThreadIds.length} 个对话。`
+                : '将同步全部历史对话。'}写入前会校验快照并创建备份，写入后会再次扫描确认结果。正文采用流式处理，不会一次载入全部会话。
             </div>
             <div className="panel-actions">
               <button onClick={closeRepairDialog} disabled={busy}>取消</button>

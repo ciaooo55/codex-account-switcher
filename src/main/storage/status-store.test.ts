@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -47,6 +47,21 @@ describe('StatusStore', () => {
     await Promise.all([store.removeMany(['account-a']), store.set(result('account-c'))])
 
     expect(Object.keys(await store.getAll()).sort()).toEqual(['account-b', 'account-c'])
+  })
+
+  it('buffers batch progress in memory and persists all results with one explicit flush', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-status-'))
+    tempDirs.push(dir)
+    const path = join(dir, 'status.json')
+    const store = new StatusStore(path, 60_000)
+    const results = Array.from({ length: 40 }, (_, index) => result(`buffered-${index}`))
+
+    await Promise.all(results.map((item) => store.setBuffered(item)))
+    expect(Object.keys(await store.getAll())).toHaveLength(40)
+    await expect(readFile(path, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await store.flush()
+    expect(Object.keys(await new StatusStore(path).getAll())).toHaveLength(40)
   })
 
   it('ignores malformed individual status entries', async () => {

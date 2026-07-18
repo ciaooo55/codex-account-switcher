@@ -379,3 +379,36 @@ export interface SessionRepairResult {
   globalStateKeysUpdated: number
   backupPath: string | null
 }
+
+export interface ConversationSummary {
+  id: string
+  title: string
+  cwd: string | null
+  provider: string
+  createdAt: string | null
+  updatedAt: string
+  archived: boolean
+  sourcePath: string
+  sizeBytes: number
+}
+
+export interface ConversationMessage {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  timestamp: string | null
+}
+
+export interface ConversationListResult {
+  items: ConversationSummary[]
+  total: number
+  offset: number
+  hasMore: boolean
+}
+
+export interface ConversationDetail {
+  conversation: ConversationSummary
+  messages: ConversationMessage[]
+  totalMessages: number
+  truncated: boolean
+}

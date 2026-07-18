@@ -141,6 +141,43 @@ async function collectSupportedFiles(directory: string): Promise<string[]> {
   return files.sort((left, right) => left.localeCompare(right))
 }
 
+function summarizeAccount(
+  credential: NormalizedCredential,
+  status: TestResult | undefined,
+  activeId: string | null
+): AccountSummary {
+  return {
+    id: credential.id,
+    email: credential.email,
+    workspaceId: credential.accountId,
+    planType: status?.usage?.planType ?? credential.planType,
+    sourcePath: credential.sourcePath,
+    sourceFormat: credential.sourceFormat,
+    sourceDialect: credential.sourceDialect,
+    canRefresh: credential.canRefresh,
+    switchable: Boolean(
+      credential.authKind === 'personal_access_token' ||
+      credential.accessToken.startsWith('at-') ||
+      (credential.idToken && credential.refreshToken) ||
+      credential.accountId
+    ),
+    switchMode: credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')
+      ? 'personal_access_token'
+      : credential.idToken && credential.refreshToken
+        ? 'oauth'
+        : credential.accountId
+          ? 'external'
+          : 'test-only',
+    accessExpiresAt: credential.accessExpiresAt,
+    lastRefresh: credential.lastRefresh,
+    status: status?.status ?? 'untested',
+    detail: status?.detail ?? '未测试',
+    lastCheckedAt: status?.checkedAt ?? null,
+    usage: status?.usage ?? null,
+    active: credential.id === activeId
+  }
+}
+
 export class AccountManager {
   private readonly managedLibrary: ManagedCredentialLibrary | null
 
@@ -353,41 +390,9 @@ export class AccountManager {
     const settings = await this.options.settings()
     const credentials = await this.options.vault.list()
     const statuses = await this.options.statusStore.getAll()
-    const activeId = await this.activeCredentialId(settings.authPath)
+    const activeId = await this.activeCredentialId(settings.authPath, credentials)
     return credentials
-      .map((credential) => {
-        const status = statuses[credential.id]
-        return {
-          id: credential.id,
-          email: credential.email,
-          workspaceId: credential.accountId,
-          planType: status?.usage?.planType ?? credential.planType,
-          sourcePath: credential.sourcePath,
-          sourceFormat: credential.sourceFormat,
-          sourceDialect: credential.sourceDialect,
-          canRefresh: credential.canRefresh,
-          switchable: Boolean(
-            credential.authKind === 'personal_access_token' ||
-            credential.accessToken.startsWith('at-') ||
-            (credential.idToken && credential.refreshToken) ||
-            credential.accountId
-          ),
-          switchMode: credential.authKind === 'personal_access_token' || credential.accessToken.startsWith('at-')
-            ? 'personal_access_token'
-            : credential.idToken && credential.refreshToken
-              ? 'oauth'
-              : credential.accountId
-                ? 'external'
-                : 'test-only',
-          accessExpiresAt: credential.accessExpiresAt,
-          lastRefresh: credential.lastRefresh,
-          status: status?.status ?? 'untested',
-          detail: status?.detail ?? '未测试',
-          lastCheckedAt: status?.checkedAt ?? null,
-          usage: status?.usage ?? null,
-          active: credential.id === activeId
-        } satisfies AccountSummary
-      })
+      .map((credential) => summarizeAccount(credential, statuses[credential.id], activeId))
       .sort((left, right) => {
         if (left.active !== right.active) return left.active ? -1 : 1
         return (left.email ?? left.sourcePath).localeCompare(right.email ?? right.sourcePath)
@@ -400,10 +405,12 @@ export class AccountManager {
   ): Promise<BatchTestResult> {
     const settings = await this.options.settings()
     const idSet = ids ? new Set(ids) : null
-    const credentials = (await this.options.vault.list()).filter(
+    const allCredentials = await this.options.vault.list()
+    const credentials = allCredentials.filter(
       (credential) => !idSet || idSet.has(credential.id)
     )
     const results: TestResult[] = []
+    const planUpdates = new Map<string, NormalizedCredential>()
     let cursor = 0
     let done = 0
     const total = credentials.length
@@ -411,6 +418,7 @@ export class AccountManager {
     const previousStatuses = options.mode === 'refresh'
       ? await this.options.statusStore.getAll()
       : {}
+    const activeId = await this.activeCredentialId(settings.authPath, allCredentials)
     options.onProgress?.({ done, total, runningIds: [] })
 
     const worker = async (): Promise<void> => {
@@ -441,23 +449,29 @@ export class AccountManager {
           ? { ...result, usage: previous.usage }
           : result
         results.push(storedResult)
-        await this.updateCredentialPlan(credential.id, storedResult)
-        await this.options.statusStore.set(storedResult)
+        const latest = (await this.options.vault.get(credential.id)) ?? credential
+        const planType = storedResult.usage?.planType?.trim()
+        const summarizedCredential = planType && latest.planType !== planType
+          ? { ...latest, planType }
+          : latest
+        if (summarizedCredential !== latest) {
+          planUpdates.set(summarizedCredential.id, summarizedCredential)
+        }
+        await this.options.statusStore.setBuffered(storedResult)
         runningIds.delete(credential.id)
         done += 1
-        const updatedAccount = (await this.listAccounts()).find(
-          (account) => account.id === credential.id
-        )
         options.onProgress?.({
           done,
           total,
           runningIds: [...runningIds],
-          ...(updatedAccount ? { updatedAccount } : {})
+          updatedAccount: summarizeAccount(summarizedCredential, storedResult, activeId)
         })
       }
     }
     const concurrency = Math.max(1, Math.min(12, settings.concurrency))
     await Promise.all(Array.from({ length: Math.min(concurrency, total) }, () => worker()))
+    await this.options.statusStore.flush()
+    if (planUpdates.size > 0) await this.options.vault.upsertMany([...planUpdates.values()])
     await this.persistVaultLibrary()
     return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
   }
@@ -497,72 +511,82 @@ export class AccountManager {
     if (!activeCredential) {
       return { ok: false, switched: false, message: '当前账号已不在凭证库中', checkedAccountIds, switchedAccountId: null }
     }
+    const planUpdates = new Map<string, NormalizedCredential>()
     const notify = async (id: string, result: TestResult): Promise<void> => {
       checkedAccountIds.push(id)
-      await this.updateCredentialPlan(id, result)
-      await this.options.statusStore.set(result)
-      await this.persistVaultLibrary()
-      const updatedAccount = (await this.listAccounts()).find((account) => account.id === id)
+      const latest = await this.options.vault.get(id)
+      const planType = result.usage?.planType?.trim()
+      const summarized = latest && planType && latest.planType !== planType
+        ? { ...latest, planType }
+        : latest
+      if (summarized && summarized !== latest) planUpdates.set(id, summarized)
+      await this.options.statusStore.setBuffered(result)
       onProgress?.({
         done: checkedAccountIds.length,
         total: Math.max(1, candidateIds.length + 1),
         runningIds: [],
-        ...(updatedAccount ? { updatedAccount } : {})
+        ...(summarized ? { updatedAccount: summarizeAccount(summarized, result, active.id) } : {})
       })
     }
-    onProgress?.({ done: 0, total: Math.max(1, candidateIds.length + 1), runningIds: [active.id] })
-    const activeResult = await this.options.tester.test(activeCredential, undefined, 'full')
-    await notify(active.id, activeResult)
-    const triggerStatuses = new Set<TestResult['status']>([
-      'quota_exhausted',
-      'quota_exhausted_5h',
-      'quota_exhausted_weekly',
-      'workspace_deactivated',
-      'no_permission',
-      'invalid',
-      'non_refreshable'
-    ])
-    if (!triggerStatuses.has(activeResult.status)) {
+    try {
+      onProgress?.({ done: 0, total: Math.max(1, candidateIds.length + 1), runningIds: [active.id] })
+      const activeResult = await this.options.tester.test(activeCredential, undefined, 'full')
+      await notify(active.id, activeResult)
+      const triggerStatuses = new Set<TestResult['status']>([
+        'quota_exhausted',
+        'quota_exhausted_5h',
+        'quota_exhausted_weekly',
+        'workspace_deactivated',
+        'no_permission',
+        'invalid',
+        'non_refreshable'
+      ])
+      if (!triggerStatuses.has(activeResult.status)) {
+        return {
+          ok: true,
+          switched: false,
+          message: `当前账号无需切换：${activeResult.detail}`,
+          checkedAccountIds,
+          switchedAccountId: null
+        }
+      }
+
+      const uniqueCandidates = [...new Set(candidateIds)].filter((id) => id !== active.id)
+      for (const id of uniqueCandidates) {
+        const summary = accounts.find((account) => account.id === id)
+        if (!summary?.switchable) continue
+        const credential = await this.options.vault.get(id)
+        if (!credential) continue
+        onProgress?.({
+          done: checkedAccountIds.length,
+          total: Math.max(1, uniqueCandidates.length + 1),
+          runningIds: [id]
+        })
+        const result = await this.options.tester.test(credential, undefined, 'full')
+        await notify(id, result)
+        if (result.status !== 'valid') continue
+        const latestCredential = (await this.options.vault.get(id)) ?? credential
+        const switched = await this.options.switcher.switchTo(latestCredential)
+        if (!switched.ok) continue
+        return {
+          ok: true,
+          switched: true,
+          message: `${activeResult.detail}；已自动切换到 ${summary.email ?? '候选账号'}`,
+          checkedAccountIds,
+          switchedAccountId: id
+        }
+      }
       return {
-        ok: true,
+        ok: false,
         switched: false,
-        message: `当前账号无需切换：${activeResult.detail}`,
+        message: `${activeResult.detail}；选定账号池中没有可用凭证`,
         checkedAccountIds,
         switchedAccountId: null
       }
-    }
-
-    const uniqueCandidates = [...new Set(candidateIds)].filter((id) => id !== active.id)
-    for (const id of uniqueCandidates) {
-      const summary = accounts.find((account) => account.id === id)
-      if (!summary?.switchable) continue
-      const credential = await this.options.vault.get(id)
-      if (!credential) continue
-      onProgress?.({
-        done: checkedAccountIds.length,
-        total: Math.max(1, uniqueCandidates.length + 1),
-        runningIds: [id]
-      })
-      const result = await this.options.tester.test(credential, undefined, 'full')
-      await notify(id, result)
-      if (result.status !== 'valid') continue
-      const latestCredential = (await this.options.vault.get(id)) ?? credential
-      const switched = await this.options.switcher.switchTo(latestCredential)
-      if (!switched.ok) continue
-      return {
-        ok: true,
-        switched: true,
-        message: `${activeResult.detail}；已自动切换到 ${summary.email ?? '候选账号'}`,
-        checkedAccountIds,
-        switchedAccountId: id
-      }
-    }
-    return {
-      ok: false,
-      switched: false,
-      message: `${activeResult.detail}；选定账号池中没有可用凭证`,
-      checkedAccountIds,
-      switchedAccountId: null
+    } finally {
+      await this.options.statusStore.flush()
+      if (planUpdates.size > 0) await this.options.vault.upsertMany([...planUpdates.values()])
+      if (checkedAccountIds.length > 0) await this.persistVaultLibrary()
     }
   }
 
@@ -681,7 +705,10 @@ export class AccountManager {
     await this.options.vault.upsertMany([{ ...current, planType }])
   }
 
-  private async activeCredentialId(authPath: string): Promise<string | null> {
+  private async activeCredentialId(
+    authPath: string,
+    credentials?: readonly NormalizedCredential[]
+  ): Promise<string | null> {
     try {
       const text = await readFile(authPath, 'utf8')
       const parsed = parseCredentialText(text, {
@@ -690,7 +717,7 @@ export class AccountManager {
       })
       const active = parsed.credentials[0]
       if (!active) return null
-      const match = (await this.options.vault.list()).find(
+      const match = (credentials ?? await this.options.vault.list()).find(
         (credential) => credential.accessToken === active.accessToken
       )
       return match?.id ?? active.id

@@ -123,10 +123,12 @@ function validAuthDocument(value: unknown): boolean {
   if (typeof tokens.id_token !== 'string' || !tokens.id_token.trim()) return false
   if (typeof tokens.access_token !== 'string' || !tokens.access_token.trim()) return false
   if (typeof tokens.refresh_token !== 'string') return false
-  if (auth.auth_mode === 'chatgptAuthTokens') {
-    return tokens.refresh_token === '' && typeof tokens.account_id === 'string' && Boolean(tokens.account_id.trim())
-  }
-  return auth.auth_mode === 'chatgpt' && Boolean(tokens.refresh_token.trim())
+  if (auth.auth_mode !== 'chatgpt') return false
+  return Boolean(tokens.refresh_token.trim()) || (
+    tokens.refresh_token === '' &&
+    typeof tokens.account_id === 'string' &&
+    Boolean(tokens.account_id.trim())
+  )
 }
 
 export class CredentialSwitcher {

@@ -176,6 +176,49 @@ describe('SessionRepairService', () => {
     })
   })
 
+  it('synchronizes only selected conversations and leaves other SQLite rows unchanged', async () => {
+    const home = await createHome('custom')
+    const first = await writeRollout(home, 'rollout-first.jsonl', 'custom', 'thread-first')
+    const second = await writeRollout(home, 'rollout-second.jsonl', 'custom', 'thread-second')
+    const dbPath = join(home, 'state_5.sqlite')
+    const db = new DatabaseSync(dbPath)
+    db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, has_user_event INTEGER, cwd TEXT)')
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run('thread-first', 'custom', 0, 'C:/old')
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run('thread-second', 'custom', 0, 'C:/old')
+    db.close()
+    const service = new SessionRepairService({ codexHome: home })
+
+    const preview = await service.preview('openai', ['thread-first'])
+    const result = await service.apply(preview.snapshotId, 'openai', ['thread-first'])
+
+    expect(preview).toMatchObject({ scannedSessionFiles: 1, changedSessionFiles: 1, sqliteProviderRows: 1 })
+    expect(result.ok).toBe(true)
+    expect(JSON.parse((await readFile(first, 'utf8')).split('\n')[0]).payload.model_provider).toBe('openai')
+    expect(JSON.parse((await readFile(second, 'utf8')).split('\n')[0]).payload.model_provider).toBe('custom')
+    const checked = new DatabaseSync(dbPath, { readOnly: true })
+    expect(checked.prepare('SELECT id, model_provider FROM threads ORDER BY id').all()).toEqual([
+      { id: 'thread-first', model_provider: 'openai' },
+      { id: 'thread-second', model_provider: 'custom' }
+    ])
+    checked.close()
+  })
+
+  it('rewrites large rollouts without changing their conversation payload', async () => {
+    const home = await createHome('custom')
+    const path = join(home, 'sessions', '2026', 'rollout-large.jsonl')
+    const payload = JSON.stringify({ type: 'tool_output', payload: 'x'.repeat(4_000_000) })
+    await writeFile(path, `${JSON.stringify({ type: 'session_meta', payload: { id: 'large', model_provider: 'openai' } })}\n${payload}\n`)
+    const service = new SessionRepairService({ codexHome: home })
+
+    const preview = await service.preview('custom')
+    const result = await service.apply(preview.snapshotId, 'custom')
+    const text = await readFile(path, 'utf8')
+
+    expect(result.ok).toBe(true)
+    expect(JSON.parse(text.split('\n')[0]).payload.model_provider).toBe('custom')
+    expect(text).toContain(payload)
+  })
+
   it('rolls rollout and SQLite back when a later stage fails', async () => {
     const home = await createHome('custom')
     const rollout = await writeRollout(home, 'rollout-rollback.jsonl', 'openai')

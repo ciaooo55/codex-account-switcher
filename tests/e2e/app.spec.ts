@@ -384,7 +384,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('menuitem', { name: '切换到此账号' }).click()
     await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
-      auth_mode: 'chatgptAuthTokens',
+      auth_mode: 'chatgpt',
       tokens: {
         refresh_token: '',
         account_id: 'workspace-team-e2e'
@@ -434,6 +434,21 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         account_id: 'workspace-e2e'
       }
     })
+
+    await page.getByRole('button', { name: '对话管理' }).click()
+    const conversationDialog = page.getByRole('dialog', { name: 'Codex 对话管理' })
+    await expect(conversationDialog).toBeVisible()
+    await conversationDialog.getByPlaceholder('搜索标题、工作区或供应商').fill('unchanged')
+    const conversationRow = conversationDialog.locator('.conversation-row').filter({ hasText: 'unchanged' })
+    await expect(conversationRow).toBeVisible()
+    await conversationRow.click()
+    await expect(conversationDialog.locator('.conversation-messages')).toContainText('unchanged')
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'conversation-manager-ui.png'), fullPage: true })
+    await conversationDialog.getByLabel('选择 unchanged').click()
+    await conversationDialog.getByRole('button', { name: '同步选中' }).click()
+    const selectedRepairDialog = page.getByRole('dialog', { name: '修复历史会话' })
+    await expect(selectedRepairDialog).toContainText('将同步选中的 1 个对话')
+    await selectedRepairDialog.getByRole('button', { name: '取消' }).click()
 
     await page.getByRole('button', { name: '修复历史会话' }).click()
     await expect(page.getByRole('dialog', { name: '修复历史会话' })).toBeVisible()

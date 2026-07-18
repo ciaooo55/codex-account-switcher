@@ -21,13 +21,13 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - Codex 页面统一显示“未测试、有效、已失效、5 小时额度耗尽、周额度耗尽、未知错误”六类状态；只有明确的授权失败才判定为失效，网络、模型和接口异常归入未知错误并保留诊断详情。
 - 一键导出 CPA、SubAPI 或官方 Codex `auth.json`：支持每账号一个文件；CPA/Codex 多账号使用 ZIP，SubAPI 使用原生多账号 JSON。CPA/SubAPI 导出可统一设置优先级，也可为多选账号逐个设置；CPA 数值越大越优先，Sub2API 数值越小越优先，官方 Codex 格式不写该字段。
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
-- 完整 OAuth 账号使用标准 `chatgpt` 登录；只有 access token 的 CPA Team/K12 账号使用官方 Codex 源码定义的 `chatgptAuthTokens` 外部凭据结构，切换后必须重启 Codex，且 token 过期后不能自动刷新。
+- 完整 OAuth 与只有 access token 的 CPA Team/K12 账号都写入标准 `auth_mode: "chatgpt"`。access-only 账号会保留 workspace ID、以 access JWT 填充 ID token，并写入空的 refresh token；切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
 - 顶部提供 Codex 账号库、Grok 账号库、CPA 账号管理、定时切换四个独立页面，并可在浅色和深色工作台主题之间切换；窄窗口下导航保持单行，选择保存在本机并在下次启动时恢复。页面切换和操作完成后只读取当前板块的数据，不再重复扫描其他账号库；账号超过 80 条时表格启用虚拟滚动，只渲染可视区域及少量缓冲行。
 - 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 点击最小化会保留窗口并正常缩到任务栏；点击关闭才会释放主界面并转入系统托盘，只保留主进程定时任务。托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出；后台检测未发生切换时保持静默，只有账号实际更换才发送托盘通知。
-- 按 Codex++ 行为同步历史 rollout、SQLite 可见性与工作区路径，写入前预览、加锁、备份并支持失败回滚；允许 Codex 运行时修复，锁定文件会跳过并提示，完成后自动复检。
+- 按 Codex++ 行为同步历史 rollout、SQLite 可见性与工作区路径，写入前预览、加锁、备份并支持失败回滚；允许 Codex 运行时修复，锁定文件会跳过并提示，完成后自动复检。对话管理支持搜索、查看和多选同步，索引与正文读取采用增量、有界流式处理，不会一次载入全部会话。
 - 内部凭据库与切换备份使用 Electron `safeStorage` / Windows DPAPI 加密，renderer 与日志不接收 token。按你的本地管理要求，安装目录 `aa` 中的一账号一文件是可移植的明文凭据 JSON，请像保护原始账号文件一样限制该目录访问。
 - 打包版可直接检查 GitHub Release；安装包下载到当前 Windows 用户实际的“下载”文件夹，经 SHA-512 校验后覆盖安装，并在安装结束后自动删除、重启应用并显示安装结果。安装失败时会重新打开原版本，并在 `%TEMP%\CodexAccountSwitcher-update.log` 保留诊断信息。
 - 安装或升级时只按安装目录精确查找并关闭旧程序，不会把下载目录中的安装器自身当成应用进程。应用内更新会按已安装 EXE 的完整路径等待所有旧进程，超时后只结束该路径对应的进程再继续覆盖安装。
@@ -87,7 +87,7 @@ npm run package:win
 
 找不到 `.codex` 时应用会提示选择或创建目录；目录存在但没有 `auth.json` 时，首次切换会原子创建。找不到 CPA `auth-dir` 时也会提示选择目录，取消选择则在当前用户目录创建 `.cli-proxy-api`。所有路径均可在设置中修改。导入目录仅作为文件选择器的默认位置，应用不会删除、重命名或覆盖任何外部源文件。
 
-只有 access token、没有完整 `id_token` 与 `refresh_token` 的 CPA Team/K12 账号仍可检测额度、持久管理、导出和切换。切换器会写入 `auth_mode: "chatgptAuthTokens"`、以 access JWT 作为外部 ID token，并保留 workspace ID；该模式来自官方 Codex 的外部凭据实现，但不会持久刷新，切换后需重启 Codex。标准 OAuth 凭据仍由 Codex 正常自动刷新。
+只有 access token、没有完整 `id_token` 与 `refresh_token` 的 CPA Team/K12 账号仍可检测额度、持久管理、导出和切换。切换器会写入 `auth_mode: "chatgpt"`、以 access JWT 作为 ID token、保留 workspace ID，并将 `refresh_token` 写为空字符串。该兼容格式可由文件认证读取，但不能持久刷新，切换后需重启 Codex；标准 OAuth 凭据仍由 Codex 正常自动刷新。
 
 `at-...` Personal Access Token 是另一种认证类型，不使用上面的 OAuth 外部 token 结构。应用会按官方 Codex 当前源码写入 `{ "OPENAI_API_KEY": null, "personal_access_token": "at-..." }`；Codex 通过该字段自动识别 `personalAccessToken` 模式。代理平台能使用这类 token、但把它放进 `tokens.access_token` 后 Codex 显示未登录，正是因为认证类型和持久化字段不匹配。
 

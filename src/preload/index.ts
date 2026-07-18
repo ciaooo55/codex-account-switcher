@@ -57,10 +57,14 @@ const api: CodexSwitcherApi = {
   chooseGrokDirectory: () => ipcRenderer.invoke(ipcChannels.settingsChooseGrokDirectory),
   revealSource: (id) => ipcRenderer.invoke(ipcChannels.revealSource, id),
   revealManagedSource: (scope, id) => ipcRenderer.invoke(ipcChannels.revealManagedSource, { scope, id }),
-  previewSessionRepair: (targetProvider) =>
-    ipcRenderer.invoke(ipcChannels.sessionRepairPreview, targetProvider),
-  applySessionRepair: (snapshotId, targetProvider) =>
-    ipcRenderer.invoke(ipcChannels.sessionRepairApply, { snapshotId, targetProvider }),
+  listConversations: (query, offset, limit, force) =>
+    ipcRenderer.invoke(ipcChannels.conversationList, { query, offset, limit, force }),
+  getConversation: (id) => ipcRenderer.invoke(ipcChannels.conversationDetail, id),
+  revealConversation: (id) => ipcRenderer.invoke(ipcChannels.conversationReveal, id),
+  previewSessionRepair: (targetProvider, threadIds) =>
+    ipcRenderer.invoke(ipcChannels.sessionRepairPreview, { targetProvider, threadIds }),
+  applySessionRepair: (snapshotId, targetProvider, threadIds) =>
+    ipcRenderer.invoke(ipcChannels.sessionRepairApply, { snapshotId, targetProvider, threadIds }),
   getUpdateState: () => ipcRenderer.invoke(ipcChannels.updateGetState),
   checkForUpdates: () => ipcRenderer.invoke(ipcChannels.updateCheck),
   downloadUpdate: () => ipcRenderer.invoke(ipcChannels.updateDownload),

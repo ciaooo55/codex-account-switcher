@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NormalizedCredential, SecretCipher } from '../../shared/types'
 import { CredentialVault } from './vault'
 
@@ -105,6 +105,21 @@ describe('CredentialVault', () => {
     )
   })
 
+  it('decrypts the vault once and serves repeated lookups from its memory index', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-vault-'))
+    tempDirs.push(dir)
+    const path = join(dir, 'vault.json')
+    await new CredentialVault(path, cipher).upsertMany([credential()])
+    const decrypt = vi.fn(cipher.decrypt)
+    const cachedVault = new CredentialVault(path, { encrypt: cipher.encrypt, decrypt })
+
+    await cachedVault.list()
+    await cachedVault.list()
+    await cachedVault.get('account-a')
+
+    expect(decrypt).toHaveBeenCalledTimes(1)
+  })
+
   it('skips a structurally invalid encrypted entry without hiding valid accounts', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-vault-'))
     tempDirs.push(dir)
@@ -120,6 +135,6 @@ describe('CredentialVault', () => {
     })
     await writeFile(path, JSON.stringify({ version: 1, entries: file.entries }), 'utf8')
 
-    expect((await vault.list()).map((item) => item.id)).toEqual(['account-a'])
+    expect((await new CredentialVault(path, cipher).list()).map((item) => item.id)).toEqual(['account-a'])
   })
 })

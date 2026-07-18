@@ -687,6 +687,7 @@ describe('AccountManager', () => {
       switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
     })
     await manager.scanDirectory()
+    const listAccounts = vi.spyOn(manager, 'listAccounts')
 
     const result = await manager.testAccounts(undefined, { onProgress: progress })
 
@@ -700,6 +701,7 @@ describe('AccountManager', () => {
         ([value]) => value.updatedAccount?.status === 'valid' && value.updatedAccount?.usage?.planType === 'plus'
       )
     ).toBe(true)
+    expect(listAccounts).not.toHaveBeenCalled()
     expect((await manager.listAccounts()).every((item) => item.status === 'valid')).toBe(true)
   })
 

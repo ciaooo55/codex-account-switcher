@@ -17,6 +17,7 @@ import type {
 import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
 import { parseGrokCredentialText } from '../accounts/grok-parser'
 import { atomicWriteFile } from '../storage/atomic-file'
+import { DirectoryRecordIndex } from '../storage/directory-record-index'
 import type { StatusStore } from '../storage/status-store'
 import { serializeCpaCredential } from './exporter'
 
@@ -135,7 +136,20 @@ async function files(directory: string): Promise<string[]> {
 }
 
 export class CpaCodexManager {
-  constructor(private readonly options: Options) {}
+  private readonly recordIndex: DirectoryRecordIndex<ManagedRecord>
+  private activeTestRecords: Map<string, ManagedRecord[]> | null = null
+
+  constructor(private readonly options: Options) {
+    this.recordIndex = new DirectoryRecordIndex({
+      directory: async () => {
+        const directory = await this.directory()
+        await mkdir(directory, { recursive: true })
+        return directory
+      },
+      collectPaths: files,
+      loadPath: (path) => this.loadManagedRecord(path)
+    })
+  }
 
   async scanDirectory(): Promise<CpaCodexScanResult> {
     const directory = await this.directory()
@@ -205,6 +219,7 @@ export class CpaCodexManager {
       await Promise.all(duplicatePaths.map((path) => rm(path, { force: true })))
       if (!previous) imported += 1
     }
+    this.recordIndex.invalidate()
     return {
       imported,
       skipped: incoming.length - imported,
@@ -233,25 +248,9 @@ export class CpaCodexManager {
   async listAccounts(): Promise<CpaCodexAccountSummary[]> {
     const records = this.dedupeRecords(await this.managedRecords())
     const statuses = await this.options.statusStore.getAll()
-    return records.map(({ credential, path, disabled }) => {
-      const status = statuses[credential.id]
-      return {
-        id: credential.id,
-        email: credential.email,
-        workspaceId: credential.accountId,
-        planType: status?.usage?.planType ?? credential.planType,
-        sourcePath: path,
-        sourceDialect: credential.sourceDialect,
-        canRefresh: credential.canRefresh,
-        accessExpiresAt: credential.accessExpiresAt,
-        lastRefresh: credential.lastRefresh,
-        status: status?.status ?? 'untested',
-        detail: status?.detail ?? '未测试',
-        lastCheckedAt: status?.checkedAt ?? null,
-        usage: status?.usage ?? null,
-        disabled
-      }
-    }).sort((a, b) => (a.email ?? a.sourcePath).localeCompare(b.email ?? b.sourcePath))
+    return records
+      .map((record) => this.summarize(record, statuses[record.credential.id]))
+      .sort((a, b) => (a.email ?? a.sourcePath).localeCompare(b.email ?? b.sourcePath))
   }
 
   async deleteAccounts(ids: string[]): Promise<DeleteAccountsResult> {
@@ -291,6 +290,7 @@ export class CpaCodexManager {
         await this.options.deletedStore?.removeMany([...selected])
         return { deleted: 0, message: '没有找到要删除的 CPA Codex 账号' }
       }
+      this.recordIndex.invalidate()
       await this.options.statusStore.removeMany([...existingIds])
     } catch (error) {
       await this.options.deletedStore?.removeMany([...selected]).catch(() => undefined)
@@ -313,32 +313,15 @@ export class CpaCodexManager {
       group.push(record)
       recordsById.set(record.credential.id, group)
     }
-    const directory = await this.directory()
     let changed = 0
     let skipped = 0
     for (const id of selected) {
       const group = recordsById.get(id) ?? []
-      const preferred = this.dedupeRecords(group)[0]
-      if (!preferred) {
-        skipped += 1
-        continue
-      }
-      const target = statePath(join(directory, managedName(preferred.credential)), state)
-      const targetRecord = group.find((item) => resolve(item.path).toLowerCase() === resolve(target).toLowerCase())
-      if (!targetRecord) {
-        await rename(preferred.path, target)
-        changed += 1
-      } else if (resolve(targetRecord.path).toLowerCase() !== resolve(preferred.path).toLowerCase()) {
-        await atomicWriteFile(target, serialized(preferred.credential))
-        changed += 1
-      }
-      const duplicates = group.filter((item) => resolve(item.path).toLowerCase() !== resolve(target).toLowerCase())
-      if (duplicates.length) {
-        await Promise.all(duplicates.map((item) => rm(item.path, { force: true })))
-        if (targetRecord && resolve(targetRecord.path).toLowerCase() === resolve(preferred.path).toLowerCase()) changed += 1
-      }
-      if (!duplicates.length && targetRecord) skipped += 1
+      const transition = await this.transitionRecordGroup(group, state)
+      changed += transition.changed
+      skipped += transition.skipped
     }
+    this.recordIndex.invalidate()
     return {
       changed,
       skipped,
@@ -348,7 +331,9 @@ export class CpaCodexManager {
 
   async testAccounts(ids?: string[], options: TestOptions = {}): Promise<BatchTestResult> {
     const wanted = ids ? new Set(ids) : null
-    const records = this.dedupeRecords(await this.managedRecords())
+    const allRecords = await this.managedRecords()
+    this.activeTestRecords = this.groupRecords(allRecords)
+    const records = this.dedupeRecords(allRecords)
       .filter((item) => !wanted || wanted.has(item.credential.id))
     const results: TestResult[] = []
     const running = new Set<string>()
@@ -384,38 +369,51 @@ export class CpaCodexManager {
           ? { ...tested, usage: previous.usage }
           : tested
         results.push(storedResult)
-        await this.options.statusStore.set(storedResult)
+        await this.options.statusStore.setBuffered(storedResult)
+        let updatedRecord = this.dedupeRecords(this.activeTestRecords?.get(record.credential.id) ?? [record])[0]
         if (options.mode !== 'refresh') {
-          await this.applyQuotaFileState(record.credential.id, storedResult.status)
+          const state = this.fileStateForStatus(storedResult.status)
+          if (state) {
+            updatedRecord = (await this.transitionRecordGroup(
+              this.activeTestRecords?.get(record.credential.id) ?? [updatedRecord],
+              state
+            )).record ?? updatedRecord
+          }
         }
+        if (updatedRecord) this.activeTestRecords?.set(record.credential.id, [updatedRecord])
         running.delete(record.credential.id)
         done += 1
-        const updatedAccount = (await this.listAccounts()).find((item) => item.id === record.credential.id)
-        options.onProgress?.({ done, total: records.length, runningIds: [...running], ...(updatedAccount ? { updatedAccount } : {}) })
+        options.onProgress?.({
+          done,
+          total: records.length,
+          runningIds: [...running],
+          ...(updatedRecord ? { updatedAccount: this.summarize(updatedRecord, storedResult) } : {})
+        })
       }
     }
     const concurrency = Math.max(1, Math.min(12, await this.options.concurrency()))
-    await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, worker))
-    return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
+    try {
+      await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, worker))
+      await this.options.statusStore.flush()
+      return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
+    } finally {
+      this.activeTestRecords = null
+      this.recordIndex.invalidate()
+    }
   }
 
   async upsertRefreshed(credential: NormalizedCredential): Promise<void> {
-    const records = (await this.managedRecords()).filter((item) => item.credential.id === credential.id)
+    const records = this.activeTestRecords?.get(credential.id)
+      ?? (await this.managedRecords()).filter((item) => item.credential.id === credential.id)
     const record = this.dedupeRecords(records)[0]
     const directory = await this.directory()
     const path = statePath(join(directory, managedName(credential)), record?.fileState ?? 'enabled')
-    await atomicWriteFile(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
+    const storedCredential = { ...credential, sourcePath: path, sourceFormat: 'json' as const, sourceDialect: 'cpa' as const }
+    await atomicWriteFile(path, serialized(storedCredential))
     await Promise.all(records.filter((item) => resolve(item.path).toLowerCase() !== resolve(path).toLowerCase()).map((item) => rm(item.path, { force: true })))
-  }
-
-  private async applyQuotaFileState(id: string, status: AccountStatus): Promise<void> {
-    if (['quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly'].includes(status)) {
-      await this.setFileState([id], 'no_usage')
-    } else if (status === 'no_permission') {
-      await this.setFileState([id], 'no_permission')
-    } else if (status === 'valid') {
-      await this.setFileState([id], 'enabled')
-    }
+    const state = fileState(path)
+    this.activeTestRecords?.set(credential.id, [{ path, credential: storedCredential, disabled: state !== 'enabled', fileState: state }])
+    this.recordIndex.invalidate()
   }
 
   private async importPaths(paths: string[]): Promise<CpaCodexScanResult> {
@@ -474,6 +472,7 @@ export class CpaCodexManager {
       await writeIfChanged(path, serialized({ ...credential, sourcePath: path, sourceFormat: 'json', sourceDialect: 'cpa' }))
       targets.set(credential.id, path)
     }
+    this.recordIndex.invalidate()
     const normalizedTargets = new Map([...targets].map(([id, path]) => [id, resolve(path).toLowerCase()]))
     const duplicates = (await this.managedRecords()).filter((item) => {
       const target = normalizedTargets.get(item.credential.id)
@@ -495,6 +494,7 @@ export class CpaCodexManager {
         if (!containsGrok) await rm(path, { force: true })
       }))
     }
+    this.recordIndex.invalidate()
     return {
       imported: importedCount,
       skipped: imported.length - importedCount,
@@ -515,21 +515,95 @@ export class CpaCodexManager {
   private async managedRecords(): Promise<ManagedRecord[]> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    const result: ManagedRecord[] = []
-    for (const path of await files(directory)) {
-      if (!basename(canonicalPath(path)).startsWith(MANAGED_PREFIX) || formatForPath(path) !== 'json') continue
-      try {
-        const parsed = parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
-        if (parsed.credentials.length !== 1) continue
-        const credential = parsed.credentials[0]
-        if (basename(canonicalPath(path)).toLowerCase() !== managedName(credential).toLowerCase()) continue
-        const state = fileState(path)
-        result.push({ path, credential, disabled: state !== 'enabled', fileState: state })
-      } catch {
-        // Similar user filenames are not treated as managed CPA files.
-      }
+    return this.recordIndex.list()
+  }
+
+  private async loadManagedRecord(path: string): Promise<ManagedRecord[]> {
+    if (!basename(canonicalPath(path)).startsWith(MANAGED_PREFIX) || formatForPath(path) !== 'json') return []
+    try {
+      const parsed = parseCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format: 'json' })
+      if (parsed.credentials.length !== 1) return []
+      const credential = parsed.credentials[0]
+      if (basename(canonicalPath(path)).toLowerCase() !== managedName(credential).toLowerCase()) return []
+      const state = fileState(path)
+      return [{ path, credential, disabled: state !== 'enabled', fileState: state }]
+    } catch {
+      return []
     }
-    return result
+  }
+
+  private groupRecords(records: readonly ManagedRecord[]): Map<string, ManagedRecord[]> {
+    const grouped = new Map<string, ManagedRecord[]>()
+    for (const record of records) {
+      const group = grouped.get(record.credential.id) ?? []
+      group.push(record)
+      grouped.set(record.credential.id, group)
+    }
+    return grouped
+  }
+
+  private fileStateForStatus(status: AccountStatus): CpaFileState | null {
+    if (['quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly'].includes(status)) return 'no_usage'
+    if (status === 'no_permission') return 'no_permission'
+    if (status === 'valid') return 'enabled'
+    return null
+  }
+
+  private async transitionRecordGroup(
+    group: readonly ManagedRecord[],
+    state: CpaFileState
+  ): Promise<{ changed: number; skipped: number; record: ManagedRecord | null }> {
+    const preferred = this.dedupeRecords([...group])[0]
+    if (!preferred) return { changed: 0, skipped: 1, record: null }
+    const directory = await this.directory()
+    const target = statePath(join(directory, managedName(preferred.credential)), state)
+    const targetKey = resolve(target).toLowerCase()
+    const targetRecord = group.find((item) => resolve(item.path).toLowerCase() === targetKey)
+    let changed = 0
+    if (!targetRecord) {
+      await rename(preferred.path, target)
+      changed += 1
+    } else if (resolve(preferred.path).toLowerCase() !== targetKey) {
+      await atomicWriteFile(target, serialized(preferred.credential))
+      changed += 1
+    }
+    const duplicates = group.filter((item) => resolve(item.path).toLowerCase() !== targetKey)
+    if (duplicates.length > 0) {
+      await Promise.all(duplicates.map((item) => rm(item.path, { force: true })))
+      if (targetRecord && resolve(preferred.path).toLowerCase() === targetKey) changed += 1
+    }
+    const credential = {
+      ...preferred.credential,
+      sourcePath: target,
+      sourceFormat: 'json' as const,
+      sourceDialect: 'cpa' as const
+    }
+    this.recordIndex.invalidate()
+    return {
+      changed,
+      skipped: changed === 0 ? 1 : 0,
+      record: { path: target, credential, disabled: state !== 'enabled', fileState: state }
+    }
+  }
+
+  private summarize(record: ManagedRecord, status?: TestResult): CpaCodexAccountSummary {
+    const { credential, path, disabled } = record
+    return {
+      id: credential.id,
+      email: credential.email,
+      workspaceId: credential.accountId,
+      planType: status?.usage?.planType ?? credential.planType,
+      sourcePath: path,
+      sourceDialect: credential.sourceDialect,
+      canRefresh: credential.canRefresh,
+      accessExpiresAt: credential.accessExpiresAt,
+      lastRefresh: credential.lastRefresh,
+      status: status?.status ?? 'untested',
+      detail: status?.detail ?? '未测试',
+      lastCheckedAt: status?.checkedAt ?? null,
+      usage: status?.usage ?? null,
+      disabled
+    }
   }
 
   private async directory(): Promise<string> {

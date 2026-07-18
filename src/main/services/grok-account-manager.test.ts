@@ -167,9 +167,11 @@ describe('GrokAccountManager', () => {
     }))
     const imported = await manager.importFiles([source])
     const id = imported.accounts[0].id
+    const listAccounts = vi.spyOn(manager, 'listAccounts')
 
     await manager.testAccounts([id])
     expect(tester.test).toHaveBeenCalledTimes(1)
+    expect(listAccounts).not.toHaveBeenCalled()
     const removed = await manager.deleteAccounts([id])
     expect(removed.deleted).toBe(1)
     expect(await readdir(library)).toEqual([])

@@ -10,8 +10,13 @@ interface StatusFile {
 export class StatusStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private cache: Record<string, TestResult> | null = null
+  private flushTimer: NodeJS.Timeout | null = null
+  private dirty = false
 
-  constructor(private readonly path: string) {}
+  constructor(
+    private readonly path: string,
+    private readonly flushDelayMs = 300
+  ) {}
 
   async getAll(): Promise<Record<string, TestResult>> {
     await this.writeQueue
@@ -43,23 +48,67 @@ export class StatusStore {
   }
 
   async set(result: TestResult): Promise<void> {
+    await this.setMany([result])
+  }
+
+  async setMany(results: readonly TestResult[]): Promise<void> {
+    if (results.length === 0) return
+    await this.mutate((entries) => {
+      for (const result of results) entries[result.accountId] = result
+    })
+    await this.flush()
+  }
+
+  async setBuffered(result: TestResult): Promise<void> {
+    await this.setManyBuffered([result])
+  }
+
+  async setManyBuffered(results: readonly TestResult[]): Promise<void> {
+    if (results.length === 0) return
+    await this.mutate((entries) => {
+      for (const result of results) entries[result.accountId] = result
+    })
+    this.scheduleFlush()
+  }
+
+  async removeMany(ids: string[]): Promise<void> {
+    if (ids.length === 0) return
+    await this.mutate((entries) => {
+      for (const id of ids) delete entries[id]
+    })
+    await this.flush()
+  }
+
+  async flush(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
     const operation = this.writeQueue.then(async () => {
+      if (!this.dirty) return
       const entries = await this.getAllUnlocked()
-      entries[result.accountId] = result
       await atomicWriteFile(this.path, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`)
+      this.dirty = false
     })
     this.writeQueue = operation.catch(() => undefined)
     await operation
   }
 
-  async removeMany(ids: string[]): Promise<void> {
-    if (ids.length === 0) return
-    const operation = this.writeQueue.then(async () => {
-      const entries = await this.getAllUnlocked()
-      for (const id of ids) delete entries[id]
-      await atomicWriteFile(this.path, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`)
+  private async mutate(operation: (entries: Record<string, TestResult>) => void): Promise<void> {
+    const queued = this.writeQueue.then(async () => {
+      operation(await this.getAllUnlocked())
+      this.dirty = true
     })
-    this.writeQueue = operation.catch(() => undefined)
-    await operation
+    this.writeQueue = queued.catch(() => undefined)
+    await queued
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null
+      void this.flush().catch(() => undefined)
+    }, this.flushDelayMs)
+    this.flushTimer.unref()
   }
 }

@@ -212,6 +212,39 @@ function api(): CodexSwitcherApi {
     chooseGrokDirectory: vi.fn().mockResolvedValue(null),
     revealSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     revealManagedSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
+    listConversations: vi.fn().mockResolvedValue({
+      items: [{
+        id: 'thread-one',
+        title: '修复账号切换',
+        cwd: 'C:\\work',
+        provider: 'custom',
+        createdAt: '2026-07-15T00:00:00Z',
+        updatedAt: '2026-07-16T00:00:00Z',
+        archived: false,
+        sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
+        sizeBytes: 1024
+      }],
+      total: 1,
+      offset: 0,
+      hasMore: false
+    }),
+    getConversation: vi.fn().mockResolvedValue({
+      conversation: {
+        id: 'thread-one',
+        title: '修复账号切换',
+        cwd: 'C:\\work',
+        provider: 'custom',
+        createdAt: '2026-07-15T00:00:00Z',
+        updatedAt: '2026-07-16T00:00:00Z',
+        archived: false,
+        sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
+        sizeBytes: 1024
+      },
+      messages: [{ id: 'message-one', role: 'user', text: '请修复账号切换', timestamp: null }],
+      totalMessages: 1,
+      truncated: false
+    }),
+    revealConversation: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     previewSessionRepair: vi.fn().mockResolvedValue({
       snapshotId: 'snapshot-a',
       currentProvider: 'openai',
@@ -783,6 +816,25 @@ describe('App', () => {
         'openai'
       )
     )
+  })
+
+  it('searches, views and selectively synchronizes Codex conversations', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '对话管理' }))
+    expect(await screen.findByRole('dialog', { name: 'Codex 对话管理' })).toBeInTheDocument()
+    expect(await screen.findByText('修复账号切换')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('修复账号切换'))
+    expect(await screen.findByText('请修复账号切换')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '选择 修复账号切换' }))
+    fireEvent.click(screen.getByRole('button', { name: '同步选中' }))
+
+    await waitFor(() => expect(window.codexSwitcher.previewSessionRepair).toHaveBeenCalledWith(
+      undefined,
+      ['thread-one']
+    ))
   })
 
   it('imports cleaned credentials pasted by the user', async () => {

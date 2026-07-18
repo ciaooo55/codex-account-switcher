@@ -11,6 +11,7 @@ const EMPTY_VAULT: VaultFile = { version: 1, entries: [] }
 
 export class CredentialVault {
   private writeQueue: Promise<void> = Promise.resolve()
+  private cache: Map<string, NormalizedCredential> | null = null
 
   constructor(
     private readonly path: string,
@@ -19,12 +20,13 @@ export class CredentialVault {
 
   async list(): Promise<NormalizedCredential[]> {
     await this.writeQueue
-    return this.listUnlocked()
+    return [...(await this.loadCacheUnlocked()).values()].map((credential) => ({ ...credential }))
   }
 
-  private async listUnlocked(): Promise<NormalizedCredential[]> {
+  private async loadCacheUnlocked(): Promise<Map<string, NormalizedCredential>> {
+    if (this.cache) return this.cache
     const file = await this.readVault()
-    const credentials: NormalizedCredential[] = []
+    const credentials = new Map<string, NormalizedCredential>()
     for (const entry of file.entries) {
       try {
         const raw = JSON.parse(this.cipher.decrypt(entry.encrypted)) as Record<string, unknown>
@@ -37,41 +39,53 @@ export class CredentialVault {
           ),
           sourceDialect: raw.sourceDialect ?? 'generic'
         })
-        if (parsed.success && parsed.data.id === entry.id) credentials.push(parsed.data)
+        if (parsed.success && parsed.data.id === entry.id) {
+          credentials.set(parsed.data.id, parsed.data)
+        }
       } catch {
         // A corrupt entry must not prevent access to the rest of the local vault.
       }
     }
+    this.cache = credentials
     return credentials
   }
 
   async get(id: string): Promise<NormalizedCredential | null> {
-    return (await this.list()).find((credential) => credential.id === id) ?? null
+    await this.writeQueue
+    const credential = (await this.loadCacheUnlocked()).get(id)
+    return credential ? { ...credential } : null
   }
 
   async upsertMany(credentials: NormalizedCredential[]): Promise<void> {
     if (credentials.length === 0) return
     await this.enqueueWrite(async () => {
-      const existing = new Map(
-        (await this.listUnlocked()).map((credential) => [credential.id, credential])
-      )
-      for (const credential of credentials) existing.set(credential.id, credential)
-      await this.writeCredentials([...existing.values()])
+      const next = new Map(await this.loadCacheUnlocked())
+      for (const credential of credentials) next.set(credential.id, { ...credential })
+      await this.commit([...next.values()])
     })
   }
 
   async replace(credentials: NormalizedCredential[]): Promise<void> {
-    await this.enqueueWrite(() => this.writeCredentials(credentials))
+    await this.enqueueWrite(async () => {
+      const next = new Map(credentials.map((credential) => [credential.id, { ...credential }]))
+      await this.commit([...next.values()])
+    })
   }
 
   async removeMany(ids: string[]): Promise<void> {
     if (ids.length === 0) return
     await this.enqueueWrite(async () => {
-      const removeIds = new Set(ids)
-      await this.writeCredentials(
-        (await this.listUnlocked()).filter((credential) => !removeIds.has(credential.id))
-      )
+      const next = new Map(await this.loadCacheUnlocked())
+      for (const id of ids) next.delete(id)
+      await this.commit([...next.values()])
     })
+  }
+
+  private async commit(credentials: readonly NormalizedCredential[]): Promise<void> {
+    await this.writeCredentials(credentials)
+    this.cache = new Map(
+      credentials.map((credential) => [credential.id, { ...credential }])
+    )
   }
 
   private async writeCredentials(credentials: readonly NormalizedCredential[]): Promise<void> {

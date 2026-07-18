@@ -41,17 +41,28 @@ async function removeEmptyDirectories(directory: string, root: string): Promise<
   }
 }
 
-async function writeIfChanged(path: string, text: string): Promise<void> {
-  try {
-    if (await readFile(path, 'utf8') === text) return
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+async function mapConcurrent<T>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<void>
+): Promise<void> {
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = cursor
+      cursor += 1
+      if (index >= values.length) return
+      await operation(values[index])
+    }
   }
-  await atomicWriteFile(path, text)
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, () => worker())
+  )
 }
 
 export class ManagedCredentialLibrary {
   private writeQueue: Promise<void> = Promise.resolve()
+  private readonly contentCache = new Map<string, string>()
 
   constructor(readonly directory: string) {}
 
@@ -90,19 +101,44 @@ export class ManagedCredentialLibrary {
       }
     })
 
-    for (const credential of stored) {
-      await writeIfChanged(
+    await mapConcurrent(stored, 8, async (credential) => {
+      await this.writeIfChanged(
         credential.sourcePath,
         `${JSON.stringify(serializeCpaCredential(credential), null, 2)}\n`
       )
-    }
+    })
 
     const desired = new Set(stored.map((credential) => resolve(credential.sourcePath).toLowerCase()))
-    for (const path of await collectManagedFiles(this.directory)) {
-      if (!desired.has(resolve(path).toLowerCase())) await rm(path, { force: true })
-    }
+    const obsolete = (await collectManagedFiles(this.directory))
+      .filter((path) => !desired.has(resolve(path).toLowerCase()))
+    await mapConcurrent(obsolete, 8, async (path) => {
+      await rm(path, { force: true })
+      this.contentCache.delete(resolve(path).toLowerCase())
+    })
     await removeEmptyDirectories(this.directory, this.directory)
     return stored
+  }
+
+  private async writeIfChanged(path: string, text: string): Promise<void> {
+    const key = resolve(path).toLowerCase()
+    if (this.contentCache.get(key) === text) {
+      try {
+        if ((await stat(path)).isFile()) return
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      this.contentCache.delete(key)
+    }
+    try {
+      if (await readFile(path, 'utf8') === text) {
+        this.contentCache.set(key, text)
+        return
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await atomicWriteFile(path, text)
+    this.contentCache.set(key, text)
   }
 
   async exists(): Promise<boolean> {

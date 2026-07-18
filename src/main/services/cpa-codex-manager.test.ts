@@ -111,8 +111,10 @@ describe('CpaCodexManager', () => {
     }))
     const imported = await manager.importFiles([source])
     const id = imported.accounts[0].id
+    const listAccounts = vi.spyOn(manager, 'listAccounts')
 
     await manager.testAccounts([id])
+    expect(listAccounts).not.toHaveBeenCalled()
     expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(true)
     expect((await manager.listAccounts())[0]).toMatchObject({ disabled: true, status: 'quota_exhausted_weekly' })
 

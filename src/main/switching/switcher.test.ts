@@ -132,7 +132,7 @@ describe('CredentialSwitcher', () => {
     })
   })
 
-  it('writes the official external-token shape for CPA Team/K12 access-only credentials', async () => {
+  it('writes CPA Team/K12 access-only credentials in file-backed ChatGPT mode', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
 
@@ -148,7 +148,7 @@ describe('CredentialSwitcher', () => {
     expect(result).toMatchObject({ ok: true })
     expect(result.message).toContain('重启 Codex')
     expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toEqual({
-      auth_mode: 'chatgptAuthTokens',
+      auth_mode: 'chatgpt',
       OPENAI_API_KEY: null,
       tokens: {
         id_token: 'access-a',

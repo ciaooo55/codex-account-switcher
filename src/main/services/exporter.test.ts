@@ -102,13 +102,13 @@ describe('credential serializers', () => {
     })
   })
 
-  it('writes access-only Team accounts using the official external auth mode', () => {
+  it('writes access-only Team accounts using file-backed ChatGPT mode', () => {
     expect(serializeCodexCredential(credential({
       refreshToken: null,
       idToken: null,
       canRefresh: false
     }))).toMatchObject({
-      auth_mode: 'chatgptAuthTokens',
+      auth_mode: 'chatgpt',
       tokens: {
         id_token: 'access-secret-a',
         access_token: 'access-secret-a',
@@ -294,7 +294,7 @@ describe('CredentialExportService', () => {
       'auth-second@example.com.json'
     ])
     expect(JSON.parse(strFromU8(entries['auth-second@example.com.json']))).toMatchObject({
-      auth_mode: 'chatgptAuthTokens'
+      auth_mode: 'chatgpt'
     })
   })
 })

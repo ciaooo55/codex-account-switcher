@@ -23,6 +23,7 @@ import { AutoSwitchScheduler, shouldNotifyAutoSwitchCompletion } from './service
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { discoverCpaDirectory } from './services/cpa-paths'
 import { CodexProcessManager } from './services/codex-process'
+import { ConversationManager } from './services/conversation-manager'
 import { CpaCodexManager } from './services/cpa-codex-manager'
 import { readCpaDirectoryStats } from './services/cpa-directory-stats'
 import { CredentialTester } from './services/detector'
@@ -538,10 +539,12 @@ async function main(): Promise<void> {
     const cpaStatuses = await cpaCodexStatusStore.getAll()
     if (Object.keys(cpaStatuses).length === 0) {
       const legacyStatuses = await statusStore.getAll()
-      await Promise.all(result.accounts.map((account) => {
-        const legacy = legacyStatuses[account.id]
-        return legacy ? cpaCodexStatusStore.set(legacy) : Promise.resolve()
-      }))
+      await cpaCodexStatusStore.setMany(
+        result.accounts.flatMap((account) => {
+          const legacy = legacyStatuses[account.id]
+          return legacy ? [legacy] : []
+        })
+      )
     }
     return result
   }).catch(() => null)
@@ -552,6 +555,15 @@ async function main(): Promise<void> {
       codexHome: dirname(settings.configPath),
       backupRetention: settings.backupRetention
     })
+  }
+  let cachedConversationManager: { codexHome: string; manager: ConversationManager } | null = null
+  const conversationManager = async (): Promise<ConversationManager> => {
+    const settings = await settingsStore.get()
+    const codexHome = resolve(dirname(settings.configPath))
+    if (cachedConversationManager?.codexHome !== codexHome) {
+      cachedConversationManager = { codexHome, manager: new ConversationManager(codexHome) }
+    }
+    return cachedConversationManager.manager
   }
 
   const sendProgress = (next: TestProgress): void => {
@@ -1339,16 +1351,46 @@ async function main(): Promise<void> {
       return { ok: false, message: '账号托管文件已不存在' }
     }
   })
+  ipcMain.handle(ipcChannels.conversationList, async (_event, input: unknown) => {
+    const payload = z.object({
+      query: z.string().max(500).optional(),
+      offset: z.number().int().min(0).max(100_000).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      force: z.boolean().optional()
+    }).parse(input)
+    return (await conversationManager()).list(
+      payload.query,
+      payload.offset,
+      payload.limit,
+      payload.force
+    )
+  })
+  ipcMain.handle(ipcChannels.conversationDetail, async (_event, input: unknown) => {
+    const id = z.string().min(1).max(200).parse(input)
+    return (await conversationManager()).detail(id)
+  })
+  ipcMain.handle(ipcChannels.conversationReveal, async (_event, input: unknown) => {
+    const id = z.string().min(1).max(200).parse(input)
+    const settings = await settingsStore.get()
+    const codexHome = resolve(dirname(settings.configPath))
+    const sourcePath = await (await conversationManager()).reveal(id)
+    if (!sourcePath) return { ok: false, message: '对话文件不存在' }
+    const relativePath = relative(codexHome, resolve(sourcePath))
+    if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+      return { ok: false, message: '对话文件不在 Codex 目录内' }
+    }
+    shell.showItemInFolder(sourcePath)
+    return { ok: true, message: '已打开对话文件位置' }
+  })
   ipcMain.handle(ipcChannels.sessionRepairPreview, async (_event, input: unknown) => {
-    const targetProvider = z
-      .string()
-      .regex(/^[A-Za-z0-9_.-]+$/)
-      .optional()
-      .parse(input)
+    const payload = z.object({
+      targetProvider: z.string().regex(/^[A-Za-z0-9_.-]+$/).optional(),
+      threadIds: z.array(z.string().min(1).max(200)).max(5_000).optional()
+    }).parse(input)
     assertNoRunningTask('预览历史会话修复')
     sessionRepairOperationActive = true
     try {
-      return await (await sessionRepairService()).preview(targetProvider)
+      return await (await sessionRepairService()).preview(payload.targetProvider, payload.threadIds)
     } finally {
       sessionRepairOperationActive = false
     }
@@ -1357,7 +1399,8 @@ async function main(): Promise<void> {
     const payload = z
       .object({
         snapshotId: z.string().regex(/^[a-f0-9]{64}$/),
-        targetProvider: z.string().regex(/^[A-Za-z0-9_.-]+$/)
+        targetProvider: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+        threadIds: z.array(z.string().min(1).max(200)).max(5_000).optional()
       })
       .parse(input)
     const task = runningTask()
@@ -1374,7 +1417,13 @@ async function main(): Promise<void> {
     }
     sessionRepairOperationActive = true
     try {
-      return await (await sessionRepairService()).apply(payload.snapshotId, payload.targetProvider)
+      const result = await (await sessionRepairService()).apply(
+        payload.snapshotId,
+        payload.targetProvider,
+        payload.threadIds
+      )
+      cachedConversationManager?.manager.invalidate()
+      return result
     } finally {
       sessionRepairOperationActive = false
     }
