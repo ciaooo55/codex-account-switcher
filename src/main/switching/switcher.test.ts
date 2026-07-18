@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -56,9 +56,13 @@ describe('CredentialSwitcher', () => {
   it('switches to a custom API key provider and keeps unrelated provider definitions', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
+    const historyPath = join(paths.dir, 'sessions', 'rollout-history.jsonl')
+    const history = '{"type":"session_meta","payload":{"model_provider":"openai"}}\n'
+    await mkdir(join(paths.dir, 'sessions'))
+    await writeFile(historyPath, history)
 
     const result = await switcher.switchToCustomApi({
-      baseUrl: 'https://proxy.example.com/v1',
+      baseUrl: 'http://127.0.0.1:18317',
       model: 'gpt-custom',
       apiKey: 'custom-secret-key'
     })
@@ -69,9 +73,11 @@ describe('CredentialSwitcher', () => {
       OPENAI_API_KEY: 'custom-secret-key'
     })
     const config = await readFile(paths.configPath, 'utf8')
-    expect(config).toContain('model_provider = "codex_account_switcher"')
-    expect(config).toContain('base_url = "https://proxy.example.com/v1"')
+    expect(config).toContain('model_provider = "openai"')
+    expect(config).toContain('openai_base_url = "http://127.0.0.1:18317/v1"')
+    expect(config).not.toContain('[model_providers.codex_account_switcher]')
     expect(config).toContain('[model_providers.custom]')
+    expect(await readFile(historyPath, 'utf8')).toBe(history)
     expect(await readFile(result.backupPath!, 'utf8')).not.toContain('api-secret')
   })
   it('atomically writes ChatGPT auth, patches config and keeps encrypted backups', async () => {

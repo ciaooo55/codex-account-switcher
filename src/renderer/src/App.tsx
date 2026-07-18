@@ -1444,7 +1444,13 @@ export function App(): React.JSX.Element {
                 if (!result.ok) throw new Error(result.message)
                 setCustomApiKey('')
                 await reload()
-              }, '已切换到自定义 API 模式')} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
+                if (window.confirm('自定义 API 已保存，是否立即重启 Codex 使配置生效？')) {
+                  const restartResult = await window.codexSwitcher.restartCodex()
+                  if (!restartResult.ok) {
+                    throw new Error(`自定义 API 已保存，但 Codex 重启失败：${restartResult.message}`)
+                  }
+                }
+              }, '已切换到自定义 API 模式；历史对话保持在 openai 分组', false)} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
                 <KeyRound size={16} />保存并切换
               </button>
             </section>

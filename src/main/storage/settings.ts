@@ -1,5 +1,6 @@
 import { join, win32 } from 'node:path'
 import { z } from 'zod'
+import { normalizeCustomApiBaseUrl } from '../../shared/custom-api'
 import type { AppSettings } from '../../shared/types'
 import { atomicWriteFile, readUtf8File } from './atomic-file'
 
@@ -71,19 +72,7 @@ function normalize(value: AppSettings): AppSettings {
     throw new Error('深度检测模型名称格式无效')
   }
   const grokDirectory = windowsPath(value.grokDirectory, 'Grok 账号目录')
-  let customApiBaseUrl: string
-  try {
-    const parsed = new URL(value.customApiBaseUrl.trim())
-    if (parsed.protocol !== 'https:' && !['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
-      throw new Error('自定义 API 地址必须使用 HTTPS')
-    }
-    if (parsed.username || parsed.password || parsed.hash) {
-      throw new Error('自定义 API 地址不能包含账号、密码或片段')
-    }
-    customApiBaseUrl = parsed.toString().replace(/\/$/, '')
-  } catch (error) {
-    throw new Error(error instanceof Error && error.message.includes('必须使用') ? error.message : '自定义 API 地址无效')
-  }
+  const customApiBaseUrl = normalizeCustomApiBaseUrl(value.customApiBaseUrl)
   const customApiModel = value.customApiModel.trim() || 'gpt-5.4'
   if (customApiModel.length > 128 || !/^[A-Za-z0-9._:/-]+$/.test(customApiModel)) {
     throw new Error('自定义 API 模型名称格式无效')

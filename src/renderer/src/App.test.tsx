@@ -798,6 +798,34 @@ describe('App', () => {
     await waitFor(() => expect(window.codexSwitcher.restoreApiMode).toHaveBeenCalledWith(false))
   })
 
+  it('asks whether to restart Codex after saving a custom API without repairing conversations', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    fireEvent.change(screen.getByLabelText('API 地址'), {
+      target: { value: 'http://127.0.0.1:18317' }
+    })
+    fireEvent.change(screen.getByLabelText('API Key'), {
+      target: { value: 'temporary-custom-key' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存并切换' }))
+
+    await waitFor(() => expect(bridge.switchToCustomApi).toHaveBeenCalledWith({
+      baseUrl: 'http://127.0.0.1:18317',
+      model: 'gpt-5.4',
+      apiKey: 'temporary-custom-key'
+    }, false))
+    await waitFor(() => expect(bridge.restartCodex).toHaveBeenCalledTimes(1))
+    expect(confirm).toHaveBeenCalledWith('自定义 API 已保存，是否立即重启 Codex 使配置生效？')
+    expect(bridge.previewSessionRepair).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
   it('previews and confirms Codex++ style historical session repair', async () => {
     render(<App />)
     const accountSelection = await screen.findByLabelText('选择 person@example.com')

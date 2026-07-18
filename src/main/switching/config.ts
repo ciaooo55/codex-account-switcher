@@ -1,17 +1,25 @@
+import { normalizeCustomApiBaseUrl } from '../../shared/custom-api'
+
 export type ManagedConfigKey =
   | 'model_provider'
+  | 'openai_base_url'
   | 'model'
   | 'model_reasoning_effort'
   | 'cli_auth_credentials_store'
 
-export type ManagedConfigSnapshot = Record<ManagedConfigKey, string | null>
+export type ManagedConfigSnapshot = Record<ManagedConfigKey, string | null> & {
+  ownedProviderSection?: string | null
+}
 
 const MANAGED_KEYS: ManagedConfigKey[] = [
   'model_provider',
+  'openai_base_url',
   'model',
   'model_reasoning_effort',
   'cli_auth_credentials_store'
 ]
+
+const OWNED_PROVIDER_ID = 'codex_account_switcher'
 
 function assignmentPattern(key: ManagedConfigKey): RegExp {
   return new RegExp(`^\\s*${key}\\s*=`)
@@ -31,6 +39,23 @@ function snapshotManagedLines(lines: string[]): ManagedConfigSnapshot {
       topLevel.find((line) => assignmentPattern(key).test(line))?.trim() ?? null
     ])
   ) as ManagedConfigSnapshot
+}
+
+function providerSection(text: string, providerId: string): string | null {
+  const lines = text.split(/\r?\n/)
+  const header = `[model_providers.${providerId}]`
+  const start = lines.findIndex((line) => line.trim() === header)
+  if (start === -1) return null
+  let end = start + 1
+  while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1
+  return lines.slice(start, end).join(text.includes('\r\n') ? '\r\n' : '\n').trimEnd()
+}
+
+function snapshotManagedConfig(text: string): ManagedConfigSnapshot {
+  return {
+    ...snapshotManagedLines(text.split(/\r?\n/)),
+    ownedProviderSection: providerSection(text, OWNED_PROVIDER_ID)
+  }
 }
 
 function replaceManagedLines(text: string, replacements: Partial<ManagedConfigSnapshot>): string {
@@ -68,12 +93,13 @@ export function applyChatGptConfig(text: string): {
   text: string
   snapshot: ManagedConfigSnapshot
 } {
-  const lines = text.split(/\r?\n/)
-  const snapshot = snapshotManagedLines(lines)
+  const snapshot = snapshotManagedConfig(text)
+  const withoutOwnedProvider = removeProviderSection(text, OWNED_PROVIDER_ID)
   return {
     snapshot,
-    text: replaceManagedLines(text, {
+    text: replaceManagedLines(withoutOwnedProvider, {
       model_provider: 'model_provider = "openai"',
+      openai_base_url: null,
       model: null,
       model_reasoning_effort: null,
       cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
@@ -85,7 +111,11 @@ export function restoreManagedConfig(
   currentText: string,
   snapshot: ManagedConfigSnapshot
 ): string {
-  return replaceManagedLines(currentText, snapshot)
+  const restored = replaceManagedLines(currentText, snapshot)
+  if (!Object.prototype.hasOwnProperty.call(snapshot, 'ownedProviderSection')) return restored
+  const withoutOwnedProvider = removeProviderSection(restored, OWNED_PROVIDER_ID).trimEnd()
+  if (!snapshot.ownedProviderSection) return `${withoutOwnedProvider}\n`
+  return `${withoutOwnedProvider}\n\n${snapshot.ownedProviderSection.trim()}\n`
 }
 
 function tomlString(value: string): string {
@@ -107,21 +137,15 @@ export function applyCustomApiConfig(
   text: string,
   input: { baseUrl: string; model: string }
 ): { text: string; snapshot: ManagedConfigSnapshot } {
-  const providerId = 'codex_account_switcher'
-  const snapshot = snapshotManagedLines(text.split(/\r?\n/))
-  const withoutPrevious = removeProviderSection(text, providerId).trimEnd()
+  const snapshot = snapshotManagedConfig(text)
+  const withoutPrevious = removeProviderSection(text, OWNED_PROVIDER_ID).trimEnd()
+  const baseUrl = normalizeCustomApiBaseUrl(input.baseUrl)
   const managed = replaceManagedLines(withoutPrevious, {
-    model_provider: `model_provider = ${tomlString(providerId)}`,
+    model_provider: 'model_provider = "openai"',
+    openai_base_url: `openai_base_url = ${tomlString(baseUrl)}`,
     model: `model = ${tomlString(input.model)}`,
     model_reasoning_effort: null,
     cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
   }).trimEnd()
-  const provider = [
-    `[model_providers.${providerId}]`,
-    'name = "Switcher Custom API"',
-    `base_url = ${tomlString(input.baseUrl.replace(/\/$/, ''))}`,
-    'wire_api = "responses"',
-    'requires_openai_auth = true'
-  ].join('\n')
-  return { snapshot, text: `${managed}\n\n${provider}\n` }
+  return { snapshot, text: `${managed}\n` }
 }

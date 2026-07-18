@@ -47,6 +47,18 @@ describe('SettingsStore', () => {
     })
   })
 
+  it('normalizes an OpenAI-compatible root URL to the v1 API base', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-settings-'))
+    tempDirs.push(dir)
+    const store = new SettingsStore(join(dir, 'settings.json'), 'C:\\Users\\lee')
+
+    await store.update({ customApiBaseUrl: 'http://127.0.0.1:18317' })
+
+    await expect(store.get()).resolves.toMatchObject({
+      customApiBaseUrl: 'http://127.0.0.1:18317/v1'
+    })
+  })
+
   it('merges concurrent partial updates instead of dropping one patch', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-settings-'))
     tempDirs.push(dir)
