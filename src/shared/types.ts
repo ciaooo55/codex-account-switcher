@@ -71,6 +71,8 @@ export type AccountStatus =
   | 'file_error'
   | 'endpoint_incompatible'
 
+export type CodexTestMode = 'usage' | 'full' | 'refresh'
+
 export interface UsageWindow {
   id: string
   label: string

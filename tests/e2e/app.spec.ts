@@ -349,6 +349,13 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.keyboard.press('Escape')
     expect(requests.slice(0, 4).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
 
+    const beforeUsageOnly = requests.length
+    await page.getByRole('button', { name: '仅额度', exact: true }).click()
+    await page.getByRole('button', { name: '测试选中' }).click()
+    await expect(page.getByText('选中账号额度查询完成')).toBeVisible()
+    expect(requests.slice(beforeUsageOnly)).toEqual(['/usage'])
+    await page.getByRole('button', { name: '完整测试', exact: true }).click()
+
     await page.getByRole('button', { name: /^CPA 账号管理/ }).click()
     const cpaCodexRow = page.getByRole('row', { name: /cpa codex folder-e2e@example\.com/i })
     await expect(cpaCodexRow).toBeVisible()

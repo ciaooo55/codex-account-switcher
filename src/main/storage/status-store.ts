@@ -9,26 +9,35 @@ interface StatusFile {
 
 export class StatusStore {
   private writeQueue: Promise<void> = Promise.resolve()
+  private cache: Record<string, TestResult> | null = null
 
   constructor(private readonly path: string) {}
 
   async getAll(): Promise<Record<string, TestResult>> {
     await this.writeQueue
-    return this.getAllUnlocked()
+    return { ...(await this.getAllUnlocked()) }
   }
 
   private async getAllUnlocked(): Promise<Record<string, TestResult>> {
+    if (this.cache) return this.cache
     try {
       const parsed = JSON.parse(await readUtf8File(this.path)) as StatusFile
-      if (parsed.version !== 1 || !parsed.entries || typeof parsed.entries !== 'object') return {}
+      if (parsed.version !== 1 || !parsed.entries || typeof parsed.entries !== 'object') {
+        this.cache = {}
+        return this.cache
+      }
       const entries: Record<string, TestResult> = {}
       for (const [id, value] of Object.entries(parsed.entries)) {
         const result = testResultSchema.safeParse(value)
         if (result.success && result.data.accountId === id) entries[id] = result.data
       }
+      this.cache = entries
       return entries
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.cache = {}
+        return this.cache
+      }
       throw error
     }
   }

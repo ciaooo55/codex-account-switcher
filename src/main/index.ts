@@ -299,7 +299,7 @@ async function main(): Promise<void> {
   }
 
   const tester = {
-    test: async (credential: Parameters<CredentialTester['test']>[0], signal?: AbortSignal) => {
+    test: async (credential: Parameters<CredentialTester['test']>[0], signal?: AbortSignal, mode?: Parameters<CredentialTester['test']>[2]) => {
       const settings = await settingsStore.get()
       return new CredentialTester({
         timeoutMs: settings.timeoutMs,
@@ -314,7 +314,7 @@ async function main(): Promise<void> {
             }
           : {}),
         onCredentialUpdated: (updated) => vault.upsertMany([updated])
-      }).test(credential, signal)
+      }).test(credential, signal, mode)
     }
   }
   const switcher = {
@@ -390,7 +390,7 @@ async function main(): Promise<void> {
     statusStore: cpaCodexStatusStore,
     deletedStore: deletedCpaCodexStore,
     tester: {
-      test: async (credential, signal) => {
+      test: async (credential, signal, mode) => {
         const settings = await settingsStore.get()
         return new CredentialTester({
           timeoutMs: settings.timeoutMs,
@@ -405,7 +405,7 @@ async function main(): Promise<void> {
               }
             : {}),
           onCredentialUpdated: (updated) => cpaCodexManager.upsertRefreshed(updated)
-        }).test(credential, signal)
+        }).test(credential, signal, mode)
       }
     }
   })
@@ -896,7 +896,11 @@ async function main(): Promise<void> {
     if (switchOperationActive) throw new Error('账号切换或恢复进行中，暂时不能检测账号')
     if (accountLibraryOperationActive) throw new Error('账号库正在导入、扫描或删除，暂时不能检测账号')
     if (autoSwitchOperationActive) throw new Error('自动检测或切换正在运行')
-    const ids = z.array(z.string().min(1)).optional().parse(input)
+    const payload = z.object({
+      ids: z.array(z.string().min(1)).optional(),
+      mode: z.enum(['usage', 'full', 'refresh']).default('full')
+    }).parse(input)
+    const ids = payload.ids
     testController = new AbortController()
     sendProgress({
       active: true,
@@ -908,6 +912,7 @@ async function main(): Promise<void> {
     try {
       return await manager.testAccounts(ids, {
         signal: testController.signal,
+        mode: payload.mode,
         onProgress: ({ done, total, runningIds, updatedAccount }) =>
           sendProgress({
             active: true,
@@ -1160,7 +1165,11 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.cpaCodexTest, async (_event, input: unknown) => {
     if (cpaCodexTestController) throw new Error('已有 CPA Codex 检测任务正在运行')
-    const ids = z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional().parse(input)
+    const payload = z.object({
+      ids: z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional(),
+      mode: z.enum(['usage', 'full', 'refresh']).default('full')
+    }).parse(input)
+    const ids = payload.ids
     cpaCodexTestController = new AbortController()
     sendCpaCodexProgress({
       active: true,
@@ -1172,6 +1181,7 @@ async function main(): Promise<void> {
     try {
       return await cpaCodexManager.testAccounts(ids, {
         signal: cpaCodexTestController.signal,
+        mode: payload.mode,
         onProgress: ({ done, total, runningIds, updatedAccount }) => sendCpaCodexProgress({
           active: true,
           done,
@@ -1265,6 +1275,43 @@ async function main(): Promise<void> {
       return { ok: true, message: '已打开源文件位置' }
     } catch {
       return { ok: false, message: '账号源文件已不存在' }
+    }
+  })
+  ipcMain.handle(ipcChannels.snapshotPage, async (_event, input: unknown) => {
+    const scope = z.enum(['accounts', 'grok', 'cpa', 'automation']).parse(input)
+    if (scope === 'accounts' || scope === 'automation') await initialScan
+    if (scope === 'grok') await initialGrokScan
+    if (scope === 'cpa') await Promise.all([initialCpaCodexScan, initialCpaGrokScan])
+
+    const settings = await settingsStore.get()
+    const base = {
+      settings,
+      importDirectory,
+      autoSwitch: autoSwitchScheduler.getState(),
+      customApi: await customApiStore.summary({
+        baseUrl: settings.customApiBaseUrl,
+        model: settings.customApiModel
+      })
+    }
+    if (scope === 'accounts' || scope === 'automation') {
+      return { ...base, accounts: await manager.listAccounts(), testing: progress }
+    }
+    if (scope === 'grok') {
+      return { ...base, grokAccounts: await grokManager.listAccounts(), grokTesting: grokProgress }
+    }
+    const [cpaCodexAccounts, cpaGrokAccounts, cpaDirectoryStats] = await Promise.all([
+      cpaCodexManager.listAccounts(),
+      cpaGrokManager.listAccounts(),
+      readCpaDirectoryStats(settings.grokDirectory)
+    ])
+    return {
+      ...base,
+      grokDirectory: settings.grokDirectory,
+      cpaCodexAccounts,
+      cpaGrokAccounts,
+      cpaCodexTesting: cpaCodexProgress,
+      cpaGrokTesting: cpaGrokProgress,
+      cpaDirectoryStats
     }
   })
   ipcMain.handle(ipcChannels.revealManagedSource, async (_event, input: unknown) => {

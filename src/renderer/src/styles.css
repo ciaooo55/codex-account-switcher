@@ -55,6 +55,10 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .text-ok { color: #56d364; }.text-warn { color: #e3b341; }.text-error { color: #ff7b72; }
 .toolbar { display: flex; align-items: center; gap: 7px; min-height: 48px; padding: 7px 14px; background: #151a1f; border-bottom: 1px solid #2a333a; }
 .toolbar-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding-right: 8px; border-right: 1px solid #303b43; }
+.test-mode-control { display: inline-flex; align-items: center; flex: 0 0 auto; height: 30px; padding: 2px; border: 1px solid #34434d; background: #11171b; }
+.test-mode-control button { min-width: 54px; height: 24px; padding: 0 7px; border: 0; background: transparent; color: #83939e; font-size: 10px; box-shadow: none; }
+.test-mode-control button:hover:not(:disabled) { background: #1d2930; color: #dce7ed; }
+.test-mode-control button.active { background: #315b70; color: #f2f8fa; }
 .toolbar-group:last-child { padding-right: 0; border-right: 0; }
 .toolbar-end { margin-left: auto; }
 .selection-toolbar { display: flex; align-items: center; gap: 7px; min-height: 50px; padding: 7px 14px; background: #14212a; border-bottom: 1px solid #315168; box-shadow: inset 3px 0 #4c9dc7; overflow-x: auto; }
@@ -101,6 +105,7 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .selection-count { margin-left: auto; color: #84929c; font-size: 11px; white-space: nowrap; }
 .table-wrap { flex: 1; overflow: auto; background: #0d1115; scrollbar-color: #3b4750 #11161a; }
 table { width: 100%; min-width: 1240px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+.virtual-spacer td { padding: 0 !important; border: 0 !important; background: transparent !important; box-shadow: none !important; }
 th { position: sticky; top: 0; z-index: 2; height: 38px; padding: 0 10px; text-align: left; color: #8e9aa3; background: #171d22; border-bottom: 1px solid #354048; font-size: 11px; font-weight: 700; }
 td { padding: 10px; vertical-align: top; border-bottom: 1px solid #252d34; color: #cdd5da; font-size: 12px; }
 .account-row { --row-accent: #61717a; --row-bg: #11161a; --row-hover: #181f24; }
@@ -369,6 +374,10 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 
 .toolbar { background: #f5f7f8; border-color: #d5dde1; }
 .toolbar-group { border-color: #d7dee2; }
+.test-mode-control { border-color: #c8d2d8; background: #edf2f4; }
+.test-mode-control button { color: #61727d; }
+.test-mode-control button:hover:not(:disabled) { background: #dfe8ec; color: #31434d; }
+.test-mode-control button.active { background: #5f8799; color: #fff; }
 .action-menu summary { color: #53616a; background: #f8fafb; border-color: #cbd4d9; }
 .action-menu[open] summary { color: #253039; background: #e8eef1; border-color: #adb9c0; }
 .action-menu-popover, .account-context-menu { background: #f9fbfc; border-color: #c6d0d5; box-shadow: 0 14px 34px rgba(37,52,61,.18); }

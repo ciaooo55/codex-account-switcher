@@ -67,4 +67,17 @@ describe('StatusStore', () => {
 
     expect(Object.keys(await new StatusStore(path).getAll())).toEqual(['account-a'])
   })
+
+  it('serves repeated reads from memory after the initial load', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-status-'))
+    tempDirs.push(dir)
+    const path = join(dir, 'status.json')
+    await writeFile(path, JSON.stringify({ version: 1, entries: { 'account-a': result('account-a') } }))
+    const store = new StatusStore(path)
+
+    expect(Object.keys(await store.getAll())).toEqual(['account-a'])
+    await writeFile(path, JSON.stringify({ version: 1, entries: { 'account-b': result('account-b') } }))
+
+    expect(Object.keys(await store.getAll())).toEqual(['account-a'])
+  })
 })

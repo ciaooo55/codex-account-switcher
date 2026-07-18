@@ -139,6 +139,28 @@ describe('CpaCodexManager', () => {
     expect((await readdir(library)).every((name) => !name.endsWith('.json.0'))).toBe(true)
   })
 
+  it('forwards refresh-only mode and keeps the previous usage snapshot', async () => {
+    const { source, tester, manager } = await setup(['valid'])
+    await writeFile(source, JSON.stringify({
+      type: 'codex', access_token: token({ sub: 'refresh-only', email: 'refresh-only@example.com' }),
+      refresh_token: 'refresh', email: 'refresh-only@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+    const id = imported.accounts[0].id
+    await manager.testAccounts([id], { mode: 'full' })
+    tester.test.mockImplementationOnce(async (credential: NormalizedCredential) => ({
+      ...result(credential.id, 'valid'),
+      detail: '凭据刷新成功（未执行额度与真实请求检测）',
+      refreshed: true,
+      usage: null
+    }))
+
+    await manager.testAccounts([id], { mode: 'refresh' })
+
+    expect(tester.test).toHaveBeenLastCalledWith(expect.objectContaining({ id }), undefined, 'refresh')
+    expect((await manager.listAccounts())[0].usage?.windows[0]).toMatchObject({ id: 'weekly' })
+  })
+
   it('marks accounts without Codex permission and restores them after a valid retest', async () => {
     const { library, source, manager } = await setup(['no_permission', 'valid'])
     await writeFile(source, JSON.stringify({

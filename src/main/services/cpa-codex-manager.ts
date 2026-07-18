@@ -4,6 +4,7 @@ import { strFromU8, unzipSync } from 'fflate'
 import type {
   AccountStatus,
   BatchTestResult,
+  CodexTestMode,
   CpaCodexAccountSummary,
   CpaCodexScanResult,
   CredentialSourceFormat,
@@ -36,12 +37,13 @@ interface Options {
     removeMany(ids: string[]): Promise<void>
   }
   tester: {
-    test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult>
+    test(credential: NormalizedCredential, signal?: AbortSignal, mode?: CodexTestMode): Promise<TestResult>
   }
 }
 
 interface TestOptions {
   signal?: AbortSignal
+  mode?: CodexTestMode
   onProgress?: (progress: {
     done: number
     total: number
@@ -352,6 +354,9 @@ export class CpaCodexManager {
     const running = new Set<string>()
     let cursor = 0
     let done = 0
+    const previousStatuses = options.mode === 'refresh'
+      ? await this.options.statusStore.getAll()
+      : {}
     options.onProgress?.({ done, total: records.length, runningIds: [] })
     const worker = async (): Promise<void> => {
       while (!options.signal?.aborted) {
@@ -361,7 +366,7 @@ export class CpaCodexManager {
         options.onProgress?.({ done, total: records.length, runningIds: [...running] })
         let tested: TestResult
         try {
-          tested = await this.options.tester.test(record.credential, options.signal)
+          tested = await this.options.tester.test(record.credential, options.signal, options.mode ?? 'full')
         } catch {
           tested = {
             accountId: record.credential.id,
@@ -374,9 +379,15 @@ export class CpaCodexManager {
             usage: null
           }
         }
-        results.push(tested)
-        await this.options.statusStore.set(tested)
-        await this.applyQuotaFileState(record.credential.id, tested.status)
+        const previous = previousStatuses[record.credential.id]
+        const storedResult = options.mode === 'refresh' && !tested.usage && previous?.usage
+          ? { ...tested, usage: previous.usage }
+          : tested
+        results.push(storedResult)
+        await this.options.statusStore.set(storedResult)
+        if (options.mode !== 'refresh') {
+          await this.applyQuotaFileState(record.credential.id, storedResult.status)
+        }
         running.delete(record.credential.id)
         done += 1
         const updatedAccount = (await this.listAccounts()).find((item) => item.id === record.credential.id)

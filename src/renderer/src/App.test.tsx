@@ -116,8 +116,10 @@ const localStorageMock: Storage = {
 }
 
 function api(): CodexSwitcherApi {
+  const getSnapshot = vi.fn().mockResolvedValue(snapshot)
   return {
-    getSnapshot: vi.fn().mockResolvedValue(snapshot),
+    getSnapshot,
+    getPageSnapshot: vi.fn(() => getSnapshot()),
     scanDirectory: vi.fn().mockResolvedValue({
       imported: 0,
       skipped: 0,
@@ -293,6 +295,24 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: '测试当前页面全部' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导入账号' })).toBeInTheDocument()
     expect(screen.getByText('正在使用')).toBeInTheDocument()
+  })
+
+  it('reloads only the page scope when navigating between account libraries', async () => {
+    const bridge = api()
+    vi.mocked(bridge.getPageSnapshot).mockResolvedValue(snapshot)
+    window.codexSwitcher = bridge
+    render(<App />)
+    expect((await screen.findAllByText('person@example.com')).length).toBeGreaterThan(0)
+    vi.mocked(bridge.getPageSnapshot).mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Grok 账号库/ }))
+    await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('grok'))
+    fireEvent.click(screen.getByRole('button', { name: /^CPA 账号管理/ }))
+    await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('cpa'))
+    fireEvent.click(screen.getByRole('button', { name: '定时切换' }))
+    await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('automation'))
+
+    expect(bridge.getSnapshot).toHaveBeenCalledTimes(1)
   })
 
   it('toggles additive multi-select by clicking account rows', async () => {
@@ -486,7 +506,7 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('Codex 状态筛选'), { target: { value: 'valid' } })
     fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
 
-    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a']))
+    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a'], 'full'))
   })
 
   it('tests only the visible CPA Codex status group', async () => {
@@ -515,7 +535,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: /^已失效/ }))
     fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
 
-    await waitFor(() => expect(bridge.testCpaCodexAccounts).toHaveBeenCalledWith(['d'.repeat(64)]))
+    await waitFor(() => expect(bridge.testCpaCodexAccounts).toHaveBeenCalledWith(['d'.repeat(64)], 'full'))
   })
 
   it('tests only the visible Grok quota status group', async () => {
@@ -603,7 +623,20 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '测试选中' }))
 
     await waitFor(() =>
-      expect(window.codexSwitcher.testAccounts).toHaveBeenCalledWith(['account-a'])
+      expect(window.codexSwitcher.testAccounts).toHaveBeenCalledWith(['account-a'], 'full')
+    )
+  })
+
+  it('uses the selected Codex test mode for filtered and selected tests', async () => {
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '仅额度' }))
+    fireEvent.click(screen.getByLabelText('选择 person@example.com'))
+    fireEvent.click(screen.getByRole('button', { name: '测试选中' }))
+
+    await waitFor(() =>
+      expect(window.codexSwitcher.testAccounts).toHaveBeenCalledWith(['account-a'], 'usage')
     )
   })
 
@@ -654,7 +687,7 @@ describe('App', () => {
     expect(screen.getByRole('menu', { name: '账号管理' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('menuitem', { name: '检测此账号' }))
     await waitFor(() =>
-      expect(window.codexSwitcher.testAccounts).toHaveBeenCalledWith(['account-a'])
+      expect(window.codexSwitcher.testAccounts).toHaveBeenCalledWith(['account-a'], 'full')
     )
   })
 

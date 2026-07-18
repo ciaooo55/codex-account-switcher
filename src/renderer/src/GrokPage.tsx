@@ -18,9 +18,10 @@ import {
   Zap
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSnapshot } from '../../shared/ipc'
+import type { AppSnapshot, AppSnapshotPatch } from '../../shared/ipc'
 import type {
   CpaCodexAccountSummary,
+  CodexTestMode,
   DisplayAccountStatus,
   GrokAccountSummary,
   UsageSummary,
@@ -28,8 +29,14 @@ import type {
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
 import { displayStatus, STATUS_LABELS } from './account-status'
+import {
+  CODEX_TEST_MODE_RUNNING,
+  CODEX_TEST_MODE_SUCCESS,
+  CodexTestModeControl
+} from './components/CodexTestModeControl'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
+import { useVirtualTableRows } from './hooks/useVirtualTableRows'
 
 function time(value: string | null): string {
   if (!value) return '-'
@@ -89,7 +96,7 @@ function Quota({ usage, running, now }: { usage: UsageSummary | null; running: b
 
 interface Props {
   snapshot: AppSnapshot
-  onSnapshot: (snapshot: AppSnapshot) => void
+  onSnapshot: (snapshot: AppSnapshotPatch) => void
   notify: (kind: 'ok' | 'warn' | 'error', text: string) => void
   onBusyChange?: (busy: boolean) => void
   now?: number
@@ -100,6 +107,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<DisplayAccountStatus | ''>('')
   const [sort, setSort] = useState<AccountSortMode>('availability_reset')
+  const [testMode, setTestMode] = useState<CodexTestMode>('full')
   const [busy, setBusy] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ account: CpaCodexAccountSummary; x: number; y: number } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
@@ -124,13 +132,15 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.
     const query = keyword.trim().toLowerCase()
     return !query || `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
   }).sort(compareAccounts(sort)), [keyword, snapshot.cpaCodexAccounts, sort, status])
+  const runningIds = useMemo(() => new Set(snapshot.cpaCodexTesting.runningIds), [snapshot.cpaCodexTesting.runningIds])
+  const virtualAccounts = useVirtualTableRows(accounts, (account) => account.id)
 
   async function run<T>(operation: () => Promise<T>, success: string | ((result: T) => void), reload = true): Promise<void> {
     setBusy(true)
     onBusyChange?.(true)
     try {
       const result = await operation()
-      if (reload) onSnapshot(await window.codexSwitcher.getSnapshot())
+      if (reload) onSnapshot(await window.codexSwitcher.getPageSnapshot('cpa'))
       if (typeof success === 'string') notify('ok', success)
       else success(result)
     } catch (error) {
@@ -177,11 +187,11 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.
     <StatusFilterStrip value={status} counts={count} total={snapshot.cpaCodexAccounts.length} onChange={setStatus} label="CPA Codex 账号状态" />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.scanCpaCodexDirectory(), 'CPA Codex 扫描完成')} disabled={busy}><RefreshCw size={16} />重新扫描</button><button onClick={() => syncToLibrary()} disabled={busy || snapshot.cpaCodexTesting.active}><FolderSync size={16} />同步全部到 aa</button></div>
-      <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(accounts.map((account) => account.id)), `CPA Codex 当前筛选 ${accounts.length} 个账号检测完成`, false)} disabled={busy || snapshot.cpaCodexTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
+      <div className="toolbar-group"><CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.cpaCodexTesting.active} label="CPA Codex 检测模式" /><button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(accounts.map((account) => account.id), testMode), `CPA Codex 当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`, false)} disabled={busy || snapshot.cpaCodexTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
     </div>
     {selected.size > 0 && <div className="selection-toolbar" aria-label="CPA Codex 选中账号操作">
       <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>批量管理 CPA 文件状态</span></div>
-      <button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(ids()), 'CPA Codex 选中检测完成', false)} disabled={busy || snapshot.cpaCodexTesting.active}><Play size={16} />测试选中</button>
+      <button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(ids(), testMode), `CPA Codex 选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`, false)} disabled={busy || snapshot.cpaCodexTesting.active}><Play size={16} />测试选中</button>
       <button onClick={() => setEnabled(true)} disabled={busy || snapshot.cpaCodexTesting.active}><Power size={16} />启用 .json</button>
       <button onClick={() => setEnabled(false)} disabled={busy || snapshot.cpaCodexTesting.active}><PowerOff size={16} />停用 .json.0</button>
       <button onClick={() => syncToLibrary(ids())} disabled={busy || snapshot.cpaCodexTesting.active}><FolderSync size={16} />同步选中到 aa</button>
@@ -189,14 +199,14 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.
     </div>}
     {snapshot.cpaCodexTesting.active && <div className="task-progress"><div style={{ width: `${snapshot.cpaCodexTesting.total ? snapshot.cpaCodexTesting.done / snapshot.cpaCodexTesting.total * 100 : 0}%` }} /><span>{snapshot.cpaCodexTesting.done} / {snapshot.cpaCodexTesting.total}</span></div>}
     <div className="filter-row"><label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 CPA Codex 邮箱、等级或状态" /></label><select aria-label="CPA Codex 排序" value={sort} onChange={(event) => setSort(event.target.value as AccountSortMode)}>{ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="selection-count">显示 {accounts.length} / {snapshot.cpaCodexAccounts.length} · 已选 {selected.size}</span></div>
-    <div className="table-wrap"><table><thead><tr><th className="select-column"><input type="checkbox" aria-label="选择全部 CPA Codex" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th><th>账号</th><th>状态</th><th>等级</th><th>额度与重置</th><th>文件状态</th><th>托管文件</th></tr></thead><tbody>{accounts.map((account) => <CpaCodexRow key={account.id} account={account} running={snapshot.cpaCodexTesting.runningIds.includes(account.id)} selected={selected.has(account.id)} toggle={() => toggleSelection(setSelected, account.id)} now={now} openContextMenu={(event) => {
+    <div className="table-wrap" ref={virtualAccounts.scrollRef}><table><thead><tr><th className="select-column"><input type="checkbox" aria-label="选择全部 CPA Codex" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th><th>账号</th><th>状态</th><th>等级</th><th>额度与重置</th><th>文件状态</th><th>托管文件</th></tr></thead><tbody>{virtualAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingTop }} /></tr>}{virtualAccounts.rows.map(({ index, item: account }) => <CpaCodexRow key={account.id} account={account} running={runningIds.has(account.id)} selected={selected.has(account.id)} toggle={() => toggleSelection(setSelected, account.id)} now={now} testMode={testMode} virtualIndex={index} rowRef={virtualAccounts.enabled ? virtualAccounts.measureElement : undefined} openContextMenu={(event) => {
       event.preventDefault()
       if (!selected.has(account.id)) setSelected(new Set([account.id]))
       setContextMenu({ account, x: Math.min(event.clientX, window.innerWidth - 240), y: Math.min(event.clientY, window.innerHeight - 300) })
-    }} />)}{!accounts.length && <tr><td colSpan={7} className="empty-state">没有匹配的 CPA Codex 账号</td></tr>}</tbody></table></div>
+    }} />)}{virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}{!accounts.length && <tr><td colSpan={7} className="empty-state">没有匹配的 CPA Codex 账号</td></tr>}</tbody></table></div>
     {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="CPA Codex 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}>
       <div className="context-account">{contextMenu.account.email ?? 'CPA Codex 账号'}</div>
-      <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => window.codexSwitcher.testCpaCodexAccounts([id]), 'CPA Codex 账号检测完成', false) }}><TestTube2 size={15} />检测这个账号</button>
+      <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => window.codexSwitcher.testCpaCodexAccounts([id], testMode), `CPA Codex ${CODEX_TEST_MODE_SUCCESS[testMode]}`, false) }}><TestTube2 size={15} />检测这个账号</button>
       <button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource('cpa-codex', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>
@@ -206,13 +216,13 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.
   </div>
 }
 
-function CpaCodexRow({ account, running, selected, toggle, now, openContextMenu }: { account: CpaCodexAccountSummary; running: boolean; selected: boolean; toggle: () => void; now: number; openContextMenu: (event: React.MouseEvent<HTMLTableRowElement>) => void }): React.JSX.Element {
+function CpaCodexRow({ account, running, selected, toggle, now, testMode, virtualIndex, rowRef, openContextMenu }: { account: CpaCodexAccountSummary; running: boolean; selected: boolean; toggle: () => void; now: number; testMode: CodexTestMode; virtualIndex: number; rowRef?: (element: HTMLTableRowElement | null) => void; openContextMenu: (event: React.MouseEvent<HTMLTableRowElement>) => void }): React.JSX.Element {
   const status = displayStatus(account.status)
   const state = cpaFileState(account.sourcePath)
-  return <tr className={`account-row status-row-${status}${running ? ' testing-row' : ''}${selected ? ' selected-row' : ''}${account.disabled ? ' disabled-file-row' : ''}`} tabIndex={0} onClick={toggle} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle() } }} onContextMenu={openContextMenu}>
+  return <tr ref={rowRef} data-index={virtualIndex} className={`account-row status-row-${status}${running ? ' testing-row' : ''}${selected ? ' selected-row' : ''}${account.disabled ? ' disabled-file-row' : ''}`} tabIndex={0} onClick={toggle} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle() } }} onContextMenu={openContextMenu}>
     <td><input type="checkbox" aria-label={`选择 CPA Codex ${account.email ?? account.id}`} checked={selected} onClick={(event) => event.stopPropagation()} onChange={toggle} /></td>
     <td><div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">CPA 已停用</span>}</div><div className="workspace-id">{account.workspaceId ?? 'workspace 未知'}</div><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
-    <td>{running ? <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">检测完成后自动调整后缀</div></> : <><span className={`status status-${status}`}>{STATUS_LABELS[status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>}</td>
+    <td>{running ? <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">{CODEX_TEST_MODE_RUNNING[testMode]}</div></> : <><span className={`status status-${status}`}>{STATUS_LABELS[status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>}</td>
     <td>{account.planType ?? '未知'}</td><td><Quota usage={account.usage} running={running} now={now} /></td>
     <td><strong className={state.className}>{state.label}</strong><div className="muted">检测 {time(account.lastCheckedAt)}</div></td>
     <td><div className="source-path" title={account.sourcePath}>{sourceFileName(account.sourcePath)}</div><div className="source-tags"><span className="provider-label codex"><Code2 size={11} />CODEX</span><span className="format-label">CPA</span></div></td>
@@ -251,12 +261,14 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
     const query = keyword.trim().toLowerCase()
     return !query || `${account.email ?? ''} ${account.subject ?? ''} ${account.teamId ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
   }).sort(compareAccounts(sort)), [keyword, sort, sourceAccounts, status])
+  const runningIds = useMemo(() => new Set(testing.runningIds), [testing.runningIds])
+  const virtualAccounts = useVirtualTableRows(accounts, (account) => account.id)
   async function run<T>(operation: () => Promise<T>, success: string | ((result: T) => void), reload = true): Promise<void> {
     setBusy(true)
     onBusyChange?.(true)
     try {
       const result = await operation()
-      if (reload) onSnapshot(await window.codexSwitcher.getSnapshot())
+      if (reload) onSnapshot(await window.codexSwitcher.getPageSnapshot(cpa ? 'cpa' : 'grok'))
       if (typeof success === 'string') notify('ok', success)
       else success(result)
     }
@@ -317,17 +329,20 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
     </div>}
     {testing.active && <div className="task-progress"><div style={{ width: `${testing.total ? testing.done / testing.total * 100 : 0}%` }} /><span>{testing.done} / {testing.total}</span></div>}
     <div className="filter-row"><label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 Grok 邮箱、团队或等级" /></label><select aria-label={`${cpa ? 'CPA ' : ''}Grok 账号排序`} value={sort} onChange={(event) => setSort(event.target.value as AccountSortMode)}>{ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="selection-count">显示 {accounts.length} / {sourceAccounts.length} · 已选 {selected.size}</span></div>
-    <div className="table-wrap">
+    <div className="table-wrap" ref={virtualAccounts.scrollRef}>
       <table>
         <thead><tr><th className="select-column"><input type="checkbox" aria-label="选择全部 Grok 账号" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th><th>账号</th><th>状态</th><th>等级</th><th>额度与重置</th><th>文件状态</th><th>托管文件</th></tr></thead>
         <tbody>
-          {accounts.map((account) => (
+          {virtualAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingTop }} /></tr>}
+          {virtualAccounts.rows.map(({ index, item: account }) => (
             <GrokRow
               key={account.id}
               account={account}
-              running={testing.runningIds.includes(account.id)}
+              running={runningIds.has(account.id)}
               selected={selected.has(account.id)}
               now={now}
+              virtualIndex={index}
+              rowRef={virtualAccounts.enabled ? virtualAccounts.measureElement : undefined}
               toggle={() => toggleSelection(setSelected, account.id)}
               cpa={cpa}
               openContextMenu={(event) => {
@@ -341,6 +356,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
               }}
             />
           ))}
+          {virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}
           {!accounts.length && <tr><td colSpan={7} className="empty-state">没有匹配的 Grok 账号</td></tr>}
         </tbody>
       </table>
@@ -354,6 +370,8 @@ function GrokRow({
   running,
   selected,
   now,
+  virtualIndex,
+  rowRef,
   cpa,
   toggle,
   openContextMenu
@@ -362,6 +380,8 @@ function GrokRow({
   running: boolean
   selected: boolean
   now: number
+  virtualIndex: number
+  rowRef?: (element: HTMLTableRowElement | null) => void
   cpa: boolean
   toggle: () => void
   openContextMenu: (event: React.MouseEvent<HTMLTableRowElement>) => void
@@ -370,6 +390,8 @@ function GrokRow({
   const state = cpaFileState(account.sourcePath)
   return (
     <tr
+      ref={rowRef}
+      data-index={virtualIndex}
       className={`account-row status-row-${status}${running ? ' testing-row' : ''}${selected ? ' selected-row' : ''}${account.disabled ? ' disabled-file-row' : ''}`}
       tabIndex={0}
       onClick={toggle}

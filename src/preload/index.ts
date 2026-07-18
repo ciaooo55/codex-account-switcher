@@ -5,6 +5,7 @@ import { ipcChannels } from '../shared/ipc'
 
 const api: CodexSwitcherApi = {
   getSnapshot: () => ipcRenderer.invoke(ipcChannels.snapshot),
+  getPageSnapshot: (scope) => ipcRenderer.invoke(ipcChannels.snapshotPage, scope),
   scanDirectory: () => ipcRenderer.invoke(ipcChannels.scan),
   importFiles: () => ipcRenderer.invoke(ipcChannels.import),
   importDirectory: () => ipcRenderer.invoke(ipcChannels.importDirectory),
@@ -19,7 +20,7 @@ const api: CodexSwitcherApi = {
   deleteAccounts: (ids) => ipcRenderer.invoke(ipcChannels.deleteAccounts, ids),
   exportAccounts: (request) => ipcRenderer.invoke(ipcChannels.exportAccounts, request),
   exportAccountsToCpa: (request) => ipcRenderer.invoke(ipcChannels.exportAccountsToCpa, request),
-  testAccounts: (ids) => ipcRenderer.invoke(ipcChannels.test, ids),
+  testAccounts: (ids, mode) => ipcRenderer.invoke(ipcChannels.test, { ids, mode: mode ?? 'full' }),
   cancelTests: () => ipcRenderer.invoke(ipcChannels.cancelTest),
   switchAccount: (id, restart) =>
     ipcRenderer.invoke(ipcChannels.switchAccount, { id, restart }),
@@ -44,7 +45,8 @@ const api: CodexSwitcherApi = {
   setCpaGrokEnabled: (ids, enabled) => ipcRenderer.invoke(ipcChannels.cpaGrokSetEnabled, { ids, enabled }),
   scanCpaCodexDirectory: () => ipcRenderer.invoke(ipcChannels.cpaCodexScan),
   syncCpaCodexToLibrary: (ids) => ipcRenderer.invoke(ipcChannels.cpaCodexSyncToLibrary, ids),
-  testCpaCodexAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaCodexTest, ids),
+  testCpaCodexAccounts: (ids, mode) =>
+    ipcRenderer.invoke(ipcChannels.cpaCodexTest, { ids, mode: mode ?? 'full' }),
   cancelCpaCodexTests: () => ipcRenderer.invoke(ipcChannels.cpaCodexCancelTest),
   deleteCpaCodexAccounts: (ids) => ipcRenderer.invoke(ipcChannels.cpaCodexDelete, ids),
   setCpaCodexEnabled: (ids, enabled) => ipcRenderer.invoke(ipcChannels.cpaCodexSetEnabled, { ids, enabled }),

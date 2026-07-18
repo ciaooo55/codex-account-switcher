@@ -215,6 +215,57 @@ describe('parseUsageResponse', () => {
 })
 
 describe('CredentialTester', () => {
+  it('supports a usage-only mode without calling the compact endpoint', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(200, {
+        plan_type: 'plus',
+        rate_limit: { primary_window: { used_percent: 25 } }
+      })
+    )
+    const tester = new CredentialTester({ fetchImpl, queryResetCredits: false })
+
+    const result = await tester.test(credential(), undefined, 'usage')
+
+    expect(result).toMatchObject({ status: 'valid', stage: 'usage', refreshed: false })
+    expect(result.usage?.planType).toBe('plus')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/wham/usage')
+  })
+
+  it('supports a refresh-only mode without querying usage or compact', async () => {
+    const refreshedAccess = jwt({ sub: 'user-a', exp: 1_910_000_000 })
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(200, {
+        access_token: refreshedAccess,
+        refresh_token: 'refresh-rotated'
+      })
+    )
+    const onCredentialUpdated = vi.fn()
+    const tester = new CredentialTester({ fetchImpl, onCredentialUpdated })
+
+    const result = await tester.test(credential(), undefined, 'refresh')
+
+    expect(result).toMatchObject({ status: 'valid', stage: 'refresh', refreshed: true, usage: null })
+    expect(onCredentialUpdated).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: refreshedAccess,
+      refreshToken: 'refresh-rotated'
+    }))
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://auth.openai.com/oauth/token')
+  })
+
+  it('reports access-only credentials as non-refreshable in refresh-only mode', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+    const tester = new CredentialTester({ fetchImpl })
+
+    await expect(tester.test(
+      credential({ refreshToken: null, canRefresh: false }),
+      undefined,
+      'refresh'
+    )).resolves.toMatchObject({ status: 'non_refreshable', stage: 'refresh' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('matches CPA by loading quota before verifying compact', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

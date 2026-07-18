@@ -581,6 +581,40 @@ describe('AccountManager', () => {
     expect((await manager.listAccounts()).every((item) => item.status === 'valid')).toBe(true)
   })
 
+  it('forwards refresh-only mode and preserves the previous usage snapshot', async () => {
+    const fixture = await setup()
+    await writeFile(
+      join(fixture.accountDirectory, 'refresh-mode.json'),
+      JSON.stringify({
+        access_token: jwt({ sub: 'refresh-mode-user' }),
+        refresh_token: 'refresh-mode-token',
+        email: 'refresh-mode@example.com'
+      })
+    )
+    const test = vi.fn(async (item: NormalizedCredential) => ({
+      ...successfulResult(item.id),
+      stage: 'refresh' as const,
+      detail: '凭据刷新成功',
+      refreshed: true,
+      usage: null
+    }))
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      tester: { test },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const scan = await manager.scanDirectory()
+    await fixture.statusStore.set(successfulResult(scan.accounts[0].id))
+
+    const result = await manager.testAccounts([scan.accounts[0].id], { mode: 'refresh' })
+
+    expect(test).toHaveBeenCalledWith(expect.any(Object), undefined, 'refresh')
+    expect(result.results[0].usage?.planType).toBe('plus')
+    expect((await manager.listAccounts())[0].usage?.planType).toBe('plus')
+  })
+
   it('keeps the last account status across reloads and directory scans', async () => {
     const fixture = await setup()
     await writeFile(

@@ -30,10 +30,11 @@ import {
   X
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AppSnapshot, UpdateState } from '../../shared/ipc'
+import type { AppSnapshot, AppSnapshotPatch, AppSnapshotScope, UpdateState } from '../../shared/ipc'
 import type {
   AccountSummary,
   AppSettings,
+  CodexTestMode,
   DisplayAccountStatus,
   CredentialExportFormat,
   CredentialExportLayout,
@@ -46,10 +47,16 @@ import type {
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
 import { displayStatus, STATUS_LABELS } from './account-status'
+import {
+  CODEX_TEST_MODE_RUNNING,
+  CODEX_TEST_MODE_SUCCESS,
+  CodexTestModeControl
+} from './components/CodexTestModeControl'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { CpaPage, GrokLibraryPage } from './GrokPage'
 import { useDialogFocus } from './hooks/useDialogFocus'
 import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
+import { useVirtualTableRows } from './hooks/useVirtualTableRows'
 
 type ThemeMode = 'light' | 'dark'
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
@@ -178,6 +185,7 @@ export function App(): React.JSX.Element {
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
   const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
+  const [testMode, setTestMode] = useState<CodexTestMode>('full')
   const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'cpa' | 'automation'>('accounts')
   const [automationKeyword, setAutomationKeyword] = useState('')
   const [automationSort, setAutomationSort] = useState<AccountSortMode>('availability_reset')
@@ -206,6 +214,7 @@ export function App(): React.JSX.Element {
     y: number
   } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
+  const previousViewRef = useRef(activeView)
   const [clock, setClock] = useState(() => Date.now())
 
   const closeImportDialog = (force = false): void => {
@@ -239,14 +248,23 @@ export function App(): React.JSX.Element {
     }
   }, [theme])
 
-  const reload = async (preserveSettingsDraft = false): Promise<void> => {
-    const next = await window.codexSwitcher.getSnapshot()
-    setSnapshot(next)
-    if (!preserveSettingsDraft) setSettingsDraft(next.settings)
+  const applySnapshotPatch = (patch: AppSnapshotPatch, preserveSettingsDraft = false): void => {
+    setSnapshot((current) => current ? { ...current, ...patch } : current)
+    if (!preserveSettingsDraft && patch.settings) setSettingsDraft(patch.settings)
+  }
+
+  const reload = async (
+    preserveSettingsDraft = false,
+    scope: AppSnapshotScope = activeView
+  ): Promise<void> => {
+    applySnapshotPatch(await window.codexSwitcher.getPageSnapshot(scope), preserveSettingsDraft)
   }
 
   useEffect(() => {
-    void reload()
+    void window.codexSwitcher.getSnapshot().then((next) => {
+      setSnapshot(next)
+      setSettingsDraft(next.settings)
+    })
     void window.codexSwitcher.getUpdateState().then(setUpdateState)
     const stopTesting = window.codexSwitcher.onTestProgress((testing) =>
       setSnapshot((current) => {
@@ -289,7 +307,9 @@ export function App(): React.JSX.Element {
     )
     const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
-      if (!autoSwitch.running) void reload(true)
+      if (!autoSwitch.running) {
+        void window.codexSwitcher.getPageSnapshot('accounts').then((patch) => applySnapshotPatch(patch, true))
+      }
     })
     return () => {
       stopTesting()
@@ -300,6 +320,12 @@ export function App(): React.JSX.Element {
       stopAutoSwitch()
     }
   }, [])
+
+  useEffect(() => {
+    if (previousViewRef.current === activeView) return
+    previousViewRef.current = activeView
+    if (snapshot) void reload(true, activeView)
+  }, [activeView])
 
   useEffect(() => {
     const interval = window.setInterval(() => setClock(Date.now()), 30_000)
@@ -354,12 +380,29 @@ export function App(): React.JSX.Element {
         .toLowerCase()
         .includes(query)
     }).sort(compareAccounts(accountSort))
-  }, [accountSort, keyword, snapshot, statusFilter])
+  }, [accountSort, keyword, snapshot?.accounts, statusFilter])
 
   const accountById = useMemo(
     () => new Map((snapshot?.accounts ?? []).map((account) => [account.id, account])),
-    [snapshot]
+    [snapshot?.accounts]
   )
+  const runningAccountIds = useMemo(
+    () => new Set(snapshot?.testing.runningIds ?? []),
+    [snapshot?.testing.runningIds]
+  )
+  const counts = useMemo(() => Object.keys(STATUS_LABELS).reduce<Record<string, number>>((result, status) => {
+    result[status] = (snapshot?.accounts ?? []).filter((item) => displayStatus(item.status) === status).length
+    return result
+  }, {}), [snapshot?.accounts])
+  const selectedAccount = useMemo(() => selected.size === 1
+    ? (snapshot?.accounts ?? []).find((account) => selected.has(account.id)) ?? null
+    : null, [selected, snapshot?.accounts])
+  const automationAccounts = useMemo(() => (snapshot?.accounts ?? []).filter((account) => {
+    const query = automationKeyword.trim().toLowerCase()
+    return !query || `${account.email ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
+  }).sort(compareAccounts(automationSort)), [automationKeyword, automationSort, snapshot?.accounts])
+  const virtualAccounts = useVirtualTableRows(accounts, (account) => account.id)
+  const virtualAutomationAccounts = useVirtualTableRows(automationAccounts, (account) => account.id, 96)
 
   const openExport = (ids?: string[]): void => {
     const accountIds = ids ?? (selected.size > 0 ? [...selected] : accounts.map((item) => item.id))
@@ -730,17 +773,6 @@ export function App(): React.JSX.Element {
     )
   }
 
-  const counts = Object.keys(STATUS_LABELS).reduce<Record<string, number>>((result, status) => {
-    result[status] = snapshot.accounts.filter((item) => displayStatus(item.status) === status).length
-    return result
-  }, {})
-  const selectedAccount = selected.size === 1
-    ? snapshot.accounts.find((account) => selected.has(account.id)) ?? null
-    : null
-  const automationAccounts = snapshot.accounts.filter((account) => {
-    const query = automationKeyword.trim().toLowerCase()
-    return !query || `${account.email ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
-  }).sort(compareAccounts(automationSort))
   const switchCapability = (account: AccountSummary): string => {
     if (!account.switchable) return '仅用于检测'
     const mode = account.switchMode ?? (account.canRefresh ? 'oauth' : 'external')
@@ -823,10 +855,11 @@ export function App(): React.JSX.Element {
         </button>
         </div>
         <div className="toolbar-group">
+        <CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.testing.active} />
         <button
           onClick={() => void run(
-            () => window.codexSwitcher.testAccounts(accounts.map((account) => account.id)),
-            `当前筛选 ${accounts.length} 个账号检测完成`,
+            () => window.codexSwitcher.testAccounts(accounts.map((account) => account.id), testMode),
+            `当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`,
             false
           )}
           disabled={busy || snapshot.testing.active || accounts.length === 0}
@@ -869,7 +902,7 @@ export function App(): React.JSX.Element {
           <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
           <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
         </div>
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected]), '选中账号检测完成', false)} disabled={busy || snapshot.testing.active || selected.size === 0}>
+        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`, false)} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Play size={16} />测试选中
         </button>
         <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '该认证模式写入后必须重启 Codex' : undefined}>
@@ -907,7 +940,7 @@ export function App(): React.JSX.Element {
         <span className="selection-count">显示 {accounts.length} / {snapshot.accounts.length} · 已选 {selected.size}</span>
       </div>
 
-      <div className="table-wrap">
+      <div className="table-wrap" ref={virtualAccounts.scrollRef}>
         <table>
           <thead>
             <tr>
@@ -916,11 +949,14 @@ export function App(): React.JSX.Element {
             </tr>
           </thead>
           <tbody>
-            {accounts.map((account) => {
-              const running = snapshot.testing.runningIds.includes(account.id)
+            {virtualAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingTop }} /></tr>}
+            {virtualAccounts.rows.map(({ index, item: account }) => {
+              const running = runningAccountIds.has(account.id)
               return (
               <tr
                 key={account.id}
+                data-index={index}
+                ref={virtualAccounts.enabled ? virtualAccounts.measureElement : undefined}
                 className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
                 aria-busy={running}
                 aria-current={account.active ? 'true' : undefined}
@@ -942,7 +978,7 @@ export function App(): React.JSX.Element {
                 </td>
                 <td>
                   {running ? (
-                    <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">正在验证账号并刷新额度</div></>
+                    <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">{CODEX_TEST_MODE_RUNNING[testMode]}</div></>
                   ) : (
                     <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>
                   )}
@@ -954,6 +990,7 @@ export function App(): React.JSX.Element {
               </tr>
               )
             })}
+            {virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}
             {accounts.length === 0 && <tr><td colSpan={7} className="empty-state">没有匹配的账号</td></tr>}
           </tbody>
         </table>
@@ -961,14 +998,14 @@ export function App(): React.JSX.Element {
       </div> : activeView === 'grok' ? (
         <GrokLibraryPage
           snapshot={snapshot}
-          onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
+          onSnapshot={(patch) => applySnapshotPatch(patch)}
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
         />
       ) : activeView === 'cpa' ? (
         <CpaPage
           snapshot={snapshot}
-          onSnapshot={(next) => { setSnapshot(next); setSettingsDraft(next.settings) }}
+          onSnapshot={(patch) => applySnapshotPatch(patch)}
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
         />
@@ -1016,15 +1053,16 @@ export function App(): React.JSX.Element {
             <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</button>
           </div>
 
-          <div className="table-wrap automation-table-wrap">
+          <div className="table-wrap automation-table-wrap" ref={virtualAutomationAccounts.scrollRef}>
             <table className="automation-table">
               <thead><tr><th className="select-column">候选</th><th>账号</th><th>状态</th><th>等级</th><th>当前额度</th><th>最后检测</th></tr></thead>
               <tbody>
-                {automationAccounts.map((account) => {
+                {virtualAutomationAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={6} style={{ height: virtualAutomationAccounts.paddingTop }} /></tr>}
+                {virtualAutomationAccounts.rows.map(({ index, item: account }) => {
                   const checked = settingsDraft.autoSwitchAccountIds.includes(account.id)
-                  const running = snapshot.testing.runningIds.includes(account.id)
+                  const running = runningAccountIds.has(account.id)
                   return (
-                    <tr key={account.id} className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${checked ? ' selected-row' : ''}`} onClick={() => {
+                    <tr key={account.id} data-index={index} ref={virtualAutomationAccounts.enabled ? virtualAutomationAccounts.measureElement : undefined} className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${checked ? ' selected-row' : ''}`} onClick={() => {
                       if (!account.switchable) return
                       setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: checked ? settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) : [...settingsDraft.autoSwitchAccountIds, account.id] })
                     }}>
@@ -1037,6 +1075,7 @@ export function App(): React.JSX.Element {
                     </tr>
                   )
                 })}
+                {virtualAutomationAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={6} style={{ height: virtualAutomationAccounts.paddingBottom }} /></tr>}
                 {automationAccounts.length === 0 && <tr><td colSpan={6} className="empty-state">没有匹配的账号</td></tr>}
               </tbody>
             </table>
@@ -1219,7 +1258,7 @@ export function App(): React.JSX.Element {
           <div className="context-account" title={contextMenu.account.email ?? contextMenu.account.sourcePath}>
             {contextMenu.account.email ?? '邮箱未知'}
           </div>
-          <button role="menuitem" onClick={() => contextAction(() => run(() => window.codexSwitcher.testAccounts([contextMenu.account.id]), '账号检测完成'))}>
+          <button role="menuitem" onClick={() => contextAction(() => run(() => window.codexSwitcher.testAccounts([contextMenu.account.id], testMode), CODEX_TEST_MODE_SUCCESS[testMode]))}>
             <TestTube2 size={15} />检测此账号
           </button>
           <button role="menuitem" disabled={busy || snapshot.testing.active || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : snapshot.testing.active ? '账号检测进行中' : requiresRestartAuth(contextMenu.account) ? '该认证模式切换后需重启 Codex' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, false))}>

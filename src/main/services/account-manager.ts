@@ -6,6 +6,7 @@ import type {
   AppSettings,
   AutoSwitchRunResult,
   BatchTestResult,
+  CodexTestMode,
   CredentialSourceFormat,
   DeleteAccountsResult,
   NormalizedCredential,
@@ -21,7 +22,7 @@ import type { CredentialVault } from '../storage/vault'
 import type { StatusStore } from '../storage/status-store'
 
 interface TesterLike {
-  test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult>
+  test(credential: NormalizedCredential, signal?: AbortSignal, mode?: CodexTestMode): Promise<TestResult>
 }
 
 interface SwitcherLike {
@@ -73,6 +74,7 @@ interface ManagerTestProgress {
 
 interface TestAccountsOptions {
   signal?: AbortSignal
+  mode?: CodexTestMode
   onProgress?: (progress: ManagerTestProgress) => void
 }
 
@@ -384,6 +386,9 @@ export class AccountManager {
     let done = 0
     const total = credentials.length
     const runningIds = new Set<string>()
+    const previousStatuses = options.mode === 'refresh'
+      ? await this.options.statusStore.getAll()
+      : {}
     options.onProgress?.({ done, total, runningIds: [] })
 
     const worker = async (): Promise<void> => {
@@ -396,7 +401,7 @@ export class AccountManager {
         options.onProgress?.({ done, total, runningIds: [...runningIds] })
         let result: TestResult
         try {
-          result = await this.options.tester.test(credential, options.signal)
+          result = await this.options.tester.test(credential, options.signal, options.mode ?? 'full')
         } catch {
           result = {
             accountId: credential.id,
@@ -409,9 +414,13 @@ export class AccountManager {
             usage: null
           }
         }
-        results.push(result)
-        await this.updateCredentialPlan(credential.id, result)
-        await this.options.statusStore.set(result)
+        const previous = previousStatuses[credential.id]
+        const storedResult = options.mode === 'refresh' && !result.usage && previous?.usage
+          ? { ...result, usage: previous.usage }
+          : result
+        results.push(storedResult)
+        await this.updateCredentialPlan(credential.id, storedResult)
+        await this.options.statusStore.set(storedResult)
         runningIds.delete(credential.id)
         done += 1
         const updatedAccount = (await this.listAccounts()).find(
@@ -439,7 +448,7 @@ export class AccountManager {
     const needsSilentValidation = credentialNeedsRefresh(credential) ||
       Boolean(cached && STATUSES_REQUIRING_SWITCH_VALIDATION.has(cached.status))
     if (needsSilentValidation) {
-      const result = await this.options.tester.test(credential)
+      const result = await this.options.tester.test(credential, undefined, 'full')
       await this.updateCredentialPlan(credential.id, result)
       await this.options.statusStore.set(result)
       await this.persistVaultLibrary()
@@ -480,7 +489,7 @@ export class AccountManager {
       })
     }
     onProgress?.({ done: 0, total: Math.max(1, candidateIds.length + 1), runningIds: [active.id] })
-    const activeResult = await this.options.tester.test(activeCredential)
+    const activeResult = await this.options.tester.test(activeCredential, undefined, 'full')
     await notify(active.id, activeResult)
     const triggerStatuses = new Set<TestResult['status']>([
       'quota_exhausted',
@@ -512,7 +521,7 @@ export class AccountManager {
         total: Math.max(1, uniqueCandidates.length + 1),
         runningIds: [id]
       })
-      const result = await this.options.tester.test(credential)
+      const result = await this.options.tester.test(credential, undefined, 'full')
       await notify(id, result)
       if (result.status !== 'valid') continue
       const latestCredential = (await this.options.vault.get(id)) ?? credential

@@ -4,6 +4,7 @@ import type {
   AutoSwitchRunResult,
   AutoSwitchState,
   BatchTestResult,
+  CodexTestMode,
   CpaCodexAccountSummary,
   CpaCodexScanResult,
   CpaDirectoryStats,
@@ -84,6 +85,9 @@ export interface AppSnapshot {
   customApi: CustomApiProfileSummary
 }
 
+export type AppSnapshotScope = 'accounts' | 'grok' | 'cpa' | 'automation'
+export type AppSnapshotPatch = Partial<AppSnapshot>
+
 export interface RestartResult {
   ok: boolean
   message: string
@@ -91,6 +95,7 @@ export interface RestartResult {
 
 export interface CodexSwitcherApi {
   getSnapshot(): Promise<AppSnapshot>
+  getPageSnapshot(scope: AppSnapshotScope): Promise<AppSnapshotPatch>
   scanDirectory(): Promise<ScanResult>
   importFiles(): Promise<ScanResult | null>
   importDirectory(): Promise<ScanResult | null>
@@ -104,7 +109,7 @@ export interface CodexSwitcherApi {
   deleteAccounts(ids: string[]): Promise<DeleteAccountsResult>
   exportAccounts(request: CredentialExportRequest): Promise<CredentialExportResult>
   exportAccountsToCpa(request: CredentialPriorityRequest): Promise<CpaCodexScanResult>
-  testAccounts(ids?: string[]): Promise<BatchTestResult>
+  testAccounts(ids?: string[], mode?: CodexTestMode): Promise<BatchTestResult>
   cancelTests(): Promise<void>
   switchAccount(id: string, restart: boolean): Promise<SwitchResult>
   restoreLatest(restart: boolean): Promise<SwitchResult>
@@ -128,7 +133,7 @@ export interface CodexSwitcherApi {
   setCpaGrokEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult>
   scanCpaCodexDirectory(): Promise<CpaCodexScanResult>
   syncCpaCodexToLibrary(ids?: string[]): Promise<ScanResult>
-  testCpaCodexAccounts(ids?: string[]): Promise<BatchTestResult>
+  testCpaCodexAccounts(ids?: string[], mode?: CodexTestMode): Promise<BatchTestResult>
   cancelCpaCodexTests(): Promise<void>
   deleteCpaCodexAccounts(ids: string[]): Promise<DeleteAccountsResult>
   setCpaCodexEnabled(ids: string[], enabled: boolean): Promise<ManagedFileStateResult>
@@ -156,6 +161,7 @@ export interface CodexSwitcherApi {
 
 export const ipcChannels = {
   snapshot: 'app:snapshot',
+  snapshotPage: 'app:snapshot-page',
   scan: 'accounts:scan',
   import: 'accounts:import',
   importDirectory: 'accounts:import-directory',

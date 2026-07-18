@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   AccountStatus,
+  CodexTestMode,
   NormalizedCredential,
   TestResult,
   UsageSummary,
@@ -540,10 +541,38 @@ export class CredentialTester {
       options.personalAccessTokenWhoamiUrl ?? PERSONAL_ACCESS_TOKEN_WHOAMI_URL
   }
 
-  async test(credential: NormalizedCredential, signal?: AbortSignal): Promise<TestResult> {
+  async test(
+    credential: NormalizedCredential,
+    signal?: AbortSignal,
+    mode: CodexTestMode = 'full'
+  ): Promise<TestResult> {
     const checkedAt = this.now().toISOString()
     let activeCredential = credential
     let refreshed = false
+
+    if (mode === 'refresh') {
+      if (!activeCredential.refreshToken) {
+        return this.result(
+          activeCredential,
+          'non_refreshable',
+          '该凭据不支持自动刷新',
+          'refresh',
+          checkedAt
+        )
+      }
+      const refreshResult = await this.refresh(activeCredential, signal)
+      if ('status' in refreshResult) return { ...refreshResult, checkedAt }
+      return {
+        accountId: credential.id,
+        status: 'valid',
+        detail: '凭据刷新成功（未执行额度与真实请求检测）',
+        checkedAt,
+        httpStatus: 200,
+        stage: 'refresh',
+        refreshed: true,
+        usage: null
+      }
+    }
 
     if (
       activeCredential.authKind === 'personal_access_token' ||
@@ -570,13 +599,13 @@ export class CredentialTester {
       refreshed = true
     }
 
-    let stageResult = await this.runStages(activeCredential, signal)
+    let stageResult = await this.runStages(activeCredential, signal, mode)
     if (stageResult.authFailure && !refreshed && activeCredential.refreshToken) {
       const refreshResult = await this.refresh(activeCredential, signal)
       if ('status' in refreshResult) return { ...refreshResult, checkedAt }
       activeCredential = refreshResult.credential
       refreshed = true
-      stageResult = await this.runStages(activeCredential, signal)
+      stageResult = await this.runStages(activeCredential, signal, mode)
     }
 
     return {
@@ -675,7 +704,8 @@ export class CredentialTester {
 
   private async runStages(
     credential: NormalizedCredential,
-    signal?: AbortSignal
+    signal: AbortSignal | undefined,
+    mode: Exclude<CodexTestMode, 'refresh'>
   ): Promise<StageResult> {
     let usage: UsageSummary | null = null
     let usageNotice: string | null = null
@@ -689,6 +719,7 @@ export class CredentialTester {
       credential
     )
     if ('networkError' in usageResponse) {
+      if (mode === 'usage') return { ...usageResponse.networkError, stage: 'usage' }
       usageNotice = `额度查询失败: ${usageResponse.networkError.detail}`
     } else {
       const usagePayload = await responsePayload(usageResponse)
@@ -700,6 +731,9 @@ export class CredentialTester {
         return this.stage('workspace_deactivated', 'Team/K12 工作区已停用', usageResponse.status, 'usage')
       }
       if (isQuotaError(usageResponse.status, usageDetail, usagePayload)) {
+        if (mode === 'usage') {
+          return this.stage('quota_exhausted', usageDetail, usageResponse.status, 'usage')
+        }
         usageQuota = { detail: usageDetail, httpStatus: usageResponse.status }
       } else if (usageResponse.ok) {
         usage = parseUsageResponse(usagePayload, this.now().toISOString())
@@ -725,7 +759,18 @@ export class CredentialTester {
             usage
           )
         }
+        if (mode === 'usage') {
+          return this.stage('valid', '额度查询成功（未执行真实请求检测）', usageResponse.status, 'usage', usage)
+        }
       } else {
+        if (mode === 'usage') {
+          const status = usageResponse.status === 403
+            ? 'no_permission'
+            : usageResponse.status === 429
+              ? 'network_error'
+              : 'endpoint_incompatible'
+          return this.stage(status, `额度接口 HTTP ${usageResponse.status}: ${usageDetail}`, usageResponse.status, 'usage')
+        }
         usageNotice = `额度接口 HTTP ${usageResponse.status}: ${usageDetail}`
       }
     }
