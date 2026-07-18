@@ -833,6 +833,28 @@ describe('App', () => {
     )
   })
 
+  it('distinguishes recognized but invalid RTs from unrecognized input', async () => {
+    vi.mocked(window.codexSwitcher.importRefreshTokens).mockResolvedValueOnce({
+      imported: 0,
+      skipped: 0,
+      recognized: 94,
+      errors: ['#1：Codex RT：invalid_refresh_token: Invalid refresh token.'],
+      accounts: snapshot.accounts
+    })
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Codex RT' }))
+    fireEvent.change(screen.getByLabelText('凭据文本'), {
+      target: { value: 'rt.1.invalid-refresh-token-value' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '清洗并导入' }))
+
+    expect(await screen.findByText(/已识别 94 条，但均未完成导入/)).toBeInTheDocument()
+    expect(screen.queryByText(/未识别到 Codex 或 Grok 账号/)).not.toBeInTheDocument()
+  })
+
   it('completes the Sub2API-style browser OAuth flow from a pasted callback URL', async () => {
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')

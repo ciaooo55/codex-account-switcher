@@ -299,6 +299,7 @@ export interface AutoSwitchRunResult {
 export interface ScanResult {
   imported: number
   skipped: number
+  recognized?: number
   errors: string[]
   accounts: AccountSummary[]
 }
@@ -306,6 +307,7 @@ export interface ScanResult {
 export interface LibraryImportResult {
   imported: number
   skipped: number
+  recognized?: number
   errors: string[]
   codexImported: number
   codexSkipped: number

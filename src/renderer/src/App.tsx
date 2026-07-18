@@ -452,13 +452,19 @@ export function App(): React.JSX.Element {
 
   const importMessage = (result: ScanResult | LibraryImportResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
     const total = result.imported + result.skipped
+    const recognized = result.recognized ?? total
+    const firstError = result.errors[0]
     const detail = 'grokImported' in result
       ? `Codex 新增 ${result.codexImported}、重复 ${result.codexSkipped}；Grok 新增 ${result.grokImported}、重复 ${result.grokSkipped}`
       : `Codex 新增 ${result.imported}、重复 ${result.skipped}`
     return {
       kind: result.errors.length > 0 ? 'warn' : 'ok',
-      text: total === 0
-        ? `${source}：未识别到 Codex 或 Grok 账号`
+      text: total === 0 && recognized > 0
+        ? `${source}：已识别 ${recognized} 条，但均未完成导入；失败 ${result.errors.length} 项${firstError ? `。首项：${firstError}` : ''}`
+        : total === 0 && result.errors.length > 0
+          ? `${source}：未能导入账号；${result.errors.length} 项存在问题${firstError ? `。首项：${firstError}` : ''}`
+          : total === 0
+            ? `${source}：未识别到 Codex 或 Grok 账号`
         : `${source}：${detail}${result.errors.length ? `；${result.errors.length} 个文件存在问题` : ''}`
     }
   }

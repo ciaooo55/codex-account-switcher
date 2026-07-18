@@ -88,6 +88,32 @@ describe('OpenAIRefreshTokenImporter', () => {
     expect(secondBody.get('client_id')).toBe(MOBILE_OAUTH_CLIENT_ID)
   })
 
+  it('reports both client failures and stops retrying a rejected OAuth client', async () => {
+    const invalidRefresh = () => new Response(JSON.stringify({
+      error: { code: 'invalid_refresh_token', message: 'Invalid refresh token.' }
+    }), { status: 401, headers: { 'Content-Type': 'application/json' } })
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(async () => invalidRefresh())
+      .mockImplementationOnce(async () => new Response(JSON.stringify({
+        error: { code: 'invalid_client', message: 'Invalid client specified.' }
+      }), { status: 401, headers: { 'Content-Type': 'application/json' } }))
+      .mockImplementationOnce(async () => invalidRefresh())
+    const importer = new OpenAIRefreshTokenImporter({ fetchImpl })
+
+    const result = await importer.resolve([
+      'rt.1.first-invalid-refresh-token-value',
+      'rt.1.second-invalid-refresh-token-value'
+    ].join('\n'), 'auto')
+
+    expect(result.total).toBe(2)
+    expect(result.credentials).toEqual([])
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(result.errors[0]).toContain('Codex RT：invalid_refresh_token')
+    expect(result.errors[0]).toContain('Mobile RT：invalid_client')
+    expect(result.errors[1]).toContain('Codex RT：invalid_refresh_token')
+    expect(result.errors[1]).toContain('Mobile RT：invalid_client')
+  })
+
   it('reports partial failures without exposing a submitted RT', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       error: 'invalid_grant',

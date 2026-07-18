@@ -495,6 +495,34 @@ describe('AccountManager', () => {
     })
   })
 
+  it('preserves the recognized RT count when every exchange fails', async () => {
+    const fixture = await setup()
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      managedImportDirectory: join(fixture.root, 'app', 'aa'),
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      refreshTokenImporter: {
+        resolve: vi.fn().mockResolvedValue({
+          credentials: [],
+          errors: ['#1：invalid_refresh_token'],
+          total: 94
+        })
+      },
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const result = await manager.importRefreshTokens('rt.1.invalid-value', 'codex')
+
+    expect(result).toMatchObject({
+      imported: 0,
+      skipped: 0,
+      recognized: 94,
+      errors: ['#1：invalid_refresh_token']
+    })
+  })
+
   it('marks the credential matching the current auth.json as active', async () => {
     const fixture = await setup()
     const idToken = jwt({ sub: 'user-a', email: 'person@example.com' })

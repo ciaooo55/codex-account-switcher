@@ -74,6 +74,14 @@ function clientIds(mode: RefreshTokenClientMode): string[] {
   return [CODEX_OAUTH_CLIENT_ID, MOBILE_OAUTH_CLIENT_ID]
 }
 
+function clientLabel(clientId: string): string {
+  return clientId === MOBILE_OAUTH_CLIENT_ID ? 'Mobile RT' : 'Codex RT'
+}
+
+function isInvalidClient(failure: ExchangeFailure): boolean {
+  return /invalid[_ ]client/i.test(failure.detail)
+}
+
 export function extractOpenAIRefreshTokens(text: string): string[] {
   const matches = text.match(/rt\.1\.[A-Za-z0-9._*\\-]+/g) ?? []
   return [...new Set(matches
@@ -102,15 +110,20 @@ export class OpenAIRefreshTokenImporter {
     const tokens = extractOpenAIRefreshTokens(text)
     const credentials: NormalizedCredential[] = []
     const errors: string[] = []
+    const unavailableClients = new Map<string, ExchangeFailure>()
 
     for (let index = 0; index < tokens.length; index += 1) {
       const refreshToken = tokens[index]
       let failure: ExchangeFailure | null = null
+      const attempts: Array<{ clientId: string; failure: ExchangeFailure }> = []
       let resolved = false
       for (const clientId of clientIds(mode)) {
-        const exchanged = await this.exchange(refreshToken, clientId)
+        const exchanged = unavailableClients.get(clientId) ??
+          await this.exchange(refreshToken, clientId)
         if (!exchanged.ok) {
           failure = exchanged
+          attempts.push({ clientId, failure: exchanged })
+          if (isInvalidClient(exchanged)) unavailableClients.set(clientId, exchanged)
           if (exchanged.status === null || exchanged.status >= 500) break
           continue
         }
@@ -140,7 +153,12 @@ export class OpenAIRefreshTokenImporter {
         break
       }
       if (!resolved) {
-        errors.push(`#${index + 1}：${failure?.detail ?? 'Refresh Token 验证失败'}`)
+        const detail = attempts.length > 1
+          ? attempts.map((attempt) =>
+              `${clientLabel(attempt.clientId)}：${attempt.failure.detail}`
+            ).join('；')
+          : failure?.detail ?? 'Refresh Token 验证失败'
+        errors.push(`#${index + 1}：${detail}`)
       }
     }
 

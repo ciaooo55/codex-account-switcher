@@ -222,11 +222,15 @@ export class AccountManager {
       sourcePath: 'pasted-credential.json',
       format: 'paste'
     })
+    let recognized = parsed.credentials.length
     if (parsed.credentials.length === 0 && this.options.refreshTokenImporter) {
       const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto')
-      if (refreshed.total > 0) parsed = refreshed
+      if (refreshed.total > 0) {
+        parsed = refreshed
+        recognized = refreshed.total
+      }
     }
-    return this.importResolvedCredentials(parsed.credentials, parsed.errors)
+    return this.importResolvedCredentials(parsed.credentials, parsed.errors, recognized)
   }
 
   async importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult> {
@@ -235,7 +239,7 @@ export class AccountManager {
     }
     if (!this.options.refreshTokenImporter) throw new Error('Refresh Token 导入器不可用')
     const parsed = await this.options.refreshTokenImporter.resolve(text, mode)
-    return this.importResolvedCredentials(parsed.credentials, parsed.errors)
+    return this.importResolvedCredentials(parsed.credentials, parsed.errors, parsed.total)
   }
 
   startOAuthAuthorization(): OAuthAuthorizationSession {
@@ -263,11 +267,18 @@ export class AccountManager {
 
   private async importResolvedCredentials(
     input: readonly NormalizedCredential[],
-    errors: readonly string[]
+    errors: readonly string[],
+    recognized = input.length
   ): Promise<ScanResult> {
     const credentials = dedupeCredentials(input)
     if (credentials.length === 0) {
-      return { imported: 0, skipped: 0, errors: [...errors], accounts: await this.listAccounts() }
+      return {
+        imported: 0,
+        skipped: 0,
+        recognized,
+        errors: [...errors],
+        accounts: await this.listAccounts()
+      }
     }
     await this.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
     const existing = dedupeCredentials(await this.options.vault.list())
@@ -279,6 +290,7 @@ export class AccountManager {
     return {
       imported,
       skipped: credentials.length - imported,
+      recognized,
       errors: [...errors],
       accounts: await this.listAccounts()
     }
