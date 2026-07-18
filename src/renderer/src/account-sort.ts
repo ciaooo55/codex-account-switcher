@@ -8,6 +8,7 @@ export interface SortableAccount {
   status: AccountStatus | DisplayAccountStatus
   usage: UsageSummary | null
   disabled?: boolean
+  active?: boolean
 }
 
 function availabilityRank(account: SortableAccount): number {
@@ -43,6 +44,7 @@ function text(value: string | null): string {
 
 export function compareAccounts(mode: AccountSortMode): (left: SortableAccount, right: SortableAccount) => number {
   return (left, right) => {
+    if (Boolean(left.active) !== Boolean(right.active)) return left.active ? -1 : 1
     if (mode === 'availability_reset') {
       const rankOrder = availabilityRank(left) - availabilityRank(right)
       if (rankOrder) return rankOrder

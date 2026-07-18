@@ -9,7 +9,7 @@ export function StatusFilterStrip({
   label
 }: {
   value: DisplayAccountStatus | ''
-  counts: (status: DisplayAccountStatus) => number
+  counts: Readonly<Partial<Record<DisplayAccountStatus, number>>>
   total: number
   onChange: (status: DisplayAccountStatus | '') => void
   label: string
@@ -23,14 +23,16 @@ export function StatusFilterStrip({
       >
         <span>全部</span><strong>{total}</strong>
       </button>
-      {Object.entries(STATUS_LABELS).map(([status, statusLabel]) => (
+      {Object.entries(STATUS_LABELS).filter(([status]) =>
+        (counts[status as DisplayAccountStatus] ?? 0) > 0 || value === status
+      ).map(([status, statusLabel]) => (
         <button
           key={status}
           className={`${value === status ? 'active ' : ''}filter-${status}`}
           aria-pressed={value === status}
           onClick={() => onChange(status as DisplayAccountStatus)}
         >
-          <span>{statusLabel}</span><strong>{counts(status as DisplayAccountStatus)}</strong>
+          <span>{statusLabel}</span><strong>{counts[status as DisplayAccountStatus] ?? 0}</strong>
         </button>
       ))}
     </div>

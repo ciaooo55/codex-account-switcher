@@ -38,6 +38,8 @@ interface GrokManagerOptions {
   tester: {
     test(credential: GrokCredential, signal?: AbortSignal): Promise<GrokTestResult>
   }
+  onCredentialsChanged?: () => Promise<void>
+  onStatusesChanged?: () => Promise<void>
 }
 
 interface TestOptions {
@@ -210,6 +212,7 @@ export class GrokAccountManager {
       await Promise.all(removed.map((item) => rm(item.path, { force: true })))
       this.recordIndex.invalidate()
       await this.options.statusStore.removeMany(removedIds)
+      await this.options.onCredentialsChanged?.()
     } catch (error) {
       await this.options.deletedStore?.removeMany(removedIds).catch(() => undefined)
       throw error
@@ -281,12 +284,14 @@ export class GrokAccountManager {
         results.push(tested)
         await this.options.statusStore.setBuffered(tested)
         let updatedRecord = this.dedupeRecords(this.activeTestRecords?.get(credential.id) ?? [initialRecord])[0]
-        if (tested.status === 'quota_exhausted_weekly' || tested.status === 'quota_exhausted_5h') {
-          updatedRecord = (await this.transitionRecordGroup(this.activeTestRecords?.get(credential.id) ?? [updatedRecord], 'no_usage')).record ?? updatedRecord
-        } else if (tested.status === 'invalid' && (tested.httpStatus === 401 || tested.httpStatus === 403)) {
-          updatedRecord = (await this.transitionRecordGroup(this.activeTestRecords?.get(credential.id) ?? [updatedRecord], 'no_permission')).record ?? updatedRecord
-        } else if (tested.status === 'valid') {
-          updatedRecord = (await this.transitionRecordGroup(this.activeTestRecords?.get(credential.id) ?? [updatedRecord], 'enabled')).record ?? updatedRecord
+        if (this.options.fileNameStyle !== 'library') {
+          if (tested.status === 'quota_exhausted_weekly' || tested.status === 'quota_exhausted_5h') {
+            updatedRecord = (await this.transitionRecordGroup(this.activeTestRecords?.get(credential.id) ?? [updatedRecord], 'no_usage')).record ?? updatedRecord
+          } else if (tested.status === 'invalid' && (tested.httpStatus === 401 || tested.httpStatus === 403)) {
+            updatedRecord = (await this.transitionRecordGroup(this.activeTestRecords?.get(credential.id) ?? [updatedRecord], 'no_permission')).record ?? updatedRecord
+          } else if (tested.status === 'valid') {
+            updatedRecord = (await this.transitionRecordGroup(this.activeTestRecords?.get(credential.id) ?? [updatedRecord], 'enabled')).record ?? updatedRecord
+          }
         }
         if (updatedRecord) this.activeTestRecords?.set(credential.id, [updatedRecord])
         running.delete(credential.id)
@@ -303,6 +308,7 @@ export class GrokAccountManager {
     try {
       await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, worker))
       await this.options.statusStore.flush()
+      await this.options.onStatusesChanged?.()
       return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
     } finally {
       this.activeTestRecords = null
@@ -433,11 +439,17 @@ export class GrokAccountManager {
     const existing = existingRecords.map((item) => item.credential)
     const imported = dedupeGrokCredentials(importedValues)
     const existingIds = new Set(existing.map((item) => item.id))
-    const importedCount = imported.filter((item) => !existingIds.has(item.id)).length
+    const freshIds = imported.filter((item) => !existingIds.has(item.id)).map((item) => item.id)
+    const importedCount = freshIds.length
     const merged = dedupeGrokCredentials([...existing, ...imported])
     const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.fileState]))
     for (const credential of imported) {
-      if (!stateById.has(credential.id)) stateById.set(credential.id, fileState(credential.sourcePath))
+      if (!stateById.has(credential.id)) {
+        stateById.set(
+          credential.id,
+          this.options.fileNameStyle !== 'library' ? fileState(credential.sourcePath) : 'enabled'
+        )
+      }
     }
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
@@ -468,6 +480,8 @@ export class GrokAccountManager {
       }))
     }
     this.recordIndex.invalidate()
+    await this.options.statusStore.removeMany(freshIds)
+    await this.options.onCredentialsChanged?.()
     return {
       imported: importedCount,
       skipped: imported.length - importedCount,
@@ -476,7 +490,7 @@ export class GrokAccountManager {
     }
   }
 
-  private async listCredentials(managedOnly = true): Promise<GrokCredential[]> {
+  async listCredentials(managedOnly = true): Promise<GrokCredential[]> {
     if (managedOnly) {
       return dedupeGrokCredentials(this.dedupeRecords(await this.managedCredentialRecords()).map((item) => item.credential))
     }

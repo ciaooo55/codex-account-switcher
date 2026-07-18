@@ -40,6 +40,8 @@ interface Options {
   tester: {
     test(credential: NormalizedCredential, signal?: AbortSignal, mode?: CodexTestMode): Promise<TestResult>
   }
+  onCredentialsChanged?: () => Promise<void>
+  onStatusesChanged?: () => Promise<void>
 }
 
 interface TestOptions {
@@ -198,6 +200,7 @@ export class CpaCodexManager {
       sourceCounts.set(credential.sourcePath, (sourceCounts.get(credential.sourcePath) ?? 0) + 1)
     }
     let imported = 0
+    const freshIds: string[] = []
     for (const credential of incoming) {
       const current = managed.get(credential.id)
       const previous = existing.get(credential.id)
@@ -217,9 +220,14 @@ export class CpaCodexManager {
         .filter((record) => record.credential.id === credential.id && resolve(record.path).toLowerCase() !== resolve(target).toLowerCase())
         .map((record) => record.path)
       await Promise.all(duplicatePaths.map((path) => rm(path, { force: true })))
-      if (!previous) imported += 1
+      if (!previous) {
+        imported += 1
+        freshIds.push(credential.id)
+      }
     }
     this.recordIndex.invalidate()
+    await this.options.statusStore.removeMany(freshIds)
+    await this.options.onCredentialsChanged?.()
     return {
       imported,
       skipped: incoming.length - imported,
@@ -251,6 +259,10 @@ export class CpaCodexManager {
     return records
       .map((record) => this.summarize(record, statuses[record.credential.id]))
       .sort((a, b) => (a.email ?? a.sourcePath).localeCompare(b.email ?? b.sourcePath))
+  }
+
+  async listCredentials(): Promise<NormalizedCredential[]> {
+    return this.dedupeRecords(await this.managedRecords()).map((record) => record.credential)
   }
 
   async deleteAccounts(ids: string[]): Promise<DeleteAccountsResult> {
@@ -292,6 +304,7 @@ export class CpaCodexManager {
       }
       this.recordIndex.invalidate()
       await this.options.statusStore.removeMany([...existingIds])
+      await this.options.onCredentialsChanged?.()
     } catch (error) {
       await this.options.deletedStore?.removeMany([...selected]).catch(() => undefined)
       throw error
@@ -395,6 +408,7 @@ export class CpaCodexManager {
     try {
       await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, worker))
       await this.options.statusStore.flush()
+      await this.options.onStatusesChanged?.()
       return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
     } finally {
       this.activeTestRecords = null
@@ -458,7 +472,8 @@ export class CpaCodexManager {
     const existing = existingRecords.map((item) => item.credential)
     const imported = dedupeCredentials(values)
     const existingIds = new Set(existing.map((item) => item.id))
-    const importedCount = imported.filter((item) => !existingIds.has(item.id)).length
+    const freshIds = imported.filter((item) => !existingIds.has(item.id)).map((item) => item.id)
+    const importedCount = freshIds.length
     const merged = dedupeCredentials([...existing, ...imported])
     const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.fileState]))
     for (const credential of imported) {
@@ -495,6 +510,8 @@ export class CpaCodexManager {
       }))
     }
     this.recordIndex.invalidate()
+    await this.options.statusStore.removeMany(freshIds)
+    await this.options.onCredentialsChanged?.()
     return {
       imported: importedCount,
       skipped: imported.length - importedCount,
@@ -544,7 +561,7 @@ export class CpaCodexManager {
 
   private fileStateForStatus(status: AccountStatus): CpaFileState | null {
     if (['quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly'].includes(status)) return 'no_usage'
-    if (status === 'no_permission') return 'no_permission'
+    if (['no_permission', 'invalid', 'workspace_deactivated', 'non_refreshable'].includes(status)) return 'no_permission'
     if (status === 'valid') return 'enabled'
     return null
   }

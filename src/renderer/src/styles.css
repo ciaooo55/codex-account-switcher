@@ -48,10 +48,19 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .library-overview span { margin-bottom: 4px; color: #7e8c96; font-size: 10px; }
 .library-overview strong { color: #e8eef2; font-size: 15px; line-height: 20px; }
 .library-overview .library-path strong { color: #aab6bf; font-size: 11px; font-weight: 600; }
-.codex-overview { grid-template-columns: 116px minmax(260px, .9fr) 108px minmax(300px, 1.25fr); }
+.codex-overview { grid-template-columns: 116px minmax(470px, 1.4fr) 108px minmax(280px, 1fr); }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; white-space: nowrap !important; border: 0 !important; }
 .current-summary { background: #122024; box-shadow: inset 3px 0 #4db7b1; }
 .current-summary strong { display: flex; align-items: center; gap: 6px; color: #b4f0ec; font-size: 12px; }
+.current-account-overview { display: grid; grid-template-columns: minmax(180px, 1fr) 105px 105px auto; align-items: center; gap: 10px; padding-block: 6px !important; }
+.current-account-identity, .current-quota { min-width: 0; }
+.current-account-identity strong { min-width: 0; }
+.current-account-identity strong em { flex: 0 0 auto; padding: 1px 5px; color: #9bd6d1; background: #1a3436; border: 1px solid #315f62; border-radius: 4px; font-size: 9px; font-style: normal; }
+.current-account-identity small { display: block; margin-top: 2px; color: #71858c; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.current-quota { padding-left: 9px; border-left: 1px solid #2b4144; }
+.current-quota span { margin-bottom: 2px; }
+.current-quota strong { color: #d7e6e7; font-size: 10px; }
+.current-refresh-button { min-height: 29px; padding-inline: 8px; white-space: nowrap; }
 .text-ok { color: #56d364; }.text-warn { color: #e3b341; }.text-error { color: #ff7b72; }
 .toolbar { display: flex; align-items: center; gap: 7px; min-height: 48px; padding: 7px 14px; background: #151a1f; border-bottom: 1px solid #2a333a; }
 .toolbar-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding-right: 8px; border-right: 1px solid #303b43; }
@@ -87,7 +96,7 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .message > span { flex: 1; min-width: 0; line-height: 1.4; }
 .message.ok { color: #a2e6b0; background: #17271d; border-color: #366a43; }.message.warn { color: #f0d18a; background: #2b2518; border-color: #705c2d; }.message.error { color: #f4aaa4; background: #2b1a1c; border-color: #713a3e; }
 .message-close { width: 28px; min-height: 28px; padding: 0; color: inherit; background: transparent; border-color: transparent; }
-.filter-row { display: flex; align-items: center; gap: 9px; padding: 8px 14px; background: #101519; border-bottom: 1px solid #293239; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 14px; background: #101519; border-bottom: 1px solid #293239; }
 .status-filter-strip { display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 6px 14px; overflow-x: auto; background: #12171b; border-bottom: 1px solid #293239; }
 .status-filter-strip button { position: relative; min-width: 0; min-height: 29px; justify-content: space-between; gap: 10px; padding: 0 9px; color: #8b98a1; background: #151b20; border: 1px solid #2b353d; border-radius: 5px; }
 .status-filter-strip button:first-child { border-left: 1px solid #2b353d; }
@@ -102,6 +111,10 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .search-field { display: flex; align-items: center; gap: 8px; min-width: 260px; max-width: 620px; flex: 1; color: #75838c; background: #141a1e; border: 1px solid #303b43; border-radius: 5px; padding-left: 10px; }
 .search-field input { flex: 1; border: 0; background: transparent; padding-left: 0; }
 .search-field input:focus { outline: 0; }
+.facet-filters { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.facet-filters select { width: auto; min-width: 132px; max-width: 190px; }
+.facet-filters .reason-filter { min-width: 178px; max-width: 260px; }
+.facet-filters .clear-facets { width: 32px; min-height: 34px; flex: 0 0 32px; }
 .selection-count { margin-left: auto; color: #84929c; font-size: 11px; white-space: nowrap; }
 .table-wrap { flex: 1; overflow: auto; background: #0d1115; scrollbar-color: #3b4750 #11161a; }
 table { width: 100%; min-width: 1240px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
@@ -377,6 +390,8 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
   table:not(.automation-table) th:nth-child(7), table:not(.automation-table) td:nth-child(7) { display: none; }
   .compact-row-meta { display: block; }
   .selection-summary span { max-width: 180px; }
+  .codex-overview { grid-template-columns: 108px minmax(430px, 1fr) 100px; }
+  .codex-overview > .library-path { display: none; }
 }
 
 /* Neutral light workbench theme. Dark mode uses the base palette above. */
@@ -410,6 +425,10 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .library-overview .library-path strong { color: #5b6972; }
 .current-summary { background: #eaf5f4; box-shadow: inset 3px 0 #4a9f98; }
 .current-summary strong { color: #286c68; }
+.current-account-identity strong em { color: #286c68; background: #dff0ee; border-color: #a5cfcb; }
+.current-account-identity small { color: #71848b; }
+.current-quota { border-color: #c8dfdc; }
+.current-quota strong { color: #375b5b; }
 .text-ok { color: #267044; }.text-warn { color: #986b14; }.text-error { color: #af4542; }
 
 .toolbar { background: #f5f7f8; border-color: #d5dde1; }

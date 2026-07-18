@@ -47,13 +47,22 @@ import type {
   UsageWindow
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
+import {
+  buildAccountFacets,
+  EMPTY_ACCOUNT_FACET_FILTERS,
+  hasFacetOption,
+  matchesAccountFacets,
+  type AccountFacetFilters as AccountFacetFilterValues
+} from './account-filters'
 import { displayStatus, STATUS_LABELS } from './account-status'
+import { AccountFacetFilters } from './components/AccountFacetFilters'
 import {
   CODEX_TEST_MODE_RUNNING,
   CODEX_TEST_MODE_SUCCESS,
   CodexTestModeControl
 } from './components/CodexTestModeControl'
 import { ConversationManagerDialog } from './components/ConversationManagerDialog'
+import { CurrentAccountOverview } from './components/CurrentAccountOverview'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { CpaPage, GrokLibraryPage } from './GrokPage'
 import { useDialogFocus } from './hooks/useDialogFocus'
@@ -186,6 +195,7 @@ export function App(): React.JSX.Element {
   const [selected, setSelected] = usePrunedSelection(snapshot?.accounts.map((account) => account.id) ?? [])
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
+  const [facetFilters, setFacetFilters] = useState<AccountFacetFilterValues>(EMPTY_ACCOUNT_FACET_FILTERS)
   const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
   const [testMode, setTestMode] = useState<CodexTestMode>('full')
   const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'cpa' | 'automation'>('accounts')
@@ -378,17 +388,42 @@ export function App(): React.JSX.Element {
     setContextMenu((current) => current ? { ...current, x, y } : null)
   }, [contextMenu])
 
+  const accountFacets = useMemo(
+    () => buildAccountFacets(snapshot?.accounts ?? []),
+    [snapshot?.accounts]
+  )
+  const availableAccountFacets = useMemo(() => {
+    if (!statusFilter) return accountFacets
+    return buildAccountFacets(
+      (snapshot?.accounts ?? []).filter((account) => displayStatus(account.status) === statusFilter)
+    )
+  }, [accountFacets, snapshot?.accounts, statusFilter])
+
+  useEffect(() => {
+    setFacetFilters((current) => {
+      const next = {
+        plan: hasFacetOption(availableAccountFacets.plans, current.plan) ? current.plan : '',
+        domain: hasFacetOption(availableAccountFacets.domains, current.domain) ? current.domain : '',
+        reason: hasFacetOption(availableAccountFacets.reasons, current.reason) ? current.reason : ''
+      }
+      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason
+        ? current
+        : next
+    })
+  }, [availableAccountFacets])
+
   const accounts = useMemo(() => {
     if (!snapshot) return []
     const query = keyword.trim().toLowerCase()
     return snapshot.accounts.filter((account) => {
       if (statusFilter && displayStatus(account.status) !== statusFilter) return false
+      if (!matchesAccountFacets(account, facetFilters)) return false
       if (!query) return true
       return `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.sourceDialect} ${account.sourcePath} ${account.detail}`
         .toLowerCase()
         .includes(query)
     }).sort(compareAccounts(accountSort))
-  }, [accountSort, keyword, snapshot?.accounts, statusFilter])
+  }, [accountSort, facetFilters, keyword, snapshot?.accounts, statusFilter])
 
   const accountById = useMemo(
     () => new Map((snapshot?.accounts ?? []).map((account) => [account.id, account])),
@@ -398,10 +433,10 @@ export function App(): React.JSX.Element {
     () => new Set(snapshot?.testing.runningIds ?? []),
     [snapshot?.testing.runningIds]
   )
-  const counts = useMemo(() => Object.keys(STATUS_LABELS).reduce<Record<string, number>>((result, status) => {
-    result[status] = (snapshot?.accounts ?? []).filter((item) => displayStatus(item.status) === status).length
-    return result
-  }, {}), [snapshot?.accounts])
+  const activeAccount = useMemo(
+    () => (snapshot?.accounts ?? []).find((account) => account.active) ?? null,
+    [snapshot?.accounts]
+  )
   const selectedAccount = useMemo(() => selected.size === 1
     ? (snapshot?.accounts ?? []).find((account) => selected.has(account.id)) ?? null
     : null, [selected, snapshot?.accounts])
@@ -499,6 +534,7 @@ export function App(): React.JSX.Element {
       if (codexImported > 0) {
         setKeyword('')
         setStatusFilter('')
+        setFacetFilters(EMPTY_ACCOUNT_FACET_FILTERS)
         setActiveView('accounts')
       } else if (grokImported > 0) {
         setActiveView('grok')
@@ -874,13 +910,25 @@ export function App(): React.JSX.Element {
 
       <section className="library-overview codex-overview">
         <div><span>账号库</span><strong>{snapshot.accounts.length} 个账号</strong></div>
-        <div className="current-summary library-path"><span>当前正在使用</span><strong><BadgeCheck size={14} />{snapshot.accounts.find((item) => item.active)?.email ?? '未知 / API 模式'}</strong></div>
+        <CurrentAccountOverview
+          account={activeAccount}
+          running={Boolean(activeAccount && runningAccountIds.has(activeAccount.id))}
+          now={clock}
+          disabled={busy || snapshot.testing.active}
+          onRefresh={() => {
+            if (!activeAccount) return
+            void run(
+              () => window.codexSwitcher.testAccounts([activeAccount.id], 'usage'),
+              '当前账号额度已刷新'
+            )
+          }}
+        />
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
         <div className="library-path"><span>本地账号目录</span><strong title={`${snapshot.importDirectory}\\codex`}>{snapshot.importDirectory}\\codex</strong></div>
       </section>
       <StatusFilterStrip
         value={statusFilter}
-        counts={(status) => counts[status] ?? 0}
+        counts={accountFacets.statusCounts}
         total={snapshot.accounts.length}
         onChange={setStatusFilter}
         label="Codex 账号状态"
@@ -900,8 +948,7 @@ export function App(): React.JSX.Element {
         <button
           onClick={() => void run(
             () => window.codexSwitcher.testAccounts(accounts.map((account) => account.id), testMode),
-            `当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`,
-            false
+            `当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`
           )}
           disabled={busy || snapshot.testing.active || accounts.length === 0}
         >
@@ -943,7 +990,7 @@ export function App(): React.JSX.Element {
           <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
           <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
         </div>
-        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`, false)} disabled={busy || snapshot.testing.active || selected.size === 0}>
+        <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Play size={16} />测试选中
         </button>
         <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '该认证模式写入后必须重启 Codex' : undefined}>
@@ -974,9 +1021,17 @@ export function App(): React.JSX.Element {
           <Search size={16} />
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、文件或错误" />
         </label>
+        <AccountFacetFilters
+          label="Codex"
+          facets={availableAccountFacets}
+          value={facetFilters}
+          onChange={setFacetFilters}
+        />
         <select className="visually-hidden" aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
           <option value="">全部状态</option>
-          {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          {Object.entries(STATUS_LABELS).filter(([value]) =>
+            (accountFacets.statusCounts[value as DisplayAccountStatus] ?? 0) > 0 || statusFilter === value
+          ).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <select aria-label="Codex 账号排序" value={accountSort} onChange={(event) => setAccountSort(event.target.value as AccountSortMode)}>
           {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

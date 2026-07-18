@@ -65,7 +65,7 @@ describe('GrokAccountManager', () => {
     expect(await source.copyAccountsTo(undefined, target)).toMatchObject({ imported: 1, skipped: 0 })
     expect(await source.copyAccountsTo(undefined, target)).toMatchObject({ imported: 0, skipped: 1 })
     expect(await readFile(sourcePath, 'utf8')).toBe(sourceText)
-    expect((await readdir(targetRoot)).filter((name) => name.endsWith('.json'))).toHaveLength(1)
+    expect((await readdir(targetRoot)).filter((name) => name !== 'status.json' && name.endsWith('.json'))).toHaveLength(1)
   })
 
   it('copies only selected accounts to a separate CPA manager and deduplicates repeat exports', async () => {
@@ -259,6 +259,46 @@ describe('GrokAccountManager', () => {
     await manager.testAccounts([id])
     expect((await readdir(library)).some((name) => name.endsWith('.json.无用量'))).toBe(false)
     expect((await manager.listAccounts())[0].disabled).toBe(false)
+  })
+
+  it('keeps local aa filenames unchanged when a Grok quota test is exhausted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'grok-local-status-only-'))
+    roots.push(root)
+    const library = join(root, 'aa', 'grok')
+    const source = join(root, 'source.json')
+    const tester = { test: vi.fn(async (credential: GrokCredential): Promise<GrokTestResult> => ({
+      accountId: credential.id,
+      status: 'quota_exhausted_weekly',
+      detail: '周额度耗尽',
+      checkedAt: '2026-07-19T01:00:00Z',
+      httpStatus: 429,
+      refreshed: false,
+      usage: null
+    })) }
+    const manager = new GrokAccountManager({
+      directory: () => library,
+      fileNameStyle: 'library',
+      concurrency: () => 2,
+      statusStore: new GrokStatusStore(join(root, 'status.json')),
+      tester
+    })
+    await writeFile(source, JSON.stringify({
+      type: 'xai',
+      access_token: token({ iss: 'https://auth.x.ai', sub: 'local-quota' }),
+      refresh_token: 'refresh',
+      email: 'local-quota@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+
+    await manager.testAccounts([imported.accounts[0].id])
+
+    expect(await readdir(library)).toEqual([
+      'local-quota@example.com_unknown.json'
+    ])
+    expect((await manager.listAccounts())[0]).toMatchObject({
+      status: 'quota_exhausted_weekly',
+      disabled: false
+    })
   })
 
   it('uses the no-permission suffix for rejected credentials and restores json after a valid retest', async () => {

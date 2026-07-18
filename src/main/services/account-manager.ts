@@ -20,6 +20,7 @@ import { dedupeCredentials, parseCredentialText } from '../accounts/parser'
 import { ManagedCredentialLibrary } from '../storage/managed-library'
 import type { CredentialVault } from '../storage/vault'
 import type { StatusStore } from '../storage/status-store'
+import { findMatchingCodexCredential } from './account-status-sync'
 
 interface TesterLike {
   test(credential: NormalizedCredential, signal?: AbortSignal, mode?: CodexTestMode): Promise<TestResult>
@@ -57,6 +58,8 @@ interface AccountManagerOptions {
     addMany(ids: string[]): Promise<void>
     removeMany(ids: string[]): Promise<void>
   }
+  onCredentialsChanged?: () => Promise<void>
+  onStatusesChanged?: () => Promise<void>
 }
 
 interface ImportFilesOptions {
@@ -238,7 +241,10 @@ export class AccountManager {
     }
     const existing = dedupeCredentials(await this.options.vault.list())
     const existingIds = new Set(existing.map((credential) => credential.id))
-    const imported = deduped.filter((credential) => !existingIds.has(credential.id)).length
+    const freshIds = deduped
+      .filter((credential) => !existingIds.has(credential.id))
+      .map((credential) => credential.id)
+    const imported = freshIds.length
     skipped += deduped.length - imported
     const authoritative = options.authoritative === true && errors.length === 0
     const merged = authoritative ? deduped : dedupeCredentials([...existing, ...deduped])
@@ -248,7 +254,10 @@ export class AccountManager {
       .map((credential) => credential.id)
     const stored = await this.persistManagedLibrary(merged, existing)
     await this.options.vault.replace(stored)
-    if (removedIds.length > 0) await this.options.statusStore.removeMany(removedIds)
+    if (removedIds.length > 0 || freshIds.length > 0) {
+      await this.options.statusStore.removeMany([...new Set([...removedIds, ...freshIds])])
+    }
+    await this.options.onCredentialsChanged?.()
     return {
       imported,
       skipped,
@@ -330,10 +339,15 @@ export class AccountManager {
     await this.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
     const existing = dedupeCredentials(await this.options.vault.list())
     const existingIds = new Set(existing.map((credential) => credential.id))
-    const imported = credentials.filter((credential) => !existingIds.has(credential.id)).length
+    const freshIds = credentials
+      .filter((credential) => !existingIds.has(credential.id))
+      .map((credential) => credential.id)
+    const imported = freshIds.length
     const merged = dedupeCredentials([...existing, ...credentials])
     const stored = await this.persistManagedLibrary(merged, existing)
     await this.options.vault.replace(stored)
+    await this.options.statusStore.removeMany(freshIds)
+    await this.options.onCredentialsChanged?.()
     return {
       imported,
       skipped: credentials.length - imported,
@@ -356,6 +370,7 @@ export class AccountManager {
       const stored = await this.persistManagedLibrary(remaining, before)
       await this.options.vault.replace(stored)
       await this.options.statusStore.removeMany(existingIds)
+      await this.options.onCredentialsChanged?.()
     } catch (error) {
       await this.options.deletedStore?.removeMany(existingIds).catch(() => undefined)
       await this.options.vault.replace(before).catch(() => undefined)
@@ -397,6 +412,10 @@ export class AccountManager {
         if (left.active !== right.active) return left.active ? -1 : 1
         return (left.email ?? left.sourcePath).localeCompare(right.email ?? right.sourcePath)
       })
+  }
+
+  async listCredentials(): Promise<NormalizedCredential[]> {
+    return this.options.vault.list()
   }
 
   async testAccounts(
@@ -473,6 +492,7 @@ export class AccountManager {
     await this.options.statusStore.flush()
     if (planUpdates.size > 0) await this.options.vault.upsertMany([...planUpdates.values()])
     await this.persistVaultLibrary()
+    await this.options.onStatusesChanged?.()
     return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
   }
 
@@ -488,6 +508,7 @@ export class AccountManager {
       await this.updateCredentialPlan(credential.id, result)
       await this.options.statusStore.set(result)
       await this.persistVaultLibrary()
+      await this.options.onStatusesChanged?.()
       if (!['valid', 'quota_exhausted', 'quota_exhausted_5h', 'quota_exhausted_weekly', 'model_unavailable'].includes(result.status)) {
         return { ok: false, message: `账号不可切换：${result.detail}`, backupPath: null }
       }
@@ -587,6 +608,7 @@ export class AccountManager {
       await this.options.statusStore.flush()
       if (planUpdates.size > 0) await this.options.vault.upsertMany([...planUpdates.values()])
       if (checkedAccountIds.length > 0) await this.persistVaultLibrary()
+      if (checkedAccountIds.length > 0) await this.options.onStatusesChanged?.()
     }
   }
 
@@ -717,8 +739,9 @@ export class AccountManager {
       })
       const active = parsed.credentials[0]
       if (!active) return null
-      const match = (credentials ?? await this.options.vault.list()).find(
-        (credential) => credential.accessToken === active.accessToken
+      const match = findMatchingCodexCredential(
+        active,
+        credentials ?? await this.options.vault.list()
       )
       return match?.id ?? active.id
     } catch {

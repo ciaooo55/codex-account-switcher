@@ -183,6 +183,24 @@ describe('CpaCodexManager', () => {
     expect((await manager.listAccounts())[0]).toMatchObject({ disabled: false, status: 'valid' })
   })
 
+  it('marks definitively invalid Codex credentials with the no-permission suffix', async () => {
+    const { library, source, manager } = await setup(['invalid'])
+    await writeFile(source, JSON.stringify({
+      type: 'codex',
+      access_token: token({ sub: 'revoked', email: 'revoked@example.com' }),
+      refresh_token: 'revoked-refresh',
+      email: 'revoked@example.com'
+    }))
+    const imported = await manager.importFiles([source])
+
+    await manager.testAccounts([imported.accounts[0].id])
+
+    expect(await readdir(library)).toEqual([
+      expect.stringMatching(/^codex-revoked@example\.com-unknown-[a-f0-9]{10}\.json\.无权限$/)
+    ])
+    expect((await manager.listAccounts())[0]).toMatchObject({ status: 'invalid', disabled: true })
+  })
+
   it('reconciles enabled and disabled canonical duplicates into one requested file', async () => {
     const { library, source, manager } = await setup()
     await writeFile(source, JSON.stringify({

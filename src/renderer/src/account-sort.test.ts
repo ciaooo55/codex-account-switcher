@@ -48,4 +48,17 @@ describe('account sorting', () => {
       'team@example.com'
     ])
   })
+
+  it('always pins the active Codex account before the selected sort order', () => {
+    const active = { ...account('z-active@example.com', 'team', null, 'untested'), active: true }
+    const values = [
+      account('a-valid@example.com', 'plus', 90),
+      active,
+      account('b-valid@example.com', 'plus', 80)
+    ]
+
+    for (const mode of ['availability_reset', 'plan', 'status', 'email'] as const) {
+      expect([...values].sort(compareAccounts(mode))[0]).toBe(active)
+    }
+  })
 })

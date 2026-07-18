@@ -571,6 +571,75 @@ describe('App', () => {
     expect(screen.queryByRole('row', { name: /person@example\.com/ })).not.toBeInTheDocument()
   })
 
+  it('derives and combines account type, email domain and actual failure reason filters', async () => {
+    const bridge = api()
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      accounts: [
+        snapshot.accounts[0],
+        {
+          ...snapshot.accounts[1],
+          id: 'invalid-team',
+          email: 'invalid-team@outlook.com',
+          planType: 'team',
+          status: 'invalid',
+          detail: 'Refresh token 已失效'
+        },
+        {
+          ...snapshot.accounts[1],
+          id: 'error-team',
+          email: 'error-team@outlook.com',
+          planType: 'team',
+          status: 'network_error',
+          detail: 'CPA 网络超时'
+        },
+        {
+          ...snapshot.accounts[1],
+          id: 'weekly-plus',
+          email: 'weekly@proton.me',
+          planType: 'plus',
+          status: 'quota_exhausted_weekly',
+          detail: '周额度耗尽'
+        }
+      ]
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    expect(screen.queryByRole('button', { name: /^未测试/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^5 小时额度耗尽/ })).not.toBeInTheDocument()
+    expect(within(screen.getByLabelText('Codex账号类型')).getByRole('option', { name: /plus/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^已失效/ }))
+    expect(within(screen.getByLabelText('Codex账号类型')).queryByRole('option', { name: /plus/ })).not.toBeInTheDocument()
+    expect(within(screen.getByLabelText('Codex账号类型')).getByRole('option', { name: /team/ })).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Codex邮箱域名')).queryByRole('option', { name: /example\.com/ })).not.toBeInTheDocument()
+    expect(within(screen.getByLabelText('Codex失效或错误原因')).queryByRole('option', { name: /CPA 网络超时/ })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Codex账号类型'), { target: { value: 'team' } })
+    expect(screen.getByRole('row', { name: /invalid-team@outlook\.com/ })).toBeInTheDocument()
+    expect(screen.queryByRole('row', { name: /error-team@outlook\.com/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('row', { name: /person@example\.com/ })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Codex邮箱域名'), { target: { value: 'outlook.com' } })
+    fireEvent.change(screen.getByLabelText('Codex失效或错误原因'), { target: { value: 'Refresh token 已失效' } })
+    expect(screen.getByRole('row', { name: /invalid-team@outlook\.com/ })).toBeInTheDocument()
+    expect(screen.queryByRole('row', { name: /error-team@outlook\.com/ })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '测试当前页面全部' }))
+    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['invalid-team'], 'full'))
+  })
+
+  it('refreshes usage for only the active Codex account from the current-account summary', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新额度' }))
+
+    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a'], 'usage'))
+  })
+
   it('tests only the accounts visible under the current Codex status filter', async () => {
     const bridge = api()
     window.codexSwitcher = bridge

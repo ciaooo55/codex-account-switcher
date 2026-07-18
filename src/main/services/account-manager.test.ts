@@ -110,6 +110,50 @@ describe('AccountManager', () => {
     expect(await readdir(managedDirectory)).toHaveLength(2)
   })
 
+  it('clears stale cached status when a genuinely new managed account is imported', async () => {
+    const fixture = await setup()
+    const managedDirectory = join(fixture.root, 'aa', 'codex')
+    const credential: NormalizedCredential = {
+      id: 'fresh-import-id',
+      email: 'fresh-import@example.com',
+      accountId: 'fresh-workspace',
+      subject: 'fresh-user',
+      accessToken: 'fresh-access',
+      refreshToken: 'fresh-refresh',
+      idToken: 'fresh-id-token',
+      authKind: 'oauth',
+      oauthClientId: null,
+      isFedRamp: null,
+      planType: 'team',
+      lastRefresh: null,
+      accessExpiresAt: null,
+      idExpiresAt: null,
+      canRefresh: true,
+      sourcePath: 'fresh-source.json',
+      sourceFormat: 'json',
+      sourceDialect: 'cpa'
+    }
+    await fixture.statusStore.set(successfulResult(credential.id))
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      statusStore: fixture.statusStore,
+      managedImportDirectory: managedDirectory,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+
+    const imported = await manager.importCredentialsAdditive([credential])
+
+    expect(imported.accounts[0]).toMatchObject({
+      id: credential.id,
+      email: credential.email,
+      status: 'untested',
+      usage: null
+    })
+    expect(await fixture.statusStore.getAll()).toEqual({})
+  })
+
   it('scans disabled .json.0 files and deduplicates them with enabled copies by email', async () => {
     const fixture = await setup()
     const accessToken = jwt({ sub: 'same-email', email: 'same@example.com' })

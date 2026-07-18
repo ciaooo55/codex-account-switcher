@@ -19,6 +19,7 @@ import { z } from 'zod'
 import { ipcChannels, type CpaCodexTestProgress, type GrokTestProgress, type TestProgress, type UpdateState } from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
+import { reconcileCodexStatuses, reconcileGrokStatuses } from './services/account-status-sync'
 import { AutoSwitchScheduler, shouldNotifyAutoSwitchCompletion } from './services/auto-switch'
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { discoverCpaDirectory } from './services/cpa-paths'
@@ -361,6 +362,8 @@ async function main(): Promise<void> {
       }).switchToCustomApi(input)
     }
   }
+  let reconcileCodexStatusStores = async (): Promise<void> => undefined
+  let reconcileGrokStatusStores = async (): Promise<void> => undefined
   const manager = new AccountManager({
     settings: () => settingsStore.get(),
     vault,
@@ -369,6 +372,8 @@ async function main(): Promise<void> {
     switcher,
     managedImportDirectory: codexImportDirectory,
     deletedStore,
+    onCredentialsChanged: () => reconcileCodexStatusStores(),
+    onStatusesChanged: () => reconcileCodexStatusStores(),
     refreshTokenImporter: new OpenAIRefreshTokenImporter({
       fetchImpl: (input, init) => net.fetch(
         input instanceof URL ? input.toString() : input,
@@ -409,7 +414,9 @@ async function main(): Promise<void> {
           onCredentialUpdated: (updated) => cpaCodexManager.upsertRefreshed(updated)
         }).test(credential, signal, mode)
       }
-    }
+    },
+    onCredentialsChanged: () => reconcileCodexStatusStores(),
+    onStatusesChanged: () => reconcileCodexStatusStores()
   })
   let grokManager: GrokAccountManager
   grokManager = new GrokAccountManager({
@@ -427,7 +434,9 @@ async function main(): Promise<void> {
           onCredentialUpdated: (updated) => grokManager.upsertRefreshed(updated)
         }).test(credential, signal)
       }
-    }
+    },
+    onCredentialsChanged: () => reconcileGrokStatusStores(),
+    onStatusesChanged: () => reconcileGrokStatusStores()
   })
   let cpaGrokManager: GrokAccountManager
   cpaGrokManager = new GrokAccountManager({
@@ -445,8 +454,46 @@ async function main(): Promise<void> {
           onCredentialUpdated: (updated) => cpaGrokManager.upsertRefreshed(updated)
         }).test(credential, signal)
       }
-    }
+    },
+    onCredentialsChanged: () => reconcileGrokStatusStores(),
+    onStatusesChanged: () => reconcileGrokStatusStores()
   })
+
+  let codexStatusSyncQueue: Promise<void> = Promise.resolve()
+  reconcileCodexStatusStores = (): Promise<void> => {
+    const operation = codexStatusSyncQueue.then(async () => {
+      const [libraryCredentials, cpaCredentials] = await Promise.all([
+        manager.listCredentials(),
+        cpaCodexManager.listCredentials()
+      ])
+      await reconcileCodexStatuses(
+        libraryCredentials,
+        cpaCredentials,
+        statusStore,
+        cpaCodexStatusStore
+      )
+    })
+    codexStatusSyncQueue = operation.catch(() => undefined)
+    return operation
+  }
+
+  let grokStatusSyncQueue: Promise<void> = Promise.resolve()
+  reconcileGrokStatusStores = (): Promise<void> => {
+    const operation = grokStatusSyncQueue.then(async () => {
+      const [libraryCredentials, cpaCredentials] = await Promise.all([
+        grokManager.listCredentials(),
+        cpaGrokManager.listCredentials()
+      ])
+      await reconcileGrokStatuses(
+        libraryCredentials,
+        cpaCredentials,
+        grokStatusStore,
+        cpaGrokStatusStore
+      )
+    })
+    grokStatusSyncQueue = operation.catch(() => undefined)
+    return operation
+  }
 
   const pruneAutoSwitchPool = async (): Promise<boolean> => {
     const settings = await settingsStore.get()
@@ -547,6 +594,7 @@ async function main(): Promise<void> {
           return legacy ? [legacy] : []
         })
       )
+      await reconcileCodexStatusStores()
     }
     return result
   }).catch(() => null)
