@@ -688,7 +688,10 @@ describe('AccountManager', () => {
     expect(switchTo).toHaveBeenCalledWith(expect.objectContaining({ email: 'fast-switch@example.com' }))
   })
 
-  it('silently retests a credential with a cached failure before switching', async () => {
+  it.each([
+    { status: 'invalid' as const, detail: '凭据已失效' },
+    { status: 'needs_refresh' as const, detail: '凭据需要刷新' }
+  ])('silently retests a credential with cached status $status before switching', async ({ status, detail }) => {
     const fixture = await setup()
     await writeFile(
       join(fixture.accountDirectory, 'invalid-switch.json'),
@@ -710,8 +713,8 @@ describe('AccountManager', () => {
     const scan = await manager.scanDirectory()
     await fixture.statusStore.set({
       ...successfulResult(scan.accounts[0].id),
-      status: 'invalid',
-      detail: '凭据已失效'
+      status,
+      detail
     })
 
     await expect(manager.switchAccount(scan.accounts[0].id)).resolves.toMatchObject({ ok: true })

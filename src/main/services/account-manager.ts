@@ -95,10 +95,11 @@ const MAX_ZIP_ENTRY_BYTES = 20 * 1024 * 1024
 const MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_SOURCE_FILE_BYTES = 100 * 1024 * 1024
 const SWITCH_REFRESH_GRACE_MS = 2 * 60 * 1_000
-const DEFINITIVELY_UNUSABLE_STATUSES = new Set<TestResult['status']>([
+const STATUSES_REQUIRING_SWITCH_VALIDATION = new Set<TestResult['status']>([
   'workspace_deactivated',
   'no_permission',
   'invalid',
+  'needs_refresh',
   'non_refreshable'
 ])
 
@@ -436,7 +437,7 @@ export class AccountManager {
 
     const cached = (await this.options.statusStore.getAll())[credential.id]
     const needsSilentValidation = credentialNeedsRefresh(credential) ||
-      Boolean(cached && DEFINITIVELY_UNUSABLE_STATUSES.has(cached.status))
+      Boolean(cached && STATUSES_REQUIRING_SWITCH_VALIDATION.has(cached.status))
     if (needsSilentValidation) {
       const result = await this.options.tester.test(credential)
       await this.updateCredentialPlan(credential.id, result)
