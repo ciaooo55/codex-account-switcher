@@ -41,6 +41,16 @@ describe('OpenAIRefreshTokenImporter', () => {
     ])
   })
 
+  it('repairs typographic dashes and zero-width characters introduced while copying RT values', () => {
+    expect(extractOpenAIRefreshTokens([
+      'plus rt.1.ABCDEF\u20131234\u200B567890',
+      'plus rt.1.ABCDEF\u22121234567890',
+      'plus rt.1.ABCDEF-1234567890'
+    ].join('\n'))).toEqual([
+      'rt.1.ABCDEF-1234567890'
+    ])
+  })
+
   it('exchanges a Codex CLI RT and stores rotated tokens, identity and client id', async () => {
     const fetchImpl = vi.fn<
       (input: string | URL | Request, init?: RequestInit) => Promise<Response>

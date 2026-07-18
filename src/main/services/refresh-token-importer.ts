@@ -83,7 +83,10 @@ function isInvalidClient(failure: ExchangeFailure): boolean {
 }
 
 export function extractOpenAIRefreshTokens(text: string): string[] {
-  const matches = text.match(/rt\.1\.[A-Za-z0-9._*\\-]+/g) ?? []
+  const normalized = text
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+  const matches = normalized.match(/rt\.1\.[A-Za-z0-9._*\\-]+/g) ?? []
   return [...new Set(matches
     .map((token) => token.replace(/[\\*]/g, ''))
     .filter((token) => /^rt\.1\.[A-Za-z0-9._-]{16,}$/.test(token)))]
