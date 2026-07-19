@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import type { ImportPreviewTestProgress } from '../../../shared/ipc'
 import type {
+  DisplayAccountStatus,
   ImportPreviewDecision,
   ImportPreviewDisposition,
   ImportPreviewItem,
@@ -37,6 +38,15 @@ const DECISION_LABELS: Record<ImportPreviewDecision, string> = {
   replace: '合并更新',
   skip: '跳过'
 }
+
+const TEST_STATUS_ORDER: DisplayAccountStatus[] = [
+  'untested',
+  'valid',
+  'quota_exhausted_5h',
+  'quota_exhausted_weekly',
+  'invalid',
+  'unknown_error'
+]
 
 function selectedDecision(item: ImportPreviewItem): ImportPreviewDecision {
   return item.disposition === 'new' ? 'add' : 'replace'
@@ -81,6 +91,7 @@ export function ImportPreviewDialog({
   const [keyword, setKeyword] = useState('')
   const [provider, setProvider] = useState<'all' | 'codex' | 'grok'>('all')
   const [disposition, setDisposition] = useState<'all' | ImportPreviewDisposition>('all')
+  const [testStatus, setTestStatus] = useState<'all' | DisplayAccountStatus>('all')
   const [skipUnrecognized, setSkipUnrecognized] = useState(false)
   const [manualModes, setManualModes] = useState<Record<string, ImportPreviewManualMode | ''>>({})
   const [refiningKey, setRefiningKey] = useState<string | null>(null)
@@ -112,12 +123,13 @@ export function ImportPreviewDialog({
     return preview.items.filter((item) => {
       if (provider !== 'all' && item.provider !== provider) return false
       if (disposition !== 'all' && item.disposition !== disposition) return false
+      if (testStatus !== 'all' && (item.test?.status ?? 'untested') !== testStatus) return false
       if (!query) return true
       return `${item.email ?? ''} ${item.planType ?? ''} ${item.identity} ${item.sourcePath} ${item.detail} ${item.test?.detail ?? ''}`
         .toLocaleLowerCase('zh-CN')
         .includes(query)
     })
-  }, [disposition, keyword, preview.items, provider])
+  }, [disposition, keyword, preview.items, provider, testStatus])
   const virtualItems = useVirtualTableRows(items, (item) => item.key, 88)
   const selectedKeys = useMemo(() => preview.items
     .filter((item) => (decisions[item.key] ?? item.suggestedDecision) !== 'skip')
@@ -136,6 +148,14 @@ export function ImportPreviewDialog({
     duplicate: preview.items.filter((item) => item.disposition === 'duplicate').length,
     conflict: preview.items.filter((item) => item.disposition === 'conflict').length
   }), [preview.items])
+  const testStatusCounts = useMemo(() => {
+    const result = new Map<DisplayAccountStatus, number>()
+    for (const item of preview.items) {
+      const status = item.test?.status ?? 'untested'
+      result.set(status, (result.get(status) ?? 0) + 1)
+    }
+    return result
+  }, [preview.items])
 
   const setItemSelected = (item: ImportPreviewItem, selected: boolean): void => {
     if (interactionLocked) return
@@ -193,6 +213,12 @@ export function ImportPreviewDialog({
         <select aria-label="导入处理状态" value={disposition} onChange={(event) => setDisposition(event.target.value as typeof disposition)} disabled={interactionLocked}>
           <option value="all">全部结果</option>
           {Object.entries(DISPOSITION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+        <select aria-label="凭证检测结果" value={testStatus} onChange={(event) => setTestStatus(event.target.value as typeof testStatus)} disabled={interactionLocked}>
+          <option value="all">全部检测状态</option>
+          {TEST_STATUS_ORDER.filter((status) => testStatusCounts.has(status)).map((status) => (
+            <option key={status} value={status}>{STATUS_LABELS[status]} {testStatusCounts.get(status)}</option>
+          ))}
         </select>
         <button onClick={applySuggestions} disabled={interactionLocked}><RotateCcw size={15} />采用建议</button>
         <button onClick={importUseful} disabled={interactionLocked}><CheckCircle2 size={15} />新增/更新</button>

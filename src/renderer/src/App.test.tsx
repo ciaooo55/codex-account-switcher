@@ -756,6 +756,13 @@ describe('App', () => {
     }))
     expect(await within(dialog).findByText('检测有效')).toBeInTheDocument()
 
+    fireEvent.change(within(dialog).getByLabelText('凭证检测结果'), { target: { value: 'valid' } })
+    expect(within(dialog).getByRole('row', { name: /duplicate@example\.com/ })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('row', { name: /imported@example\.com/ })).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('凭证检测结果'), { target: { value: 'untested' } })
+    expect(within(dialog).getByRole('row', { name: /imported@example\.com/ })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('row', { name: /duplicate@example\.com/ })).not.toBeInTheDocument()
+
     fireEvent.click(within(dialog).getByRole('button', { name: '确认写入 aa' }))
     await waitFor(() => expect(bridge.commitImportPreview).toHaveBeenCalledWith({
       sessionId: preview.sessionId,
