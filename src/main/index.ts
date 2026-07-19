@@ -611,7 +611,8 @@ async function main(): Promise<void> {
     const settings = await settingsStore.get()
     const codexHome = resolve(dirname(settings.configPath))
     if (cachedConversationManager?.codexHome !== codexHome) {
-      cachedConversationManager = { codexHome, manager: new ConversationManager(codexHome) }
+      const cacheFile = join(app.getPath('userData'), 'cache', 'conversation-index-v2.json')
+      cachedConversationManager = { codexHome, manager: new ConversationManager(codexHome, cacheFile) }
     }
     return cachedConversationManager.manager
   }
@@ -1404,16 +1405,20 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.conversationList, async (_event, input: unknown) => {
     const payload = z.object({
       query: z.string().max(500).optional(),
+      searchScope: z.enum(['metadata', 'content']).optional(),
+      kind: z.enum(['all', 'main', 'subagent', 'internal', 'unknown']).optional(),
+      subagentKind: z.enum(['all', 'thread_spawn', 'review', 'compact', 'memory_consolidation', 'other']).optional(),
+      lifecycleStatus: z.enum(['all', 'open', 'closed', 'unknown']).optional(),
+      archive: z.enum(['all', 'active', 'archived']).optional(),
+      provider: z.string().max(500).optional(),
+      workspace: z.string().max(4_000).optional(),
+      updatedWithinDays: z.number().int().min(1).max(3_650).nullable().optional(),
+      sort: z.enum(['updated', 'hierarchy']).optional(),
       offset: z.number().int().min(0).max(100_000).optional(),
       limit: z.number().int().min(1).max(200).optional(),
       force: z.boolean().optional()
     }).parse(input)
-    return (await conversationManager()).list(
-      payload.query,
-      payload.offset,
-      payload.limit,
-      payload.force
-    )
+    return (await conversationManager()).list(payload)
   })
   ipcMain.handle(ipcChannels.conversationDetail, async (_event, input: unknown) => {
     const id = z.string().min(1).max(200).parse(input)
@@ -1438,6 +1443,18 @@ async function main(): Promise<void> {
     conversationDeleteOperationActive = true
     try {
       return await (await conversationManager()).delete(ids, (path) => shell.trashItem(path))
+    } finally {
+      conversationDeleteOperationActive = false
+    }
+  })
+  ipcMain.handle(ipcChannels.conversationCleanupPreview, async () => {
+    return (await conversationManager()).previewSafeCleanup()
+  })
+  ipcMain.handle(ipcChannels.conversationCleanup, async () => {
+    assertNoRunningTask('清理已关闭子代理对话')
+    conversationDeleteOperationActive = true
+    try {
+      return await (await conversationManager()).cleanupSafe((path) => shell.trashItem(path))
     } finally {
       conversationDeleteOperationActive = false
     }

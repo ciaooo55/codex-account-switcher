@@ -66,6 +66,7 @@ import { CurrentAccountOverview } from './components/CurrentAccountOverview'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { CpaPage, GrokLibraryPage } from './GrokPage'
 import { useDialogFocus } from './hooks/useDialogFocus'
+import { useConfirmation } from './hooks/useConfirmation'
 import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
 import { useVirtualTableRows } from './hooks/useVirtualTableRows'
 
@@ -231,6 +232,7 @@ export function App(): React.JSX.Element {
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const previousViewRef = useRef(activeView)
   const [clock, setClock] = useState(() => Date.now())
+  const { requestConfirmation, confirmationDialog } = useConfirmation()
 
   const closeImportDialog = (force = false): void => {
     if (busy && !force) return
@@ -628,7 +630,13 @@ export function App(): React.JSX.Element {
   }
 
   const installUpdate = async (): Promise<void> => {
-    if (!window.confirm('安装更新会退出应用并覆盖安装，继续吗？')) return
+    if (!await requestConfirmation({
+      title: '安装应用更新',
+      message: '安装过程会退出当前应用并覆盖现有版本。',
+      detail: '安装完成后会自动启动新版本，账号库和设置不会被删除。',
+      confirmLabel: '安装并重启',
+      tone: 'warning'
+    })) return
     try {
       await window.codexSwitcher.installUpdate()
     } catch (error) {
@@ -718,7 +726,13 @@ export function App(): React.JSX.Element {
   const selectAccountRow = (id: string): void => toggle(id)
 
   const switchAccount = async (id: string, restart: boolean): Promise<void> => {
-    if (restart && !window.confirm('切换并重启会中断正在运行的 Codex 任务，继续吗？')) return
+    if (restart && !await requestConfirmation({
+      title: '切换账号并重启',
+      message: '重启会中断 Codex 当前正在运行的任务。',
+      detail: '凭据写入成功后只会关闭官方 Codex 进程，然后重新启动应用。',
+      confirmLabel: '继续切换并重启',
+      tone: 'warning'
+    })) return
     setBusy(true)
     setMessage(null)
     try {
@@ -755,7 +769,13 @@ export function App(): React.JSX.Element {
       setMessage({ kind: 'error', text: '请选择要删除的账号' })
       return
     }
-    if (!window.confirm(`确定删除 ${accountIds.length} 个账号吗？aa 中对应的账号 JSON 会一并删除，外部原始文件不受影响。`)) {
+    if (!await requestConfirmation({
+      title: `删除 ${accountIds.length} 个账号`,
+      message: 'aa 中对应的托管账号 JSON 会一并删除。',
+      detail: '最初导入的外部源文件不会被修改，删除后可再次从源文件导入。',
+      confirmLabel: '确认删除',
+      tone: 'danger'
+    })) {
       return
     }
     setBusy(true)
@@ -1101,6 +1121,7 @@ export function App(): React.JSX.Element {
           onSnapshot={(patch) => applySnapshotPatch(patch)}
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
+          requestConfirmation={requestConfirmation}
         />
       ) : activeView === 'cpa' ? (
         <CpaPage
@@ -1108,6 +1129,7 @@ export function App(): React.JSX.Element {
           onSnapshot={(patch) => applySnapshotPatch(patch)}
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
+          requestConfirmation={requestConfirmation}
         />
       ) : (
         <main className="page-view automation-view">
@@ -1225,7 +1247,7 @@ export function App(): React.JSX.Element {
               />
             </label>
             <div className="panel-actions">
-              <button onClick={() => closeImportDialog()} disabled={busy}>取消</button>
+              <button className="secondary-button" onClick={() => closeImportDialog()} disabled={busy}><X size={16} />取消</button>
               <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim() || (pasteImportMode === 'oauth' && !oauthSession)}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
                 {pasteImportMode === 'oauth' ? '完成授权并导入' : '清洗并导入'}
@@ -1334,7 +1356,7 @@ export function App(): React.JSX.Element {
               <span>{exportDialog.format === 'codex' ? 'Codex auth.json 没有优先级字段；多账号只能打包为 ZIP。' : '普通导出可选择任意目录；直接导出到 CPA 时，同账号不会重复创建文件，只更新凭证和优先级。'}</span>
             </div>
             <div className="panel-actions">
-              <button onClick={closeExportDialog} disabled={busy}>取消</button>
+              <button className="secondary-button" onClick={closeExportDialog} disabled={busy}><X size={16} />取消</button>
               {exportDialog.format === 'cpa' && <button onClick={() => void submitExportToCpa()} disabled={busy}>
                 <Zap size={16} />直接导出到 CPA
               </button>}
@@ -1392,6 +1414,7 @@ export function App(): React.JSX.Element {
       {conversationOpen && (
         <ConversationManagerDialog
           onClose={() => setConversationOpen(false)}
+          requestConfirmation={requestConfirmation}
           onSync={(threadIds) => {
             setConversationOpen(false)
             void openSessionRepair(undefined, threadIds)
@@ -1466,7 +1489,7 @@ export function App(): React.JSX.Element {
                 : '将同步全部历史对话。'}写入前会校验快照并创建备份，写入后会再次扫描确认结果。正文采用流式处理，不会一次载入全部会话。
             </div>
             <div className="panel-actions">
-              <button onClick={closeRepairDialog} disabled={busy}>取消</button>
+              <button className="secondary-button" onClick={closeRepairDialog} disabled={busy}><X size={16} />取消</button>
               <button
                 className="primary-button"
                 onClick={() => void applySessionRepair()}
@@ -1483,7 +1506,7 @@ export function App(): React.JSX.Element {
       {settingsOpen && (
         <div className="modal-backdrop" role="presentation">
           <section ref={settingsDialogRef} className="settings-panel" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
-            <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" aria-label="关闭设置" onClick={() => closeSettingsDialog()}><X size={18} /></button></div>
+            <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" aria-label="关闭设置" onClick={() => closeSettingsDialog()} disabled={busy}><X size={18} /></button></div>
             <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
             <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
             <label>CPA 共享账号目录（Codex + Grok）<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><button title="选择 CPA 共享目录" onClick={async () => { const path = await window.codexSwitcher.chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
@@ -1514,7 +1537,14 @@ export function App(): React.JSX.Element {
                 if (!result.ok) throw new Error(result.message)
                 setCustomApiKey('')
                 await reload()
-                if (window.confirm('自定义 API 已保存，是否立即重启 Codex 使配置生效？')) {
+                if (await requestConfirmation({
+                  title: '重启 Codex 使 API 生效',
+                  message: '自定义 API 已保存。立即重启后，新请求会使用刚刚保存的地址和模型。',
+                  detail: '历史对话仍保留在原来的 openai 分组，不会被移除或改写。',
+                  confirmLabel: '立即重启',
+                  cancelLabel: '稍后重启',
+                  tone: 'warning'
+                })) {
                   const restartResult = await window.codexSwitcher.restartCodex()
                   if (!restartResult.ok) {
                     throw new Error(`自定义 API 已保存，但 Codex 重启失败：${restartResult.message}`)
@@ -1549,10 +1579,11 @@ export function App(): React.JSX.Element {
                 </button>
               )}
             </section>
-            <div className="panel-actions"><button onClick={() => closeSettingsDialog()} disabled={busy}>取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}>保存设置</button></div>
+            <div className="panel-actions"><button className="secondary-button" onClick={() => closeSettingsDialog()} disabled={busy}><X size={16} />取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}><CheckCircle2 size={16} />保存设置</button></div>
           </section>
         </div>
       )}
+      {confirmationDialog}
     </div>
   )
 }

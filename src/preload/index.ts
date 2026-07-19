@@ -57,11 +57,12 @@ const api: CodexSwitcherApi = {
   chooseGrokDirectory: () => ipcRenderer.invoke(ipcChannels.settingsChooseGrokDirectory),
   revealSource: (id) => ipcRenderer.invoke(ipcChannels.revealSource, id),
   revealManagedSource: (scope, id) => ipcRenderer.invoke(ipcChannels.revealManagedSource, { scope, id }),
-  listConversations: (query, offset, limit, force) =>
-    ipcRenderer.invoke(ipcChannels.conversationList, { query, offset, limit, force }),
+  listConversations: (query) => ipcRenderer.invoke(ipcChannels.conversationList, query ?? {}),
   getConversation: (id) => ipcRenderer.invoke(ipcChannels.conversationDetail, id),
   revealConversation: (id) => ipcRenderer.invoke(ipcChannels.conversationReveal, id),
   deleteConversations: (ids) => ipcRenderer.invoke(ipcChannels.conversationDelete, ids),
+  previewSafeConversationCleanup: () => ipcRenderer.invoke(ipcChannels.conversationCleanupPreview),
+  cleanupSafeConversations: () => ipcRenderer.invoke(ipcChannels.conversationCleanup),
   previewSessionRepair: (targetProvider, threadIds) =>
     ipcRenderer.invoke(ipcChannels.sessionRepairPreview, { targetProvider, threadIds }),
   applySessionRepair: (snapshotId, targetProvider, threadIds) =>

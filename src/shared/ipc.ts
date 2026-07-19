@@ -12,6 +12,8 @@ import type {
   CredentialPriorityRequest,
   CredentialExportResult,
   ConversationDetail,
+  ConversationCleanupPreview,
+  ConversationListQuery,
   ConversationListResult,
   DeleteConversationsResult,
   DeleteAccountsResult,
@@ -147,10 +149,12 @@ export interface CodexSwitcherApi {
   chooseGrokDirectory(): Promise<string | null>
   revealSource(id: string): Promise<RestartResult>
   revealManagedSource(scope: 'grok' | 'cpa-grok' | 'cpa-codex', id: string): Promise<RestartResult>
-  listConversations(query?: string, offset?: number, limit?: number, force?: boolean): Promise<ConversationListResult>
+  listConversations(query?: ConversationListQuery): Promise<ConversationListResult>
   getConversation(id: string): Promise<ConversationDetail>
   revealConversation(id: string): Promise<RestartResult>
   deleteConversations(ids: string[]): Promise<DeleteConversationsResult>
+  previewSafeConversationCleanup(): Promise<ConversationCleanupPreview>
+  cleanupSafeConversations(): Promise<DeleteConversationsResult>
   previewSessionRepair(targetProvider?: string, threadIds?: string[]): Promise<SessionRepairPreview>
   applySessionRepair(snapshotId: string, targetProvider: string, threadIds?: string[]): Promise<SessionRepairResult>
   getUpdateState(): Promise<UpdateState>
@@ -224,6 +228,8 @@ export const ipcChannels = {
   conversationDetail: 'sessions:detail',
   conversationReveal: 'sessions:reveal',
   conversationDelete: 'sessions:delete',
+  conversationCleanupPreview: 'sessions:cleanup-preview',
+  conversationCleanup: 'sessions:cleanup',
   sessionRepairPreview: 'sessions:repair-preview',
   sessionRepairApply: 'sessions:repair-apply',
   testProgress: 'accounts:test-progress',

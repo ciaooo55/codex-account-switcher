@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSnapshot, CodexSwitcherApi, TestProgress } from '../../shared/ipc'
+import type { ConversationListResult, ConversationSummary } from '../../shared/types'
 import { App } from './App'
 
 const snapshot: AppSnapshot = {
@@ -101,6 +102,47 @@ const snapshot: AppSnapshot = {
   cpaCodexAccounts: [],
   cpaCodexTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
   customApi: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', hasApiKey: false }
+}
+
+const conversationSummary: ConversationSummary = {
+  id: 'thread-one',
+  title: '修复账号切换',
+  cwd: 'C:\\work',
+  provider: 'custom',
+  createdAt: '2026-07-15T00:00:00Z',
+  updatedAt: '2026-07-16T00:00:00Z',
+  archived: false,
+  sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
+  sizeBytes: 1024,
+  kind: 'main',
+  subagentKind: null,
+  parentId: null,
+  parentTitle: null,
+  childCount: 0,
+  depth: null,
+  agentNickname: null,
+  agentRole: null,
+  lifecycleStatus: 'unknown',
+  safeToClean: false,
+  matchExcerpt: null
+}
+
+const conversationListResult: ConversationListResult = {
+  items: [conversationSummary],
+  total: 1,
+  allTotal: 1,
+  offset: 0,
+  hasMore: false,
+  facets: {
+    kinds: [{ value: 'main', label: '主对话', count: 1 }],
+    subagentKinds: [],
+    lifecycleStatuses: [],
+    archives: [{ value: 'active', label: '当前会话', count: 1 }],
+    providers: [{ value: 'custom', label: 'custom', count: 1 }],
+    workspaces: [{ value: 'C:\\work', label: 'C:\\work', count: 1 }]
+  },
+  safeCleanupCount: 0,
+  safeCleanupBytes: 0
 }
 
 let progressListener: ((progress: TestProgress) => void) | null = null
@@ -212,34 +254,9 @@ function api(): CodexSwitcherApi {
     chooseGrokDirectory: vi.fn().mockResolvedValue(null),
     revealSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
     revealManagedSource: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
-    listConversations: vi.fn().mockResolvedValue({
-      items: [{
-        id: 'thread-one',
-        title: '修复账号切换',
-        cwd: 'C:\\work',
-        provider: 'custom',
-        createdAt: '2026-07-15T00:00:00Z',
-        updatedAt: '2026-07-16T00:00:00Z',
-        archived: false,
-        sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
-        sizeBytes: 1024
-      }],
-      total: 1,
-      offset: 0,
-      hasMore: false
-    }),
+    listConversations: vi.fn().mockResolvedValue(conversationListResult),
     getConversation: vi.fn().mockResolvedValue({
-      conversation: {
-        id: 'thread-one',
-        title: '修复账号切换',
-        cwd: 'C:\\work',
-        provider: 'custom',
-        createdAt: '2026-07-15T00:00:00Z',
-        updatedAt: '2026-07-16T00:00:00Z',
-        archived: false,
-        sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
-        sizeBytes: 1024
-      },
+      conversation: conversationSummary,
       messages: [{ id: 'message-one', role: 'user', text: '请修复账号切换', timestamp: null }],
       totalMessages: 1,
       truncated: false
@@ -252,6 +269,24 @@ function api(): CodexSwitcherApi {
       indexEntriesChanged: 4,
       errors: [],
       message: '已将 1 个对话移入 Windows 回收站；已清理 4 条本地索引。'
+    }),
+    previewSafeConversationCleanup: vi.fn().mockResolvedValue({
+      count: 0,
+      sizeBytes: 0,
+      candidateIds: [],
+      closedSubagents: 0,
+      skippedOpen: 0,
+      skippedRecent: 0,
+      skippedUnknown: 0,
+      graceMinutes: 60
+    }),
+    cleanupSafeConversations: vi.fn().mockResolvedValue({
+      deleted: 0,
+      failed: 0,
+      deletedIds: [],
+      indexEntriesChanged: 0,
+      errors: [],
+      message: '没有符合保守清理条件的已关闭子代理对话。'
     }),
     previewSessionRepair: vi.fn().mockResolvedValue({
       snapshotId: 'snapshot-a',
@@ -744,18 +779,18 @@ describe('App', () => {
   })
 
   it('deletes selected accounts only after confirmation', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
     fireEvent.click(screen.getByLabelText('选择 person@example.com'))
     fireEvent.click(screen.getByRole('button', { name: '删除选中' }))
+    const confirmation = await screen.findByRole('alertdialog', { name: '删除 1 个账号' })
+    expect(confirmation).toHaveTextContent('外部源文件不会被修改')
+    fireEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }))
 
     await waitFor(() =>
       expect(window.codexSwitcher.deleteAccounts).toHaveBeenCalledWith(['account-a'])
     )
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('外部原始文件不受影响'))
-    confirm.mockRestore()
   })
 
   it('tests only selected accounts', async () => {
@@ -835,7 +870,6 @@ describe('App', () => {
   })
 
   it('switches and restarts the exact account chosen from the context menu', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     window.codexSwitcher.switchAccount = vi.fn().mockResolvedValue({
       ok: true,
       message: '账号切换完成；Codex 已重启',
@@ -847,13 +881,14 @@ describe('App', () => {
 
     fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
     fireEvent.click(screen.getByRole('menuitem', { name: '切换并重启' }))
+    const confirmation = await screen.findByRole('alertdialog', { name: '切换账号并重启' })
+    fireEvent.click(within(confirmation).getByRole('button', { name: '继续切换并重启' }))
 
     await waitFor(() =>
       expect(window.codexSwitcher.switchAccount).toHaveBeenCalledWith('account-a', true)
     )
     expect(await screen.findByText('切换成功，Codex 已重启')).toBeInTheDocument()
     expect(screen.getAllByRole('status')).toHaveLength(1)
-    confirm.mockRestore()
   })
 
   it('allows workspace-bound access-only accounts to use external Codex switching', async () => {
@@ -868,7 +903,6 @@ describe('App', () => {
   })
 
   it('reports a restart failure without claiming the completed account switch was rolled back', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     window.codexSwitcher.switchAccount = vi.fn().mockResolvedValue({
       ok: true,
       message: '账号切换完成，但 Codex 自动重启失败。账号已完成切换，可手动重启 Codex',
@@ -880,10 +914,11 @@ describe('App', () => {
 
     fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
     fireEvent.click(screen.getByRole('menuitem', { name: '切换并重启' }))
+    const confirmation = await screen.findByRole('alertdialog', { name: '切换账号并重启' })
+    fireEvent.click(within(confirmation).getByRole('button', { name: '继续切换并重启' }))
 
     const warning = await screen.findByText(/账号已完成切换，可手动重启 Codex/)
     expect(warning.closest('.message')).toHaveClass('warn')
-    confirm.mockRestore()
   })
 
   it('opens the source file location from the account context menu', async () => {
@@ -909,7 +944,6 @@ describe('App', () => {
   })
 
   it('asks whether to restart Codex after saving a custom API without repairing conversations', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const bridge = api()
     window.codexSwitcher = bridge
     render(<App />)
@@ -930,10 +964,11 @@ describe('App', () => {
       model: 'gpt-5.4',
       apiKey: 'temporary-custom-key'
     }, false))
+    const confirmation = await screen.findByRole('alertdialog', { name: '重启 Codex 使 API 生效' })
+    expect(confirmation).toHaveTextContent('历史对话仍保留在原来的 openai 分组')
+    fireEvent.click(within(confirmation).getByRole('button', { name: '立即重启' }))
     await waitFor(() => expect(bridge.restartCodex).toHaveBeenCalledTimes(1))
-    expect(confirm).toHaveBeenCalledWith('自定义 API 已保存，是否立即重启 Codex 使配置生效？')
     expect(bridge.previewSessionRepair).not.toHaveBeenCalled()
-    confirm.mockRestore()
   })
 
   it('previews and confirms Codex++ style historical session repair', async () => {
@@ -976,26 +1011,13 @@ describe('App', () => {
   })
 
   it('deletes selected Codex conversations only after confirmation', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const bridge = window.codexSwitcher
     vi.mocked(bridge.listConversations)
       .mockResolvedValueOnce({
-        items: [{
-          id: 'thread-one',
-          title: '修复账号切换',
-          cwd: 'C:\\work',
-          provider: 'custom',
-          createdAt: '2026-07-15T00:00:00Z',
-          updatedAt: '2026-07-16T00:00:00Z',
-          archived: false,
-          sourcePath: 'C:\\Users\\lee\\.codex\\sessions\\rollout-one.jsonl',
-          sizeBytes: 1024
-        }],
-        total: 1,
-        offset: 0,
-        hasMore: false
+        ...conversationListResult,
+        items: [conversationSummary]
       })
-      .mockResolvedValue({ items: [], total: 0, offset: 0, hasMore: false })
+      .mockResolvedValue({ ...conversationListResult, items: [], total: 0 })
 
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
@@ -1005,10 +1027,76 @@ describe('App', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '选择 修复账号切换' }))
     fireEvent.click(within(dialog).getByRole('button', { name: '删除选中' }))
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Windows 回收站'))
+    const confirmation = await screen.findByRole('alertdialog', { name: '删除 1 个 Codex 对话' })
+    expect(confirmation).toHaveTextContent('Windows 回收站')
+    fireEvent.click(within(confirmation).getByRole('button', { name: '删除对话' }))
     await waitFor(() => expect(bridge.deleteConversations).toHaveBeenCalledWith(['thread-one']))
     expect(await screen.findByText(/已将 1 个对话移入 Windows 回收站/)).toBeInTheDocument()
-    confirm.mockRestore()
+  })
+
+  it('filters subagents and conservatively cleans only previewed closed children', async () => {
+    const bridge = window.codexSwitcher
+    const child: ConversationSummary = {
+      ...conversationSummary,
+      id: 'thread-child',
+      title: '检查配额接口',
+      kind: 'subagent',
+      subagentKind: 'thread_spawn',
+      parentId: 'thread-one',
+      parentTitle: '修复账号切换',
+      depth: 1,
+      agentNickname: 'Helper',
+      agentRole: 'worker',
+      lifecycleStatus: 'closed',
+      safeToClean: true
+    }
+    vi.mocked(bridge.listConversations).mockResolvedValue({
+      ...conversationListResult,
+      items: [child],
+      facets: {
+        ...conversationListResult.facets,
+        kinds: [{ value: 'subagent', label: '子代理', count: 1 }],
+        subagentKinds: [{ value: 'thread_spawn', label: '派生代理', count: 1 }],
+        lifecycleStatuses: [{ value: 'closed', label: '已关闭', count: 1 }]
+      },
+      safeCleanupCount: 1,
+      safeCleanupBytes: 1024
+    })
+    vi.mocked(bridge.previewSafeConversationCleanup).mockResolvedValue({
+      count: 1,
+      sizeBytes: 1024,
+      candidateIds: ['thread-child'],
+      closedSubagents: 1,
+      skippedOpen: 0,
+      skippedRecent: 0,
+      skippedUnknown: 0,
+      graceMinutes: 60
+    })
+    vi.mocked(bridge.cleanupSafeConversations).mockResolvedValue({
+      deleted: 1,
+      failed: 0,
+      deletedIds: ['thread-child'],
+      indexEntriesChanged: 3,
+      errors: [],
+      message: '已将 1 个对话移入 Windows 回收站。'
+    })
+
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.click(screen.getByRole('button', { name: '对话管理' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Codex 对话管理' })
+    await within(dialog).findByText('检查配额接口')
+    fireEvent.change(within(dialog).getByLabelText('对话来源'), { target: { value: 'subagent' } })
+    await waitFor(() => expect(bridge.listConversations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'subagent' })
+    ))
+    fireEvent.click(within(dialog).getByRole('button', { name: '保守清理 1' }))
+
+    await waitFor(() => expect(bridge.previewSafeConversationCleanup).toHaveBeenCalled())
+    const confirmation = await screen.findByRole('alertdialog', { name: '保守清理 1 个子代理对话' })
+    expect(confirmation).toHaveTextContent('主对话、可恢复代理和状态不明确的对话不会处理')
+    fireEvent.click(within(confirmation).getByRole('button', { name: '开始清理' }))
+    await waitFor(() => expect(bridge.cleanupSafeConversations).toHaveBeenCalled())
   })
 
   it('imports cleaned credentials pasted by the user', async () => {

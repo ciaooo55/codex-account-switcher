@@ -43,6 +43,7 @@ import {
   CodexTestModeControl
 } from './components/CodexTestModeControl'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
+import type { RequestConfirmation } from './hooks/useConfirmation'
 import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
 import { useVirtualTableRows } from './hooks/useVirtualTableRows'
 
@@ -106,11 +107,12 @@ interface Props {
   snapshot: AppSnapshot
   onSnapshot: (snapshot: AppSnapshotPatch) => void
   notify: (kind: 'ok' | 'warn' | 'error', text: string) => void
+  requestConfirmation: RequestConfirmation
   onBusyChange?: (busy: boolean) => void
   now?: number
 }
 
-function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now() }: Props): React.JSX.Element {
+function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyChange, now = Date.now() }: Props): React.JSX.Element {
   const [selected, setSelected] = usePrunedSelection(snapshot.cpaCodexAccounts.map((account) => account.id))
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<DisplayAccountStatus | ''>('')
@@ -185,9 +187,15 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.
       (result) => notify(result.changed ? 'ok' : 'warn', result.message)
     )
   }
-  const remove = (removedIds = ids()): void => {
-    if (!removedIds.length || !window.confirm(`确定删除 ${removedIds.length} 个 CPA Codex 托管文件吗？`)) return
-    void run(async () => {
+  const remove = async (removedIds = ids()): Promise<void> => {
+    if (!removedIds.length || !await requestConfirmation({
+      title: `删除 ${removedIds.length} 个 CPA Codex 账号`,
+      message: '对应的 CPA 托管凭据文件会被删除。',
+      detail: '本地 aa 账号库不会被连带删除；需要时仍可再次导出到 CPA。',
+      confirmLabel: '确认删除',
+      tone: 'danger'
+    })) return
+    await run(async () => {
       const result = await window.codexSwitcher.deleteCpaCodexAccounts(removedIds)
       if (!result.deleted) throw new Error(result.message)
       setSelected(new Set())
@@ -254,7 +262,7 @@ function CpaCodexRow({ account, running, selected, toggle, now, testMode, virtua
   </tr>
 }
 
-function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(), scope }: Props & { scope: 'library' | 'cpa' }): React.JSX.Element {
+function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyChange, now = Date.now(), scope }: Props & { scope: 'library' | 'cpa' }): React.JSX.Element {
   const cpa = scope === 'cpa'
   const sourceAccounts = cpa ? snapshot.cpaGrokAccounts : snapshot.grokAccounts
   const testing = cpa ? snapshot.cpaGrokTesting : snapshot.grokTesting
@@ -319,7 +327,13 @@ function GrokPanel({ snapshot, onSnapshot, notify, onBusyChange, now = Date.now(
   }
   const chosen = (): string[] => [...selected]
   const remove = async (ids = chosen()): Promise<void> => {
-    if (!ids.length || !window.confirm(`确定删除选中的 ${ids.length} 个 Grok 账号吗？对应托管文件会同时删除。`)) return
+    if (!ids.length || !await requestConfirmation({
+      title: `删除 ${ids.length} 个 Grok 账号`,
+      message: `对应的${cpa ? ' CPA' : '本地'}托管凭据文件会同时删除。`,
+      detail: cpa ? '本地 aa 账号库不会被连带删除。' : 'CPA 目录中的同账号凭据不会被连带删除。',
+      confirmLabel: '确认删除',
+      tone: 'danger'
+    })) return
     await run(async () => {
       const result = cpa
         ? await window.codexSwitcher.deleteCpaGrokAccounts(ids)

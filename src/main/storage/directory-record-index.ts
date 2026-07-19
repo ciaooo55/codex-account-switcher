@@ -1,6 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs'
-import { stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdir, readFile, stat } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import { atomicWriteFile } from './atomic-file'
 
 interface CachedFile<T> {
   signature: string
@@ -12,6 +13,14 @@ interface DirectoryRecordIndexOptions<T> {
   collectPaths: (directory: string) => Promise<string[]>
   loadPath: (path: string) => Promise<T[]>
   concurrency?: number
+  cacheFile?: () => string | Promise<string>
+  cacheVersion?: number
+}
+
+interface PersistedIndex<T> {
+  version: number
+  directory: string
+  files: Array<{ key: string; signature: string; records: T[] }>
 }
 
 async function mapConcurrent<T, R>(
@@ -44,12 +53,14 @@ export class DirectoryRecordIndex<T> {
   private dirty = true
   private changeVersion = 0
   private refreshPromise: Promise<T[]> | null = null
+  private hydratedDirectory: string | null = null
 
   constructor(private readonly options: DirectoryRecordIndexOptions<T>) {}
 
   async list(force = false): Promise<T[]> {
     const directory = resolve(await this.options.directory())
     this.ensureDirectory(directory)
+    await this.hydrate(directory)
     if (!this.watcherAvailable) this.dirty = true
     if (!force && !this.dirty && this.snapshot) return [...this.snapshot]
     if (this.refreshPromise) return [...(await this.refreshPromise)]
@@ -81,6 +92,7 @@ export class DirectoryRecordIndex<T> {
     this.watcherAvailable = false
     this.fileCache.clear()
     this.snapshot = null
+    this.hydratedDirectory = null
     this.invalidate()
 
     try {
@@ -107,6 +119,7 @@ export class DirectoryRecordIndex<T> {
     const paths = await this.options.collectPaths(directory)
     const currentPaths = new Set(paths.map((path) => resolve(path).toLowerCase()))
     const concurrency = this.options.concurrency ?? 8
+    let cacheChanged = false
     const loaded = await mapConcurrent(paths, concurrency, async (path) => {
       const key = resolve(path).toLowerCase()
       try {
@@ -116,10 +129,11 @@ export class DirectoryRecordIndex<T> {
         if (cached?.signature === signature) return cached.records
         const records = await this.options.loadPath(path)
         this.fileCache.set(key, { signature, records })
+        cacheChanged = true
         return records
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          this.fileCache.delete(key)
+          cacheChanged ||= this.fileCache.delete(key)
           return []
         }
         throw error
@@ -127,10 +141,56 @@ export class DirectoryRecordIndex<T> {
     })
 
     for (const key of this.fileCache.keys()) {
-      if (!currentPaths.has(key)) this.fileCache.delete(key)
+      if (!currentPaths.has(key)) {
+        this.fileCache.delete(key)
+        cacheChanged = true
+      }
     }
     this.snapshot = loaded.flat()
     this.dirty = this.changeVersion !== startVersion
+    if (cacheChanged) await this.persist(directory)
     return this.snapshot
+  }
+
+  private async hydrate(directory: string): Promise<void> {
+    if (this.hydratedDirectory === directory) return
+    this.hydratedDirectory = directory
+    if (!this.options.cacheFile) return
+    try {
+      const cachePath = resolve(await this.options.cacheFile())
+      if ((await stat(cachePath)).size > 32 * 1024 * 1024) return
+      const parsed = JSON.parse(await readFile(cachePath, 'utf8')) as Partial<PersistedIndex<T>>
+      if (
+        parsed.version !== (this.options.cacheVersion ?? 1) ||
+        resolve(String(parsed.directory ?? '')).toLowerCase() !== directory.toLowerCase() ||
+        !Array.isArray(parsed.files)
+      ) return
+      for (const item of parsed.files.slice(0, 100_000)) {
+        if (!item || typeof item.key !== 'string' || typeof item.signature !== 'string' || !Array.isArray(item.records)) {
+          continue
+        }
+        this.fileCache.set(item.key, { signature: item.signature, records: item.records })
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.fileCache.clear()
+      }
+    }
+  }
+
+  private async persist(directory: string): Promise<void> {
+    if (!this.options.cacheFile) return
+    try {
+      const cachePath = resolve(await this.options.cacheFile())
+      await mkdir(dirname(cachePath), { recursive: true })
+      const contents: PersistedIndex<T> = {
+        version: this.options.cacheVersion ?? 1,
+        directory,
+        files: [...this.fileCache].map(([key, item]) => ({ key, ...item }))
+      }
+      await atomicWriteFile(cachePath, `${JSON.stringify(contents)}\n`)
+    } catch {
+      // A cache failure must never prevent the source directory from loading.
+    }
   }
 }

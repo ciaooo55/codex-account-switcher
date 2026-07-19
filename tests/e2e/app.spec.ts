@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -119,6 +119,31 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       `${JSON.stringify({ type: 'session_meta', payload: { id: 'thread-delete-e2e', cwd: 'C:/delete', model_provider: 'custom' } })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'delete me' } })}\n`,
       'utf8'
     )
+    const childRollout = join(codexHome, 'sessions', '2026', 'rollout-child-e2e.jsonl')
+    await writeFile(
+      childRollout,
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: 'thread-child-e2e',
+          cwd: 'C:/work',
+          model_provider: 'custom',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: 'thread-e2e',
+                depth: 1,
+                agent_nickname: 'Helper',
+                agent_role: 'worker'
+              }
+            }
+          }
+        }
+      })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'closed helper task' } })}\n`,
+      'utf8'
+    )
+    const oldChildTime = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    await utimes(childRollout, oldChildTime, oldChildTime)
     const db = new DatabaseSync(join(codexHome, 'state_5.sqlite'))
     db.exec(
       'CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, has_user_event INTEGER, cwd TEXT)'
@@ -135,6 +160,14 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       1,
       'C:/delete'
     )
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run(
+      'thread-child-e2e',
+      'custom',
+      1,
+      'C:/work'
+    )
+    db.exec('CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY, status TEXT)')
+    db.prepare('INSERT INTO thread_spawn_edges VALUES (?, ?, ?)').run('thread-e2e', 'thread-child-e2e', 'closed')
     db.close()
     await writeFile(
       join(userData, 'settings.json'),
@@ -250,6 +283,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
 
     await page.getByRole('button', { name: '导入账号' }).click()
+    await page.waitForTimeout(220)
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'import-dialog.png'), fullPage: true })
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: '导入账号' })).toHaveCount(0)
@@ -288,8 +322,17 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('已导出 1 个到 CPA')).toBeVisible()
     expect((await readdir(join(userData, 'grok-accounts'))).filter((name) => name.startsWith('codex-'))).toHaveLength(1)
 
-    page.once('dialog', (dialog) => dialog.accept())
     await page.getByRole('button', { name: '删除选中' }).click()
+    const accountDeleteConfirmation = page.getByRole('alertdialog', { name: '删除 1 个账号' })
+    await expect(accountDeleteConfirmation).toBeVisible()
+    await page.waitForTimeout(220)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'confirmation-dialog-ui.png'), fullPage: true })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+    await page.waitForTimeout(220)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'confirmation-dialog-ui-dark.png'), fullPage: true })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
+    await page.waitForTimeout(220)
+    await accountDeleteConfirmation.getByRole('button', { name: '确认删除' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toHaveCount(0)
     expect(await readdir(join(userData, 'aa', 'codex'))).not.toContain('folder-e2e@example.com_unknown.json')
 
@@ -413,6 +456,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByLabel('选择 e2e@example.com', { exact: true }).check()
     await page.getByRole('button', { name: '导出账号' }).click()
+    await page.waitForTimeout(220)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'export-dialog-ui.png'), fullPage: true })
     await page.getByRole('button', { name: '选择目录并导出' }).click()
     await expect(page.getByText('已导出 1 个账号')).toBeVisible()
     const exportedFiles = await readdir(exportDirectory)
@@ -449,12 +494,26 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '对话管理' }).click()
     const conversationDialog = page.getByRole('dialog', { name: 'Codex 对话管理' })
     await expect(conversationDialog).toBeVisible()
-    await conversationDialog.getByPlaceholder('搜索标题、工作区或供应商').fill('delete me')
+    await conversationDialog.getByLabel('对话来源').selectOption('subagent')
+    await expect(conversationDialog.getByText('1 个结果 / 3 个对话')).toBeVisible()
+    await expect(conversationDialog.locator('.conversation-row').filter({ hasText: 'closed helper task' })).toBeVisible()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'conversation-manager-subagent-ui.png'), fullPage: true })
+    await conversationDialog.getByRole('button', { name: '保守清理 1' }).click()
+    const cleanupConfirmation = page.getByRole('alertdialog', { name: '保守清理 1 个子代理对话' })
+    await expect(cleanupConfirmation).toBeVisible()
+    await cleanupConfirmation.getByRole('button', { name: '开始清理' }).click()
+    await expect(conversationDialog.getByText('已将 1 个对话移入 Windows 回收站')).toBeVisible()
+    await expect(readFile(join(codexHome, 'sessions', '2026', 'rollout-child-e2e.jsonl'), 'utf8')).rejects.toThrow()
+    await conversationDialog.getByLabel('对话来源').selectOption('all')
+
+    await conversationDialog.getByPlaceholder('搜索标题、任务 ID、工作区、代理或正文').fill('delete me')
     const deleteConversationRow = conversationDialog.locator('.conversation-row').filter({ hasText: 'delete me' })
     await expect(deleteConversationRow).toBeVisible()
     await conversationDialog.getByLabel('选择 delete me').click()
-    page.once('dialog', (dialog) => dialog.accept())
     await conversationDialog.getByRole('button', { name: '删除选中' }).click()
+    const conversationDeleteConfirmation = page.getByRole('alertdialog', { name: '删除 1 个 Codex 对话' })
+    await expect(conversationDeleteConfirmation).toBeVisible()
+    await conversationDeleteConfirmation.getByRole('button', { name: '删除对话' }).click()
     await expect(conversationDialog.getByText('已将 1 个对话移入 Windows 回收站')).toBeVisible()
     await expect(deleteConversationRow).toHaveCount(0)
     await expect(readFile(join(codexHome, 'sessions', '2026', 'rollout-delete-e2e.jsonl'), 'utf8')).rejects.toThrow()
@@ -464,16 +523,27 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     ).toMatchObject({ count: 0 })
     deletedThreadDb.close()
 
-    await conversationDialog.getByPlaceholder('搜索标题、工作区或供应商').fill('unchanged')
+    await conversationDialog.getByPlaceholder('搜索标题、任务 ID、工作区、代理或正文').fill('unchanged')
     const conversationRow = conversationDialog.locator('.conversation-row').filter({ hasText: 'unchanged' })
     await expect(conversationRow).toBeVisible()
     await conversationRow.click()
     await expect(conversationDialog.locator('.conversation-messages')).toContainText('unchanged')
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'conversation-manager-ui.png'), fullPage: true })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+    await page.waitForTimeout(250)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'conversation-manager-ui-dark.png'), fullPage: true })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
+    await page.waitForTimeout(250)
+    const conversationViewport = page.viewportSize()
+    await page.setViewportSize({ width: 980, height: 640 })
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'conversation-manager-ui-compact.png'), fullPage: true })
+    if (conversationViewport) await page.setViewportSize(conversationViewport)
     await conversationDialog.getByLabel('选择 unchanged').click()
     await conversationDialog.getByRole('button', { name: '同步选中' }).click()
     const selectedRepairDialog = page.getByRole('dialog', { name: '修复历史会话' })
     await expect(selectedRepairDialog).toContainText('将同步选中的 1 个对话')
+    await page.waitForTimeout(220)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'repair-dialog-ui.png'), fullPage: true })
     await selectedRepairDialog.getByRole('button', { name: '取消' }).click()
 
     await page.getByRole('button', { name: '修复历史会话' }).click()
@@ -524,6 +594,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '设置' }).click()
     const settingsPanel = page.getByRole('dialog', { name: '设置' })
     await expect(settingsPanel).toBeVisible()
+    await page.waitForTimeout(220)
     const panelBounds = await settingsPanel.boundingBox()
     expect(panelBounds).not.toBeNull()
     expect(panelBounds!.x).toBeGreaterThanOrEqual(0)

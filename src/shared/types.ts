@@ -380,6 +380,52 @@ export interface SessionRepairResult {
   backupPath: string | null
 }
 
+export type ConversationKind = 'main' | 'subagent' | 'internal' | 'unknown'
+
+export type ConversationSubagentKind =
+  | 'thread_spawn'
+  | 'review'
+  | 'compact'
+  | 'memory_consolidation'
+  | 'other'
+  | null
+
+export type ConversationLifecycleStatus = 'open' | 'closed' | 'unknown'
+export type ConversationSearchScope = 'metadata' | 'content'
+export type ConversationArchiveFilter = 'all' | 'active' | 'archived'
+export type ConversationSortMode = 'updated' | 'hierarchy'
+
+export interface ConversationListQuery {
+  query?: string
+  searchScope?: ConversationSearchScope
+  kind?: 'all' | ConversationKind
+  subagentKind?: 'all' | Exclude<ConversationSubagentKind, null>
+  lifecycleStatus?: 'all' | ConversationLifecycleStatus
+  archive?: ConversationArchiveFilter
+  provider?: string
+  workspace?: string
+  updatedWithinDays?: number | null
+  sort?: ConversationSortMode
+  offset?: number
+  limit?: number
+  force?: boolean
+}
+
+export interface ConversationFacetOption {
+  value: string
+  label: string
+  count: number
+}
+
+export interface ConversationFacets {
+  kinds: ConversationFacetOption[]
+  subagentKinds: ConversationFacetOption[]
+  lifecycleStatuses: ConversationFacetOption[]
+  archives: ConversationFacetOption[]
+  providers: ConversationFacetOption[]
+  workspaces: ConversationFacetOption[]
+}
+
 export interface ConversationSummary {
   id: string
   title: string
@@ -390,6 +436,17 @@ export interface ConversationSummary {
   archived: boolean
   sourcePath: string
   sizeBytes: number
+  kind: ConversationKind
+  subagentKind: ConversationSubagentKind
+  parentId: string | null
+  parentTitle: string | null
+  childCount: number
+  depth: number | null
+  agentNickname: string | null
+  agentRole: string | null
+  lifecycleStatus: ConversationLifecycleStatus
+  safeToClean: boolean
+  matchExcerpt: string | null
 }
 
 export interface ConversationMessage {
@@ -402,8 +459,23 @@ export interface ConversationMessage {
 export interface ConversationListResult {
   items: ConversationSummary[]
   total: number
+  allTotal: number
   offset: number
   hasMore: boolean
+  facets: ConversationFacets
+  safeCleanupCount: number
+  safeCleanupBytes: number
+}
+
+export interface ConversationCleanupPreview {
+  count: number
+  sizeBytes: number
+  candidateIds: string[]
+  closedSubagents: number
+  skippedOpen: number
+  skippedRecent: number
+  skippedUnknown: number
+  graceMinutes: number
 }
 
 export interface ConversationDetail {

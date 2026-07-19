@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -20,12 +20,12 @@ async function createHome(): Promise<string> {
   return home
 }
 
-function lines(id: string, title: string, provider = 'openai'): string {
+function lines(id: string, title: string, provider = 'openai', source?: unknown): string {
   return [
     JSON.stringify({
       timestamp: '2026-07-15T00:00:00Z',
       type: 'session_meta',
-      payload: { id, cwd: `C:/work/${id}`, model_provider: provider }
+      payload: { id, cwd: `C:/work/${id}`, model_provider: provider, ...(source === undefined ? {} : { source }) }
     }),
     JSON.stringify({
       timestamp: '2026-07-15T00:00:01Z',
@@ -80,6 +80,102 @@ describe('ConversationManager', () => {
     expect(second.items).toHaveLength(6)
     expect(detail.messages).toHaveLength(2)
     expect(detail.truncated).toBe(false)
+  })
+
+  it('classifies subagents, exposes dynamic filters and searches message bodies on demand', async () => {
+    const home = await createHome()
+    const directory = join(home, 'sessions', '2026')
+    await writeFile(join(directory, 'rollout-main.jsonl'), lines('thread-main', '主任务', 'openai', 'vscode'))
+    await writeFile(join(directory, 'rollout-child.jsonl'), `${lines(
+      'thread-child',
+      '分析切换逻辑',
+      'openai',
+      { subagent: { thread_spawn: { parent_thread_id: 'thread-main', depth: 1, agent_nickname: 'Helper', agent_role: 'worker' } } }
+    )}${JSON.stringify({
+      timestamp: '2026-07-15T00:00:03Z',
+      type: 'event_msg',
+      payload: { type: 'agent_message', message: '正文中包含 unique-search-needle' }
+    })}\n`)
+
+    const stateDb = new DatabaseSync(join(home, 'state_5.sqlite'))
+    stateDb.exec(`
+      CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY, status TEXT);
+      INSERT INTO thread_spawn_edges VALUES ('thread-main', 'thread-child', 'closed');
+    `)
+    stateDb.close()
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    await utimes(join(directory, 'rollout-child.jsonl'), old, old)
+
+    const manager = new ConversationManager(home)
+    const subagents = await manager.list({ kind: 'subagent', lifecycleStatus: 'closed', sort: 'hierarchy' })
+    const metadataSearch = await manager.list({ query: 'unique-search-needle', searchScope: 'metadata' })
+    const contentSearch = await manager.list({ query: 'unique-search-needle', searchScope: 'content' })
+
+    expect(subagents.total).toBe(1)
+    expect(subagents.items[0]).toMatchObject({
+      id: 'thread-child',
+      kind: 'subagent',
+      subagentKind: 'thread_spawn',
+      parentId: 'thread-main',
+      parentTitle: '主任务',
+      depth: 1,
+      agentNickname: 'Helper',
+      agentRole: 'worker',
+      lifecycleStatus: 'closed',
+      safeToClean: true
+    })
+    expect(subagents.facets.kinds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'main', count: 1 }),
+      expect.objectContaining({ value: 'subagent', count: 1 })
+    ]))
+    expect(metadataSearch.total).toBe(0)
+    expect(contentSearch.items[0]).toMatchObject({ id: 'thread-child' })
+    expect(contentSearch.items[0].matchExcerpt).toContain('unique-search-needle')
+  })
+
+  it('conservatively cleans only old closed spawned agents', async () => {
+    const home = await createHome()
+    const directory = join(home, 'sessions', '2026')
+    const source = (parent: string) => ({
+      subagent: { thread_spawn: { parent_thread_id: parent, depth: 1, agent_nickname: 'Worker' } }
+    })
+    const paths = {
+      eligible: join(directory, 'rollout-eligible.jsonl'),
+      open: join(directory, 'rollout-open.jsonl'),
+      recent: join(directory, 'rollout-recent.jsonl'),
+      unknown: join(directory, 'rollout-unknown.jsonl')
+    }
+    await writeFile(paths.eligible, lines('child-eligible', 'closed old', 'openai', source('thread-main')))
+    await writeFile(paths.open, lines('child-open', 'open old', 'openai', source('thread-main')))
+    await writeFile(paths.recent, lines('child-recent', 'closed recent', 'openai', source('thread-main')))
+    await writeFile(paths.unknown, lines('child-unknown', 'missing graph status', 'openai', source('thread-main')))
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    await Promise.all([utimes(paths.eligible, old, old), utimes(paths.open, old, old), utimes(paths.unknown, old, old)])
+
+    const stateDb = new DatabaseSync(join(home, 'state_5.sqlite'))
+    stateDb.exec(`
+      CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY, status TEXT);
+      INSERT INTO thread_spawn_edges VALUES ('thread-main', 'child-eligible', 'closed');
+      INSERT INTO thread_spawn_edges VALUES ('thread-main', 'child-open', 'open');
+      INSERT INTO thread_spawn_edges VALUES ('thread-main', 'child-recent', 'closed');
+    `)
+    stateDb.close()
+
+    const manager = new ConversationManager(home)
+    const preview = await manager.previewSafeCleanup()
+    const trashed: string[] = []
+    const result = await manager.cleanupSafe(async (path) => {
+      trashed.push(path)
+      await rm(path, { force: true })
+    })
+
+    expect(preview).toMatchObject({ count: 1, candidateIds: ['child-eligible'], skippedOpen: 1, skippedRecent: 1, skippedUnknown: 1 })
+    expect(result).toMatchObject({ deleted: 1, deletedIds: ['child-eligible'] })
+    expect(trashed).toEqual([paths.eligible])
+    await expect(stat(paths.eligible)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(paths.open)).resolves.toBeDefined()
+    await expect(stat(paths.recent)).resolves.toBeDefined()
+    await expect(stat(paths.unknown)).resolves.toBeDefined()
   })
 
   it('moves selected rollouts to trash and removes Codex index records', async () => {
