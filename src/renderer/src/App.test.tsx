@@ -3,7 +3,12 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSnapshot, CodexSwitcherApi, TestProgress } from '../../shared/ipc'
-import type { ConversationListResult, ConversationSummary } from '../../shared/types'
+import type {
+  ConversationListResult,
+  ConversationSummary,
+  ImportPreviewCommitResult,
+  ImportPreviewResult
+} from '../../shared/types'
 import { App } from './App'
 
 const snapshot: AppSnapshot = {
@@ -145,6 +150,55 @@ const conversationListResult: ConversationListResult = {
   safeCleanupBytes: 0
 }
 
+function importPreview(overrides: Partial<ImportPreviewResult> = {}): ImportPreviewResult {
+  return {
+    sessionId: '00000000-0000-4000-8000-000000000001',
+    createdAt: '2026-07-16T00:00:00.000Z',
+    expiresAt: '2026-07-16T00:20:00.000Z',
+    sourceCount: 1,
+    recognized: 1,
+    errors: [],
+    unrecognized: [],
+    items: [{
+      key: 'codex:account-import',
+      provider: 'codex',
+      credentialId: 'account-import',
+      existingCredentialId: null,
+      email: 'imported@example.com',
+      planType: 'plus',
+      identity: 'subject:imported',
+      sourcePath: 'E:\\incoming\\account.json',
+      sourceFormat: 'json',
+      sourceDialect: 'cpa',
+      canRefresh: true,
+      switchable: true,
+      disposition: 'new',
+      detail: '新账号',
+      suggestedDecision: 'add'
+    }],
+    ...overrides
+  }
+}
+
+function importCommit(overrides: Partial<ImportPreviewCommitResult> = {}): ImportPreviewCommitResult {
+  return {
+    imported: 1,
+    skipped: 0,
+    recognized: 1,
+    errors: [],
+    codexImported: 1,
+    codexSkipped: 0,
+    grokImported: 0,
+    grokSkipped: 0,
+    accounts: snapshot.accounts,
+    grokAccounts: [],
+    added: 1,
+    updated: 0,
+    ignored: 0,
+    ...overrides
+  }
+}
+
 let progressListener: ((progress: TestProgress) => void) | null = null
 const browserStorage = new Map<string, string>()
 
@@ -190,6 +244,45 @@ function api(): CodexSwitcherApi {
       imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts,
       codexImported: 1, codexSkipped: 0, grokImported: 0, grokSkipped: 0, grokAccounts: []
     }),
+    previewAnyFiles: vi.fn().mockResolvedValue(null),
+    previewAnyDirectory: vi.fn().mockResolvedValue(null),
+    previewAnyPasted: vi.fn().mockResolvedValue({
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      createdAt: '2026-07-16T00:00:00.000Z',
+      expiresAt: '2026-07-16T00:20:00.000Z',
+      sourceCount: 1,
+      recognized: 0,
+      errors: [],
+      items: [],
+      unrecognized: []
+    }),
+    previewRefreshTokens: vi.fn().mockResolvedValue({
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      createdAt: '2026-07-16T00:00:00.000Z',
+      expiresAt: '2026-07-16T00:20:00.000Z',
+      sourceCount: 1,
+      recognized: 0,
+      errors: [],
+      items: [],
+      unrecognized: []
+    }),
+    previewOAuthComplete: vi.fn().mockResolvedValue({
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      createdAt: '2026-07-16T00:00:00.000Z',
+      expiresAt: '2026-07-16T00:20:00.000Z',
+      sourceCount: 1,
+      recognized: 0,
+      errors: [],
+      items: [],
+      unrecognized: []
+    }),
+    commitImportPreview: vi.fn().mockResolvedValue({
+      imported: 0, skipped: 0, recognized: 0, errors: [],
+      codexImported: 0, codexSkipped: 0, grokImported: 0, grokSkipped: 0,
+      accounts: snapshot.accounts, grokAccounts: [], added: 0, updated: 0, ignored: 0
+    }),
+    refineImportPreview: vi.fn().mockResolvedValue(importPreview()),
+    discardImportPreview: vi.fn().mockResolvedValue(undefined),
     importRefreshTokens: vi.fn().mockResolvedValue({
       imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts
     }),
@@ -204,6 +297,27 @@ function api(): CodexSwitcherApi {
     deleteAccounts: vi.fn().mockResolvedValue({
       deleted: 1,
       message: '已从账号库删除 1 个账号，原始文件未修改'
+    }),
+    updateAccountMetadata: vi.fn().mockResolvedValue(undefined),
+    inspectLibraries: vi.fn().mockResolvedValue({
+      snapshotId: '00000000-0000-4000-8000-000000000000',
+      generatedAt: '2026-07-16T00:00:00.000Z',
+      scannedFiles: 0,
+      healthyAccounts: 0,
+      issues: []
+    }),
+    repairLibraries: vi.fn().mockResolvedValue({
+      repaired: 0,
+      skipped: 0,
+      errors: [],
+      message: '没有需要修复的问题',
+      report: {
+        snapshotId: '00000000-0000-4000-8000-000000000000',
+        generatedAt: '2026-07-16T00:00:00.000Z',
+        scannedFiles: 0,
+        healthyAccounts: 0,
+        issues: []
+      }
     }),
     exportAccounts: vi.fn().mockResolvedValue({
       ok: true,
@@ -521,14 +635,27 @@ describe('App', () => {
   })
 
   it('imports every supported file from a selected folder', async () => {
+    vi.mocked(window.codexSwitcher.previewAnyDirectory).mockResolvedValue(importPreview())
+    vi.mocked(window.codexSwitcher.commitImportPreview).mockResolvedValue(importCommit({
+      imported: 2,
+      recognized: 2,
+      codexImported: 2,
+      added: 2
+    }))
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
     fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
     fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
 
-    await waitFor(() => expect(window.codexSwitcher.importAnyDirectory).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('文件夹导入完成：Codex 新增 2、重复 0；Grok 新增 0、重复 0')).toBeInTheDocument()
+    await waitFor(() => expect(window.codexSwitcher.previewAnyDirectory).toHaveBeenCalledTimes(1))
+    const preview = await screen.findByRole('dialog', { name: '导入预检' })
+    fireEvent.click(within(preview).getByRole('button', { name: '确认写入 aa' }))
+    await waitFor(() => expect(window.codexSwitcher.commitImportPreview).toHaveBeenCalledWith({
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      decisions: { 'codex:account-import': 'add' }
+    }))
+    expect(await screen.findByText('导入完成：新增 2，更新 0，跳过 0')).toBeInTheDocument()
   })
 
   it('shows newly imported Codex accounts even when the previous filter hid untested rows', async () => {
@@ -539,17 +666,18 @@ describe('App', () => {
       email: 'newly-imported@example.com',
       sourcePath: 'E:\\accounts\\newly-imported.json'
     }
-    vi.mocked(bridge.importAnyDirectory).mockResolvedValue({
-      imported: 1,
-      skipped: 0,
-      errors: [],
-      codexImported: 1,
-      codexSkipped: 0,
-      grokImported: 0,
-      grokSkipped: 0,
+    vi.mocked(bridge.previewAnyDirectory).mockResolvedValue(importPreview({
+      items: [{
+        ...importPreview().items[0],
+        credentialId: 'account-new',
+        key: 'codex:account-new',
+        email: 'newly-imported@example.com'
+      }]
+    }))
+    vi.mocked(bridge.commitImportPreview).mockResolvedValue(importCommit({
       accounts: [...snapshot.accounts, importedAccount],
-      grokAccounts: []
-    })
+      added: 1
+    }))
     window.codexSwitcher = bridge
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
@@ -558,6 +686,8 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
     fireEvent.click(screen.getByRole('button', { name: '导入文件夹' }))
+    const preview = await screen.findByRole('dialog', { name: '导入预检' })
+    fireEvent.click(within(preview).getByRole('button', { name: '确认写入 aa' }))
 
     expect(await screen.findByLabelText('选择 newly-imported@example.com')).toBeInTheDocument()
     expect(screen.getByLabelText('Codex 状态筛选')).toHaveValue('')
@@ -576,18 +706,173 @@ describe('App', () => {
   })
 
   it('reports partial import failures instead of hiding them behind a success message', async () => {
-    window.codexSwitcher.importAnyFiles = vi.fn().mockResolvedValue({
-      imported: 3, skipped: 2, errors: ['broken.json: invalid'], accounts: snapshot.accounts,
-      codexImported: 2, codexSkipped: 1, grokImported: 1, grokSkipped: 1, grokAccounts: []
-    })
+    vi.mocked(window.codexSwitcher.previewAnyFiles).mockResolvedValue(importPreview({
+      errors: ['broken.json: invalid']
+    }))
+    vi.mocked(window.codexSwitcher.commitImportPreview).mockResolvedValue(importCommit({
+      imported: 3,
+      skipped: 2,
+      recognized: 5,
+      errors: ['broken.json: invalid'],
+      codexImported: 2,
+      codexSkipped: 1,
+      grokImported: 1,
+      grokSkipped: 1,
+      added: 3,
+      ignored: 2
+    }))
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
     fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
     fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
+    const preview = await screen.findByRole('dialog', { name: '导入预检' })
+    fireEvent.click(within(preview).getByRole('button', { name: '确认写入 aa' }))
 
-    const result = await screen.findByText('文件导入完成：Codex 新增 2、重复 1；Grok 新增 1、重复 1；1 个文件存在问题')
+    const result = await screen.findByText('导入完成：新增 3，更新 0，跳过 2；1 项存在问题')
     expect(result.closest('.message')).toHaveClass('warn')
+  })
+
+  it('blocks unrecognized sources until the user explicitly skips them', async () => {
+    vi.mocked(window.codexSwitcher.previewAnyFiles).mockResolvedValue(importPreview({
+      recognized: 0,
+      items: [],
+      unrecognized: [{
+        key: 'unknown:0:broken.txt',
+        sourcePath: 'E:\\incoming\\broken.txt',
+        sourceFormat: 'txt',
+        detail: '未找到可用凭据'
+      }]
+    }))
+    vi.mocked(window.codexSwitcher.commitImportPreview).mockResolvedValue(importCommit({ skipped: 1, ignored: 1 }))
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
+    const preview = await screen.findByRole('dialog', { name: '导入预检' })
+    const confirm = within(preview).getByRole('button', { name: '确认写入 aa' })
+    expect(confirm).toBeDisabled()
+    expect(within(preview).getByText(/无法识别的来源/)).toBeInTheDocument()
+
+    fireEvent.click(within(preview).getByLabelText('我确认跳过以上未识别内容'))
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(window.codexSwitcher.commitImportPreview).toHaveBeenCalledWith({
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      decisions: {},
+      skipUnrecognized: true
+    }))
+  })
+
+  it('lets the user choose a parser for an unrecognized source before importing it', async () => {
+    const bridge = api()
+    const sourceKey = 'unknown:0:tokens.txt'
+    vi.mocked(bridge.previewAnyFiles).mockResolvedValue(importPreview({
+      unrecognized: [{
+        key: sourceKey,
+        sourcePath: 'E:\\incoming\\tokens.txt',
+        sourceFormat: 'txt',
+        detail: '未找到可用凭据'
+      }]
+    }))
+    vi.mocked(bridge.refineImportPreview).mockResolvedValue(importPreview({
+      recognized: 2,
+      unrecognized: [],
+      items: [
+        ...importPreview().items,
+        {
+          ...importPreview().items[0],
+          key: 'refined-codex:manual-account',
+          credentialId: 'manual-account',
+          email: 'manual@example.com',
+          sourcePath: 'E:\\incoming\\tokens.txt',
+          sourceFormat: 'txt'
+        }
+      ]
+    }))
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
+    const preview = await screen.findByRole('dialog', { name: '导入预检' })
+    fireEvent.change(within(preview).getByLabelText(`${sourceKey} 的手动识别方式`), {
+      target: { value: 'codex_rt' }
+    })
+    fireEvent.click(within(preview).getByRole('button', { name: '重新识别' }))
+
+    await waitFor(() => expect(bridge.refineImportPreview).toHaveBeenCalledWith({
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      sourceKey,
+      mode: 'codex_rt'
+    }))
+    expect(await within(preview).findByText('manual@example.com')).toBeInTheDocument()
+    expect(within(preview).queryByText(/无法识别的来源/)).not.toBeInTheDocument()
+    expect(within(preview).getByRole('button', { name: '确认写入 aa' })).toBeEnabled()
+  })
+
+  it('persists an account alias, group, tags and note from the selection toolbar', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    fireEvent.click(await screen.findByRole('row', { name: /person@example\.com/ }))
+    fireEvent.click(screen.getByRole('button', { name: '标签与分组' }))
+
+    const dialog = await screen.findByRole('dialog', { name: '账号标签与分组' })
+    fireEvent.change(within(dialog).getByLabelText('账号别名'), { target: { value: '主力 Plus' } })
+    fireEvent.change(within(dialog).getByLabelText(/分组/), { target: { value: '日常' } })
+    fireEvent.change(within(dialog).getByLabelText(/标签/), { target: { value: '稳定, 高优先级' } })
+    fireEvent.change(within(dialog).getByLabelText('备注'), { target: { value: '本机备注' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(bridge.updateAccountMetadata).toHaveBeenCalledWith({
+      accountIds: ['account-a'],
+      alias: '主力 Plus',
+      group: '日常',
+      tags: ['稳定', '高优先级'],
+      tagMode: 'replace',
+      note: '本机备注'
+    }))
+  })
+
+  it('previews library health issues and repairs only after confirmation', async () => {
+    const bridge = api()
+    vi.mocked(bridge.inspectLibraries).mockResolvedValue({
+      snapshotId: '00000000-0000-4000-8000-000000000010',
+      generatedAt: '2026-07-16T00:00:00.000Z',
+      scannedFiles: 3,
+      healthyAccounts: 2,
+      issues: [{
+        id: 'a'.repeat(24),
+        scope: 'aa-codex',
+        severity: 'warning',
+        kind: 'duplicate_identity',
+        title: 'Codex 同一账号存在多个文件',
+        detail: '同一稳定身份出现在 2 个凭证文件中',
+        paths: ['E:\\aa\\one.json', 'E:\\aa\\two.json'],
+        accountIds: ['account-a'],
+        repairable: true,
+        repairAction: '保留信息最完整的凭证并统一为一账号一文件'
+      }]
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '账号库体检' }))
+
+    const dialog = await screen.findByRole('dialog', { name: '账号库体检' })
+    expect(within(dialog).getByText('Codex 同一账号存在多个文件')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '修复选中' }))
+    const confirmation = await screen.findByRole('alertdialog', { name: '修复 1 项账号库问题' })
+    fireEvent.click(within(confirmation).getByRole('button', { name: '确认修复' }))
+
+    await waitFor(() => expect(bridge.repairLibraries).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000010',
+      ['a'.repeat(24)]
+    ))
   })
 
   it('filters by persistent status and searches workspace text', async () => {
@@ -1100,6 +1385,7 @@ describe('App', () => {
   })
 
   it('imports cleaned credentials pasted by the user', async () => {
+    vi.mocked(window.codexSwitcher.previewAnyPasted).mockResolvedValue(importPreview())
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
@@ -1110,7 +1396,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '清洗并导入' }))
 
     await waitFor(() =>
-      expect(window.codexSwitcher.importAnyPasted).toHaveBeenCalledWith('{"access_token":"secret"}')
+      expect(window.codexSwitcher.previewAnyPasted).toHaveBeenCalledWith('{"access_token":"secret"}')
     )
   })
 
@@ -1129,6 +1415,7 @@ describe('App', () => {
   })
 
   it('imports mobile refresh tokens using the explicit Sub2API client mode', async () => {
+    vi.mocked(window.codexSwitcher.previewRefreshTokens).mockResolvedValue(importPreview())
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
@@ -1140,7 +1427,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '清洗并导入' }))
 
     await waitFor(() =>
-      expect(window.codexSwitcher.importRefreshTokens).toHaveBeenCalledWith(
+      expect(window.codexSwitcher.previewRefreshTokens).toHaveBeenCalledWith(
         'rt.1.temporary-refresh-token-value',
         'mobile'
       )
@@ -1148,13 +1435,11 @@ describe('App', () => {
   })
 
   it('distinguishes recognized but invalid RTs from unrecognized input', async () => {
-    vi.mocked(window.codexSwitcher.importRefreshTokens).mockResolvedValueOnce({
-      imported: 0,
-      skipped: 0,
+    vi.mocked(window.codexSwitcher.previewRefreshTokens).mockResolvedValueOnce(importPreview({
       recognized: 94,
       errors: ['#1：Codex RT：invalid_refresh_token: Invalid refresh token.'],
-      accounts: snapshot.accounts
-    })
+      items: []
+    }))
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
@@ -1170,6 +1455,7 @@ describe('App', () => {
   })
 
   it('completes the Sub2API-style browser OAuth flow from a pasted callback URL', async () => {
+    vi.mocked(window.codexSwitcher.previewOAuthComplete).mockResolvedValue(importPreview())
     render(<App />)
     await screen.findByLabelText('选择 person@example.com')
 
@@ -1181,7 +1467,7 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('凭据文本'), { target: { value: callback } })
     fireEvent.click(screen.getByRole('button', { name: '完成授权并导入' }))
 
-    await waitFor(() => expect(window.codexSwitcher.completeOAuthAuthorization).toHaveBeenCalledWith(
+    await waitFor(() => expect(window.codexSwitcher.previewOAuthComplete).toHaveBeenCalledWith(
       '0123456789abcdef0123456789abcdef',
       callback
     ))

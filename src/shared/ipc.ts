@@ -1,5 +1,6 @@
 import type {
   AccountSummary,
+  AccountMetadataUpdateRequest,
   AppSettings,
   AutoSwitchRunResult,
   AutoSwitchState,
@@ -23,6 +24,12 @@ import type {
   GrokBatchTestResult,
   GrokScanResult,
   LibraryImportResult,
+  ImportPreviewCommitRequest,
+  ImportPreviewCommitResult,
+  ImportPreviewRefineRequest,
+  ImportPreviewResult,
+  LibraryHealthReport,
+  LibraryHealthRepairResult,
   ManagedFileStateResult,
   OAuthAuthorizationSession,
   ScanResult,
@@ -108,10 +115,21 @@ export interface CodexSwitcherApi {
   importAnyFiles(): Promise<LibraryImportResult | null>
   importAnyDirectory(): Promise<LibraryImportResult | null>
   importAnyPasted(text: string): Promise<LibraryImportResult>
+  previewAnyFiles(): Promise<ImportPreviewResult | null>
+  previewAnyDirectory(): Promise<ImportPreviewResult | null>
+  previewAnyPasted(text: string): Promise<ImportPreviewResult>
+  previewRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ImportPreviewResult>
+  previewOAuthComplete(sessionId: string, callbackInput: string): Promise<ImportPreviewResult>
+  commitImportPreview(request: ImportPreviewCommitRequest): Promise<ImportPreviewCommitResult>
+  refineImportPreview(request: ImportPreviewRefineRequest): Promise<ImportPreviewResult>
+  discardImportPreview(sessionId: string): Promise<void>
   importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult>
   startOAuthAuthorization(): Promise<OAuthAuthorizationSession>
   completeOAuthAuthorization(sessionId: string, callbackInput: string): Promise<ScanResult>
   deleteAccounts(ids: string[]): Promise<DeleteAccountsResult>
+  updateAccountMetadata(request: AccountMetadataUpdateRequest): Promise<void>
+  inspectLibraries(): Promise<LibraryHealthReport>
+  repairLibraries(snapshotId: string, issueIds: string[]): Promise<LibraryHealthRepairResult>
   exportAccounts(request: CredentialExportRequest): Promise<CredentialExportResult>
   exportAccountsToCpa(request: CredentialPriorityRequest): Promise<CpaCodexScanResult>
   testAccounts(ids?: string[], mode?: CodexTestMode): Promise<BatchTestResult>
@@ -180,10 +198,21 @@ export const ipcChannels = {
   importAny: 'accounts:import-any',
   importAnyDirectory: 'accounts:import-any-directory',
   importAnyPasted: 'accounts:import-any-pasted',
+  importPreviewFiles: 'accounts:import-preview-files',
+  importPreviewDirectory: 'accounts:import-preview-directory',
+  importPreviewPasted: 'accounts:import-preview-pasted',
+  importPreviewRefreshTokens: 'accounts:import-preview-refresh-tokens',
+  importPreviewOAuthComplete: 'accounts:import-preview-oauth-complete',
+  importPreviewCommit: 'accounts:import-preview-commit',
+  importPreviewRefine: 'accounts:import-preview-refine',
+  importPreviewDiscard: 'accounts:import-preview-discard',
   importRefreshTokens: 'accounts:import-refresh-tokens',
   oauthStart: 'accounts:oauth-start',
   oauthComplete: 'accounts:oauth-complete',
   deleteAccounts: 'accounts:delete',
+  accountMetadataUpdate: 'accounts:metadata-update',
+  libraryHealthInspect: 'libraries:health-inspect',
+  libraryHealthRepair: 'libraries:health-repair',
   exportAccounts: 'accounts:export',
   exportAccountsToCpa: 'accounts:export-to-cpa',
   test: 'accounts:test',

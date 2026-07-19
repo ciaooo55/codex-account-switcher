@@ -32,6 +32,8 @@ import { CredentialExportService } from './services/exporter'
 import { GrokAccountManager } from './services/grok-account-manager'
 import { GrokCredentialTester } from './services/grok-detector'
 import { combineLibraryImportResults } from './services/library-import'
+import { ImportPreviewService } from './services/import-preview'
+import { LibraryHealthService } from './services/library-health'
 import { OpenAIRefreshTokenImporter } from './services/refresh-token-importer'
 import { OpenAIOAuthImporter } from './services/openai-oauth-importer'
 import { SessionRepairService } from './services/session-repair'
@@ -46,6 +48,7 @@ import { StatusStore } from './storage/status-store'
 import { DeletedCredentialStore } from './storage/deleted-credentials'
 import { CredentialVault } from './storage/vault'
 import { CustomApiStore } from './storage/custom-api-store'
+import { AccountMetadataStore } from './storage/account-metadata'
 import { GrokStatusStore } from './storage/grok-status-store'
 import { CredentialSwitcher } from './switching/switcher'
 
@@ -248,6 +251,8 @@ async function main(): Promise<void> {
   const cpaCodexStatusStore = new StatusStore(join(userData, 'cpa-codex-status.json'))
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-library-status.json'))
   const cpaGrokStatusStore = new GrokStatusStore(join(userData, 'grok-status.json'))
+  const accountMetadataStore = new AccountMetadataStore(join(userData, 'account-metadata.json'))
+  await accountMetadataStore.getAll()
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
   const deletedCpaCodexStore = new DeletedCredentialStore(join(userData, 'deleted-cpa-codex-accounts.json'))
   const deletedGrokStore = new DeletedCredentialStore(join(userData, 'deleted-grok-library-accounts.json'))
@@ -459,6 +464,28 @@ async function main(): Promise<void> {
     onStatusesChanged: () => reconcileGrokStatusStores()
   })
 
+  const importPreviewService = new ImportPreviewService(manager, grokManager)
+  const libraryHealthService = new LibraryHealthService({
+    codexDirectory: codexImportDirectory,
+    grokDirectory: grokImportDirectory,
+    cpaDirectory: async () => (await settingsStore.get()).grokDirectory,
+    quarantineDirectory: join(userData, 'quarantine'),
+    accountManager: manager,
+    grokManager,
+    cpaCodexManager,
+    cpaGrokManager,
+    metadataStore: accountMetadataStore,
+    statusStores: {
+      codex: statusStore,
+      grok: grokStatusStore,
+      cpaCodex: cpaCodexStatusStore,
+      cpaGrok: cpaGrokStatusStore
+    }
+  })
+
+  const decorateAccounts = <T extends { id: string }>(accounts: readonly T[]): Array<T & ReturnType<AccountMetadataStore['peek']>> =>
+    accounts.map((account) => accountMetadataStore.decorate(account))
+
   let codexStatusSyncQueue: Promise<void> = Promise.resolve()
   reconcileCodexStatusStores = (): Promise<void> => {
     const operation = codexStatusSyncQueue.then(async () => {
@@ -618,22 +645,42 @@ async function main(): Promise<void> {
   }
 
   const sendProgress = (next: TestProgress): void => {
-    progress = next
+    progress = {
+      ...next,
+      updatedAccount: next.updatedAccount
+        ? accountMetadataStore.decorate(next.updatedAccount)
+        : null
+    }
     mainWindow?.webContents.send(ipcChannels.testProgress, progress)
   }
 
   const sendGrokProgress = (next: GrokTestProgress): void => {
-    grokProgress = next
+    grokProgress = {
+      ...next,
+      updatedAccount: next.updatedAccount
+        ? accountMetadataStore.decorate(next.updatedAccount)
+        : null
+    }
     mainWindow?.webContents.send(ipcChannels.grokTestProgress, grokProgress)
   }
 
   const sendCpaGrokProgress = (next: GrokTestProgress): void => {
-    cpaGrokProgress = next
+    cpaGrokProgress = {
+      ...next,
+      updatedAccount: next.updatedAccount
+        ? accountMetadataStore.decorate(next.updatedAccount)
+        : null
+    }
     mainWindow?.webContents.send(ipcChannels.cpaGrokTestProgress, cpaGrokProgress)
   }
 
   const sendCpaCodexProgress = (next: CpaCodexTestProgress): void => {
-    cpaCodexProgress = next
+    cpaCodexProgress = {
+      ...next,
+      updatedAccount: next.updatedAccount
+        ? accountMetadataStore.decorate(next.updatedAccount)
+        : null
+    }
     mainWindow?.webContents.send(ipcChannels.cpaCodexTestProgress, cpaCodexProgress)
   }
 
@@ -761,17 +808,17 @@ async function main(): Promise<void> {
       customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
     ])
     return {
-      accounts,
+      accounts: decorateAccounts(accounts),
       settings,
       importDirectory,
       testing: progress,
       autoSwitch: autoSwitchScheduler.getState(),
-      grokAccounts,
-      cpaGrokAccounts,
+      grokAccounts: decorateAccounts(grokAccounts),
+      cpaGrokAccounts: decorateAccounts(cpaGrokAccounts),
       grokDirectory: settings.grokDirectory,
       grokTesting: grokProgress,
       cpaGrokTesting: cpaGrokProgress,
-      cpaCodexAccounts,
+      cpaCodexAccounts: decorateAccounts(cpaCodexAccounts),
       cpaCodexTesting: cpaCodexProgress,
       cpaDirectoryStats: await readCpaDirectoryStats(settings.grokDirectory),
       customApi
@@ -865,6 +912,109 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.importAnyPasted, (_event, input: unknown) =>
     importAnyPasted(z.string().min(1).max(100 * 1024 * 1024).parse(input)))
+  const createMixedImportPreview = async (paths: string[]) => {
+    const [codex, grok] = await Promise.all([
+      manager.prepareFiles(paths),
+      grokManager.prepareFiles(paths)
+    ])
+    return importPreviewService.create(codex, grok)
+  }
+  ipcMain.handle(ipcChannels.importPreviewFiles, async () => {
+    assertNoRunningTask('预检导入账号')
+    const selected = await dialog.showOpenDialog({
+      title: '选择要预检的 Codex / Grok 账号文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '账号文件', extensions: ['json', 'jsonl', 'txt', 'md', 'js', 'mjs', 'cjs', 'zip'] }]
+    })
+    return selected.canceled
+      ? null
+      : runTrackedFileOperation(() => createMixedImportPreview(selected.filePaths))
+  })
+  ipcMain.handle(ipcChannels.importPreviewDirectory, async () => {
+    assertNoRunningTask('预检导入账号')
+    let directory: string | null = null
+    if (e2eMode && process.env.CODEX_SWITCHER_E2E_IMPORT_DIR) {
+      directory = resolve(process.env.CODEX_SWITCHER_E2E_IMPORT_DIR)
+    } else {
+      const settings = await settingsStore.get()
+      const selected = await dialog.showOpenDialog({
+        title: '选择要预检的账号文件夹',
+        defaultPath: settings.accountDirectory,
+        properties: ['openDirectory']
+      })
+      if (!selected.canceled) directory = selected.filePaths[0]
+    }
+    if (!directory) return null
+    return runTrackedFileOperation(async () => {
+      const [codex, grok] = await Promise.all([
+        manager.prepareDirectory(directory),
+        grokManager.prepareDirectory(directory)
+      ])
+      return importPreviewService.create(codex, grok)
+    })
+  })
+  ipcMain.handle(ipcChannels.importPreviewPasted, async (_event, input: unknown) => {
+    assertNoRunningTask('预检导入账号')
+    const text = z.string().min(1).max(100 * 1024 * 1024).parse(input)
+    return runTrackedFileOperation(async () => {
+      const [codex, grok] = await Promise.all([
+        manager.preparePasted(text),
+        grokManager.preparePasted(text)
+      ])
+      return importPreviewService.create(codex, grok, text)
+    })
+  })
+  ipcMain.handle(ipcChannels.importPreviewRefreshTokens, async (_event, input: unknown) => {
+    assertNoRunningTask('预检 Refresh Token')
+    const payload = z.object({
+      text: z.string().min(1).max(100 * 1024 * 1024),
+      mode: z.enum(['auto', 'codex', 'mobile'])
+    }).parse(input)
+    return runTrackedFileOperation(async () => {
+      const codex = await manager.prepareRefreshTokens(payload.text, payload.mode)
+      return importPreviewService.create(codex, {
+        credentials: [], errors: [], recognized: 0, sourceCount: codex.sourceCount, unrecognized: []
+      }, payload.text)
+    })
+  })
+  ipcMain.handle(ipcChannels.importPreviewOAuthComplete, async (_event, input: unknown) => {
+    assertNoRunningTask('预检 OAuth 凭证')
+    const payload = z.object({
+      sessionId: z.string().length(32),
+      callbackInput: z.string().min(1).max(16 * 1024)
+    }).parse(input)
+    return runTrackedFileOperation(async () => {
+      const codex = await manager.prepareOAuthAuthorization(payload.sessionId, payload.callbackInput)
+      return importPreviewService.create(codex, {
+        credentials: [], errors: [], recognized: 0, sourceCount: codex.sourceCount, unrecognized: []
+      }, payload.callbackInput)
+    })
+  })
+  ipcMain.handle(ipcChannels.importPreviewCommit, async (_event, input: unknown) => {
+    const payload = z.object({
+      sessionId: z.string().uuid(),
+      decisions: z.record(z.string().min(1).max(256), z.enum(['add', 'replace', 'skip'])),
+      skipUnrecognized: z.boolean().optional()
+    }).parse(input)
+    const result = await runAccountLibraryMutation(() => importPreviewService.commit(payload))
+    return {
+      ...result,
+      accounts: decorateAccounts(result.accounts),
+      grokAccounts: decorateAccounts(result.grokAccounts)
+    }
+  })
+  ipcMain.handle(ipcChannels.importPreviewRefine, async (_event, input: unknown) => {
+    assertNoRunningTask('重新识别凭据')
+    const payload = z.object({
+      sessionId: z.string().uuid(),
+      sourceKey: z.string().min(1).max(512),
+      mode: z.enum(['codex', 'grok', 'codex_rt', 'mobile_rt'])
+    }).parse(input)
+    return runTrackedFileOperation(() => importPreviewService.refine(payload))
+  })
+  ipcMain.handle(ipcChannels.importPreviewDiscard, (_event, input: unknown) => {
+    importPreviewService.discard(z.string().uuid().parse(input))
+  })
   ipcMain.handle(ipcChannels.importRefreshTokens, (_event, input: unknown) => {
     const payload = z.object({
       text: z.string().min(1).max(100 * 1024 * 1024),
@@ -888,6 +1038,49 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.deleteAccounts, async (_event, input: unknown) => {
     const ids = z.array(z.string().min(1)).min(1).max(20_000).parse(input)
     const result = await runAccountLibraryMutation(() => manager.deleteAccounts(ids))
+    await autoSwitchScheduler.settingsChanged()
+    return result
+  })
+  ipcMain.handle(ipcChannels.accountMetadataUpdate, async (_event, input: unknown) => {
+    assertNoRunningTask('修改账号标签')
+    const payload = z.object({
+      accountIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(20_000),
+      alias: z.string().max(120).nullable().optional(),
+      group: z.string().max(80).nullable().optional(),
+      tags: z.array(z.string().max(48)).max(24).optional(),
+      tagMode: z.enum(['replace', 'add', 'remove']).optional(),
+      note: z.string().max(2_000).nullable().optional()
+    }).parse(input)
+    const ids = [...new Set(payload.accountIds)]
+    if (ids.length > 1 && ('alias' in payload || 'note' in payload)) {
+      throw new Error('别名和备注只能对单个账号设置')
+    }
+    const [codex, grok, cpaCodex, cpaGrok] = await Promise.all([
+      manager.listAccounts(),
+      grokManager.listAccounts(),
+      cpaCodexManager.listAccounts(),
+      cpaGrokManager.listAccounts()
+    ])
+    const available = new Set([...codex, ...grok, ...cpaCodex, ...cpaGrok].map((account) => account.id))
+    const missing = ids.find((id) => !available.has(id))
+    if (missing) throw new Error(`账号不存在或已被删除：${missing}`)
+    await runTrackedFileOperation(() =>
+      accountMetadataStore.update({ ...payload, accountIds: ids })
+    )
+  })
+  ipcMain.handle(ipcChannels.libraryHealthInspect, async () => {
+    assertNoRunningTask('检查账号库')
+    return runTrackedFileOperation(() => libraryHealthService.inspect())
+  })
+  ipcMain.handle(ipcChannels.libraryHealthRepair, async (_event, input: unknown) => {
+    assertNoRunningTask('修复账号库')
+    const payload = z.object({
+      snapshotId: z.string().uuid(),
+      issueIds: z.array(z.string().regex(/^[a-f0-9]{24}$/)).min(1).max(30_000)
+    }).parse(input)
+    const result = await runAccountLibraryMutation(() =>
+      libraryHealthService.repair(payload.snapshotId, payload.issueIds)
+    )
     await autoSwitchScheduler.settingsChanged()
     return result
   })
@@ -1354,10 +1547,10 @@ async function main(): Promise<void> {
       })
     }
     if (scope === 'accounts' || scope === 'automation') {
-      return { ...base, accounts: await manager.listAccounts(), testing: progress }
+      return { ...base, accounts: decorateAccounts(await manager.listAccounts()), testing: progress }
     }
     if (scope === 'grok') {
-      return { ...base, grokAccounts: await grokManager.listAccounts(), grokTesting: grokProgress }
+      return { ...base, grokAccounts: decorateAccounts(await grokManager.listAccounts()), grokTesting: grokProgress }
     }
     const [cpaCodexAccounts, cpaGrokAccounts, cpaDirectoryStats] = await Promise.all([
       cpaCodexManager.listAccounts(),
@@ -1367,8 +1560,8 @@ async function main(): Promise<void> {
     return {
       ...base,
       grokDirectory: settings.grokDirectory,
-      cpaCodexAccounts,
-      cpaGrokAccounts,
+      cpaCodexAccounts: decorateAccounts(cpaCodexAccounts),
+      cpaGrokAccounts: decorateAccounts(cpaGrokAccounts),
       cpaCodexTesting: cpaCodexProgress,
       cpaGrokTesting: cpaGrokProgress,
       cpaDirectoryStats

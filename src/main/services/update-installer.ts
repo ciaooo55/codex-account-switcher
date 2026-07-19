@@ -298,15 +298,47 @@ export async function launchInstallerAndDelete(
   }
 }
 
+const TRANSIENT_FILE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES'])
+
+async function readInstallerResultWithRetry(path: string): Promise<string | null> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      return await readFile(path, 'utf8')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return null
+      if (!TRANSIENT_FILE_CODES.has(code ?? '')) throw error
+      if (attempt === 7) return null
+      await new Promise((resolve) => setTimeout(resolve, 30 * (attempt + 1)))
+    }
+  }
+  return null
+}
+
+async function removeInstallerResultWithRetry(path: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await rm(path, { force: true })
+      return true
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (!TRANSIENT_FILE_CODES.has(code ?? '') || attempt === 7) return false
+      await new Promise((resolve) => setTimeout(resolve, 30 * (attempt + 1)))
+    }
+  }
+  return false
+}
+
 export async function consumeInstallerResult(resultPath = getInstallerResultPath()): Promise<InstallerResult | null> {
   let raw: string
   try {
-    raw = await readFile(resultPath, 'utf8')
+    const contents = await readInstallerResultWithRetry(resultPath)
+    if (contents === null) return null
+    raw = contents
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
-  await rm(resultPath, { force: true })
+  let result: InstallerResult | null = null
   try {
     const value = JSON.parse(raw.replace(/^\uFEFF/, '')) as Partial<InstallerResult>
     if (
@@ -314,12 +346,13 @@ export async function consumeInstallerResult(resultPath = getInstallerResultPath
       typeof value.message === 'string' &&
       typeof value.at === 'string'
     ) {
-      return { status: value.status, message: value.message, at: value.at }
+      result = { status: value.status, message: value.message, at: value.at }
     }
   } catch {
-    // Ignore a truncated result file; the diagnostic log remains available.
+    // Keep a truncated result for the next polling pass while the helper finishes writing.
   }
-  return null
+  if (!result) return null
+  return await removeInstallerResultWithRetry(resultPath) ? result : null
 }
 
 export async function cleanupLegacyUpdateCache(localAppData: string | undefined): Promise<void> {

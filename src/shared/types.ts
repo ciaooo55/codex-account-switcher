@@ -118,7 +118,34 @@ export interface TestResult {
   usage: UsageSummary | null
 }
 
-export interface AccountSummary {
+export interface AccountMetadataFields {
+  alias?: string | null
+  group?: string | null
+  tags?: string[]
+  note?: string | null
+}
+
+export interface AccountMetadata {
+  accountId: string
+  alias: string | null
+  group: string | null
+  tags: string[]
+  note: string | null
+  updatedAt: string
+}
+
+export type AccountMetadataTagMode = 'replace' | 'add' | 'remove'
+
+export interface AccountMetadataUpdateRequest {
+  accountIds: string[]
+  alias?: string | null
+  group?: string | null
+  tags?: string[]
+  tagMode?: AccountMetadataTagMode
+  note?: string | null
+}
+
+export interface AccountSummary extends AccountMetadataFields {
   id: string
   email: string | null
   workspaceId: string | null
@@ -186,7 +213,7 @@ export interface GrokCredential {
   usageSnapshot: Record<string, unknown> | null
 }
 
-export interface GrokAccountSummary {
+export interface GrokAccountSummary extends AccountMetadataFields {
   id: string
   email: string | null
   subject: string | null
@@ -205,7 +232,7 @@ export interface GrokAccountSummary {
   disabled: boolean
 }
 
-export interface CpaCodexAccountSummary {
+export interface CpaCodexAccountSummary extends AccountMetadataFields {
   id: string
   email: string | null
   workspaceId: string | null
@@ -315,6 +342,111 @@ export interface LibraryImportResult {
   grokSkipped: number
   accounts: AccountSummary[]
   grokAccounts: GrokAccountSummary[]
+}
+
+export type ImportAccountProvider = 'codex' | 'grok'
+export type ImportPreviewDisposition = 'new' | 'duplicate' | 'update' | 'conflict'
+export type ImportPreviewDecision = 'add' | 'replace' | 'skip'
+
+/** A source that produced no safe credential and must be explicitly handled. */
+export interface ImportSourceIssue {
+  sourcePath: string
+  sourceFormat: CredentialSourceFormat
+  detail: string
+}
+
+export interface ImportPreviewItem {
+  key: string
+  provider: ImportAccountProvider
+  credentialId: string
+  existingCredentialId: string | null
+  email: string | null
+  planType: string | null
+  identity: string
+  sourcePath: string
+  sourceFormat: CredentialSourceFormat
+  sourceDialect: CredentialDialect
+  canRefresh: boolean
+  switchable: boolean
+  disposition: ImportPreviewDisposition
+  detail: string
+  suggestedDecision: ImportPreviewDecision
+}
+
+export interface ImportPreviewUnrecognized extends ImportSourceIssue {
+  key: string
+}
+
+export type ImportPreviewManualMode = 'codex' | 'grok' | 'codex_rt' | 'mobile_rt'
+
+export interface ImportPreviewRefineRequest {
+  sessionId: string
+  sourceKey: string
+  mode: ImportPreviewManualMode
+}
+
+export interface ImportPreviewResult {
+  sessionId: string
+  createdAt: string
+  expiresAt: string
+  sourceCount: number
+  recognized: number
+  errors: string[]
+  items: ImportPreviewItem[]
+  unrecognized: ImportPreviewUnrecognized[]
+}
+
+export interface ImportPreviewCommitRequest {
+  sessionId: string
+  decisions: Record<string, ImportPreviewDecision>
+  /** Required when the user deliberately chooses to ignore unknown sources. */
+  skipUnrecognized?: boolean
+}
+
+export interface ImportPreviewCommitResult extends LibraryImportResult {
+  added: number
+  updated: number
+  ignored: number
+}
+
+export type LibraryHealthScope = 'aa-codex' | 'aa-grok' | 'cpa' | 'metadata'
+export type LibraryHealthSeverity = 'info' | 'warning' | 'error'
+export type LibraryHealthIssueKind =
+  | 'duplicate_identity'
+  | 'noncanonical_file'
+  | 'multi_account_file'
+  | 'mixed_provider_file'
+  | 'malformed_file'
+  | 'orphan_status'
+  | 'orphan_metadata'
+
+export interface LibraryHealthIssue {
+  id: string
+  scope: LibraryHealthScope
+  severity: LibraryHealthSeverity
+  kind: LibraryHealthIssueKind
+  title: string
+  detail: string
+  paths: string[]
+  accountIds: string[]
+  repairable: boolean
+  repairAction: string | null
+}
+
+export interface LibraryHealthReport {
+  snapshotId: string
+  generatedAt: string
+  scannedFiles: number
+  healthyAccounts: number
+  issues: LibraryHealthIssue[]
+}
+
+export interface LibraryHealthRepairResult {
+  repaired: number
+  skipped: number
+  errors: string[]
+  message: string
+  report: LibraryHealthReport
 }
 
 export interface DeleteAccountsResult {

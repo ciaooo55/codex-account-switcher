@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Square,
+  Tags,
   TestTube2,
   Trash2,
   Zap
@@ -109,10 +110,20 @@ interface Props {
   notify: (kind: 'ok' | 'warn' | 'error', text: string) => void
   requestConfirmation: RequestConfirmation
   onBusyChange?: (busy: boolean) => void
+  onEditMetadata: (ids: string[]) => void
   now?: number
 }
 
-function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyChange, now = Date.now() }: Props): React.JSX.Element {
+function MetadataChips({ account }: { account: { group?: string | null; tags?: string[] } }): React.JSX.Element | null {
+  if (!account.group && !(account.tags?.length)) return null
+  return <div className="account-metadata-chips">
+    {account.group && <span className="account-group-chip">{account.group}</span>}
+    {(account.tags ?? []).slice(0, 3).map((tag) => <span key={tag} className="account-tag-chip">{tag}</span>)}
+    {(account.tags?.length ?? 0) > 3 && <span className="account-tag-more">+{account.tags!.length - 3}</span>}
+  </div>
+}
+
+function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyChange, onEditMetadata, now = Date.now() }: Props): React.JSX.Element {
   const [selected, setSelected] = usePrunedSelection(snapshot.cpaCodexAccounts.map((account) => account.id))
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<DisplayAccountStatus | ''>('')
@@ -150,16 +161,18 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
       const next = {
         plan: hasFacetOption(availableFacets.plans, current.plan) ? current.plan : '',
         domain: hasFacetOption(availableFacets.domains, current.domain) ? current.domain : '',
-        reason: hasFacetOption(availableFacets.reasons, current.reason) ? current.reason : ''
+        reason: hasFacetOption(availableFacets.reasons, current.reason) ? current.reason : '',
+        group: hasFacetOption(availableFacets.groups, current.group) ? current.group : '',
+        tag: hasFacetOption(availableFacets.tags, current.tag) ? current.tag : ''
       }
-      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason ? current : next
+      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason && next.group === current.group && next.tag === current.tag ? current : next
     })
   }, [availableFacets])
   const accounts = useMemo(() => snapshot.cpaCodexAccounts.filter((account) => {
     if (status && displayStatus(account.status) !== status) return false
     if (!matchesAccountFacets(account, facetFilters)) return false
     const query = keyword.trim().toLowerCase()
-    return !query || `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
+    return !query || `${account.alias ?? ''} ${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.group ?? ''} ${(account.tags ?? []).join(' ')} ${account.note ?? ''} ${account.detail}`.toLowerCase().includes(query)
   }).sort(compareAccounts(sort)), [facetFilters, keyword, snapshot.cpaCodexAccounts, sort, status])
   const runningIds = useMemo(() => new Set(snapshot.cpaCodexTesting.runningIds), [snapshot.cpaCodexTesting.runningIds])
   const virtualAccounts = useVirtualTableRows(accounts, (account) => account.id)
@@ -228,6 +241,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
       <button onClick={() => setEnabled(true)} disabled={busy || snapshot.cpaCodexTesting.active}><Power size={16} />启用 .json</button>
       <button onClick={() => setEnabled(false)} disabled={busy || snapshot.cpaCodexTesting.active}><PowerOff size={16} />停用 .json.0</button>
       <button onClick={() => syncToLibrary(ids())} disabled={busy || snapshot.cpaCodexTesting.active}><FolderSync size={16} />同步选中到 aa</button>
+      <button onClick={() => onEditMetadata(ids())} disabled={busy || snapshot.cpaCodexTesting.active}><Tags size={16} />标签与分组</button>
       <button className="danger-button" onClick={() => remove()} disabled={busy || snapshot.cpaCodexTesting.active}><Trash2 size={16} />删除选中</button>
     </div>}
     {snapshot.cpaCodexTesting.active && <div className="task-progress"><div style={{ width: `${snapshot.cpaCodexTesting.total ? snapshot.cpaCodexTesting.done / snapshot.cpaCodexTesting.total * 100 : 0}%` }} /><span>{snapshot.cpaCodexTesting.done} / {snapshot.cpaCodexTesting.total}</span></div>}
@@ -238,11 +252,12 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
       setContextMenu({ account, x: Math.min(event.clientX, window.innerWidth - 240), y: Math.min(event.clientY, window.innerHeight - 300) })
     }} />)}{virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}{!accounts.length && <tr><td colSpan={7} className="empty-state">没有匹配的 CPA Codex 账号</td></tr>}</tbody></table></div>
     {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="CPA Codex 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}>
-      <div className="context-account">{contextMenu.account.email ?? 'CPA Codex 账号'}</div>
+      <div className="context-account">{contextMenu.account.alias ?? contextMenu.account.email ?? 'CPA Codex 账号'}</div>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => window.codexSwitcher.testCpaCodexAccounts([id], testMode), `CPA Codex ${CODEX_TEST_MODE_SUCCESS[testMode]}`) }}><TestTube2 size={15} />检测这个账号</button>
       <button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource('cpa-codex', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>
+      <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); onEditMetadata([id]) }}><Tags size={15} />编辑别名与标签</button>
       <button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button>
       <button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); remove([id]) }}><Trash2 size={15} />删除这个账号</button>
     </div>}
@@ -254,7 +269,7 @@ function CpaCodexRow({ account, running, selected, toggle, now, testMode, virtua
   const state = cpaFileState(account.sourcePath)
   return <tr ref={rowRef} data-index={virtualIndex} className={`account-row status-row-${status}${running ? ' testing-row' : ''}${selected ? ' selected-row' : ''}${account.disabled ? ' disabled-file-row' : ''}`} tabIndex={0} onClick={toggle} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle() } }} onContextMenu={openContextMenu}>
     <td><input type="checkbox" aria-label={`选择 CPA Codex ${account.email ?? account.id}`} checked={selected} onClick={(event) => event.stopPropagation()} onChange={toggle} /></td>
-    <td><div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">CPA 已停用</span>}</div><div className="workspace-id">{account.workspaceId ?? 'workspace 未知'}</div><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
+    <td><div className="account-title-line"><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">CPA 已停用</span>}</div>{account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}<div className="workspace-id">{account.workspaceId ?? 'workspace 未知'}</div><MetadataChips account={account} /><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
     <td>{running ? <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">{CODEX_TEST_MODE_RUNNING[testMode]}</div></> : <><span className={`status status-${status}`}>{STATUS_LABELS[status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>}</td>
     <td>{account.planType ?? '未知'}</td><td><Quota usage={account.usage} running={running} now={now} /></td>
     <td><strong className={state.className}>{state.label}</strong><div className="muted">检测 {time(account.lastCheckedAt)}</div></td>
@@ -262,7 +277,7 @@ function CpaCodexRow({ account, running, selected, toggle, now, testMode, virtua
   </tr>
 }
 
-function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyChange, now = Date.now(), scope }: Props & { scope: 'library' | 'cpa' }): React.JSX.Element {
+function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyChange, onEditMetadata, now = Date.now(), scope }: Props & { scope: 'library' | 'cpa' }): React.JSX.Element {
   const cpa = scope === 'cpa'
   const sourceAccounts = cpa ? snapshot.cpaGrokAccounts : snapshot.grokAccounts
   const testing = cpa ? snapshot.cpaGrokTesting : snapshot.grokTesting
@@ -300,16 +315,18 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
       const next = {
         plan: hasFacetOption(availableFacets.plans, current.plan) ? current.plan : '',
         domain: hasFacetOption(availableFacets.domains, current.domain) ? current.domain : '',
-        reason: hasFacetOption(availableFacets.reasons, current.reason) ? current.reason : ''
+        reason: hasFacetOption(availableFacets.reasons, current.reason) ? current.reason : '',
+        group: hasFacetOption(availableFacets.groups, current.group) ? current.group : '',
+        tag: hasFacetOption(availableFacets.tags, current.tag) ? current.tag : ''
       }
-      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason ? current : next
+      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason && next.group === current.group && next.tag === current.tag ? current : next
     })
   }, [availableFacets])
   const accounts = useMemo(() => sourceAccounts.filter((account) => {
     if (status && account.status !== status) return false
     if (!matchesAccountFacets(account, facetFilters)) return false
     const query = keyword.trim().toLowerCase()
-    return !query || `${account.email ?? ''} ${account.subject ?? ''} ${account.teamId ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
+    return !query || `${account.alias ?? ''} ${account.email ?? ''} ${account.subject ?? ''} ${account.teamId ?? ''} ${account.planType ?? ''} ${account.group ?? ''} ${(account.tags ?? []).join(' ')} ${account.note ?? ''} ${account.detail}`.toLowerCase().includes(query)
   }).sort(compareAccounts(sort)), [facetFilters, keyword, sort, sourceAccounts, status])
   const runningIds = useMemo(() => new Set(testing.runningIds), [testing.runningIds])
   const virtualAccounts = useVirtualTableRows(accounts, (account) => account.id)
@@ -380,6 +397,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
       {!cpa && <button onClick={() => void exportToCpa()} disabled={busy || testing.active}><Zap size={16} />导出到 CPA</button>}
       {!cpa && <button onClick={() => void exportAccounts('separate')} disabled={busy || testing.active}><Download size={16} />逐号导出</button>}
       {!cpa && <button onClick={() => void exportAccounts('bundle')} disabled={busy || testing.active}><FileArchive size={16} />合并导出</button>}
+      <button onClick={() => onEditMetadata(chosen())} disabled={busy || testing.active}><Tags size={16} />标签与分组</button>
       <button className="danger-button" onClick={() => void remove()} disabled={busy || testing.active}><Trash2 size={16} />删除选中</button>
     </div>}
     {testing.active && <div className="task-progress"><div style={{ width: `${testing.total ? testing.done / testing.total * 100 : 0}%` }} /><span>{testing.done} / {testing.total}</span></div>}
@@ -416,7 +434,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
         </tbody>
       </table>
     </div>
-    {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="Grok 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}><div className="context-account">{contextMenu.account.email ?? contextMenu.account.subject ?? 'Grok 账号'}</div><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => testAccounts([id]), 'Grok 账号检测完成') }}><TestTube2 size={15} />检测这个账号</button><button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource(cpa ? 'cpa-grok' : 'grok', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>{cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>}<button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button>{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportToCpa([id]) }}><Zap size={15} />导出到 CPA</button>}{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportAccounts('separate', [id]) }}><Download size={15} />导出这个账号</button>}<button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void remove([id]) }}><Trash2 size={15} />删除这个账号</button></div>}
+    {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="Grok 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}><div className="context-account">{contextMenu.account.alias ?? contextMenu.account.email ?? contextMenu.account.subject ?? 'Grok 账号'}</div><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => testAccounts([id]), 'Grok 账号检测完成') }}><TestTube2 size={15} />检测这个账号</button><button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource(cpa ? 'cpa-grok' : 'grok', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>{cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>}<button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); onEditMetadata([id]) }}><Tags size={15} />编辑别名与标签</button><button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button>{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportToCpa([id]) }}><Zap size={15} />导出到 CPA</button>}{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportAccounts('separate', [id]) }}><Download size={15} />导出这个账号</button>}<button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void remove([id]) }}><Trash2 size={15} />删除这个账号</button></div>}
   </div>
 }
 
@@ -459,7 +477,7 @@ function GrokRow({
       onContextMenu={openContextMenu}
     >
       <td><input type="checkbox" aria-label={`选择 Grok ${account.email ?? account.id}`} checked={selected} onClick={(event) => event.stopPropagation()} onChange={toggle} /></td>
-      <td><div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">{cpa ? 'CPA ' : ''}已停用</span>}</div><div className="workspace-id">{account.subject ?? 'subject 未知'}{account.teamId ? ` · team ${account.teamId}` : ''}</div><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
+      <td><div className="account-title-line"><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'}</div>{account.disabled && <span className="disabled-badge">{cpa ? 'CPA ' : ''}已停用</span>}</div>{account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}<div className="workspace-id">{account.subject ?? 'subject 未知'}{account.teamId ? ` · team ${account.teamId}` : ''}</div><MetadataChips account={account} /><div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div></td>
       <td>{running ? <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">检测完成后自动调整后缀</div></> : <><span className={`status status-${status}`}>{STATUS_LABELS[status]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>}</td>
       <td>{account.planType ?? '未知'}</td>
       <td><Quota usage={account.usage} running={running} now={now} /></td>

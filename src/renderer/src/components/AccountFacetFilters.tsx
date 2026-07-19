@@ -15,7 +15,7 @@ export function AccountFacetFilters({
   value: AccountFacetFilterValues
   onChange: (value: AccountFacetFilterValues) => void
 }): React.JSX.Element {
-  const active = Boolean(value.plan || value.domain || value.reason)
+  const active = Boolean(value.plan || value.domain || value.reason || value.group || value.tag)
   return (
     <div className="facet-filters" aria-label={`${label}动态筛选`}>
       {facets.plans.length > 0 && (
@@ -55,12 +55,36 @@ export function AccountFacetFilters({
           ))}
         </select>
       )}
+      {facets.groups.length > 0 && (
+        <select
+          aria-label={`${label}账号分组`}
+          value={value.group}
+          onChange={(event) => onChange({ ...value, group: event.target.value })}
+        >
+          <option value="">全部分组</option>
+          {facets.groups.map((option) => (
+            <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+          ))}
+        </select>
+      )}
+      {facets.tags.length > 0 && (
+        <select
+          aria-label={`${label}账号标签`}
+          value={value.tag}
+          onChange={(event) => onChange({ ...value, tag: event.target.value })}
+        >
+          <option value="">全部标签</option>
+          {facets.tags.map((option) => (
+            <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+          ))}
+        </select>
+      )}
       {active && (
         <button
           className="icon-button clear-facets"
           title="清除动态筛选"
           aria-label={`清除${label}动态筛选`}
-          onClick={() => onChange({ plan: '', domain: '', reason: '' })}
+          onClick={() => onChange({ plan: '', domain: '', reason: '', group: '', tag: '' })}
         >
           <FilterX size={15} />
         </button>

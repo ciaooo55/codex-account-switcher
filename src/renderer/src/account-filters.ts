@@ -6,12 +6,16 @@ export interface FacetableAccount {
   planType: string | null
   status: AccountStatus | DisplayAccountStatus
   detail: string
+  group?: string | null
+  tags?: string[]
 }
 
 export interface AccountFacetFilters {
   plan: string
   domain: string
   reason: string
+  group: string
+  tag: string
 }
 
 export interface AccountFacetOption {
@@ -24,16 +28,21 @@ export interface AccountFacets {
   plans: AccountFacetOption[]
   domains: AccountFacetOption[]
   reasons: AccountFacetOption[]
+  groups: AccountFacetOption[]
+  tags: AccountFacetOption[]
   statusCounts: Record<DisplayAccountStatus, number>
 }
 
 const UNKNOWN_PLAN = '__unknown_plan__'
 const UNKNOWN_DOMAIN = '__unknown_domain__'
+const UNKNOWN_GROUP = '__unknown_group__'
 
 export const EMPTY_ACCOUNT_FACET_FILTERS: AccountFacetFilters = {
   plan: '',
   domain: '',
-  reason: ''
+  reason: '',
+  group: '',
+  tag: ''
 }
 
 function statusOf(account: FacetableAccount): DisplayAccountStatus {
@@ -65,6 +74,13 @@ function reasonValue(account: FacetableAccount): string | null {
   return account.detail.trim() || STATUS_LABELS[status]
 }
 
+function groupValue(account: FacetableAccount): { value: string; label: string } {
+  const group = account.group?.trim()
+  return group
+    ? { value: group.toLocaleLowerCase('zh-CN'), label: group }
+    : { value: UNKNOWN_GROUP, label: '未分组' }
+}
+
 function add(
   target: Map<string, { label: string; count: number }>,
   value: string,
@@ -85,6 +101,8 @@ export function buildAccountFacets(accounts: readonly FacetableAccount[]): Accou
   const plans = new Map<string, { label: string; count: number }>()
   const domains = new Map<string, { label: string; count: number }>()
   const reasons = new Map<string, { label: string; count: number }>()
+  const groups = new Map<string, { label: string; count: number }>()
+  const tags = new Map<string, { label: string; count: number }>()
   const statusCounts: Record<DisplayAccountStatus, number> = {
     untested: 0,
     valid: 0,
@@ -98,9 +116,15 @@ export function buildAccountFacets(accounts: readonly FacetableAccount[]): Accou
     const plan = planValue(account)
     const domain = domainValue(account)
     const reason = reasonValue(account)
+    const group = groupValue(account)
     add(plans, plan.value, plan.label)
     add(domains, domain.value, domain.label)
     if (reason) add(reasons, reason, reason)
+    add(groups, group.value, group.label)
+    for (const tag of account.tags ?? []) {
+      const normalized = tag.trim()
+      if (normalized) add(tags, normalized.toLocaleLowerCase('zh-CN'), normalized)
+    }
     statusCounts[statusOf(account)] += 1
   }
 
@@ -108,6 +132,8 @@ export function buildAccountFacets(accounts: readonly FacetableAccount[]): Accou
     plans: options(plans),
     domains: options(domains),
     reasons: options(reasons),
+    groups: options(groups),
+    tags: options(tags),
     statusCounts
   }
 }
@@ -119,10 +145,11 @@ export function matchesAccountFacets(
   if (filters.plan && planValue(account).value !== filters.plan) return false
   if (filters.domain && domainValue(account).value !== filters.domain) return false
   if (filters.reason && reasonValue(account) !== filters.reason) return false
+  if (filters.group && groupValue(account).value !== filters.group) return false
+  if (filters.tag && !(account.tags ?? []).some((tag) => tag.toLocaleLowerCase('zh-CN') === filters.tag)) return false
   return true
 }
 
 export function hasFacetOption(options: readonly AccountFacetOption[], value: string): boolean {
   return !value || options.some((option) => option.value === value)
 }
-

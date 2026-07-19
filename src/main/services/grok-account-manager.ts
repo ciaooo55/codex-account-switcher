@@ -10,6 +10,7 @@ import type {
   GrokCredential,
   GrokScanResult,
   GrokTestResult,
+  ImportSourceIssue,
   ManagedFileStateResult
 } from '../../shared/types'
 import { dedupeGrokCredentials, parseGrokCredentialText } from '../accounts/grok-parser'
@@ -45,6 +46,14 @@ interface GrokManagerOptions {
 interface TestOptions {
   signal?: AbortSignal
   onProgress?: (progress: { done: number; total: number; runningIds: string[]; updatedAccount?: GrokAccountSummary }) => void
+}
+
+export interface GrokImportPreparation {
+  credentials: GrokCredential[]
+  errors: string[]
+  recognized: number
+  sourceCount: number
+  unrecognized?: ImportSourceIssue[]
 }
 
 type ManagedFileState = 'enabled' | 'disabled' | 'no_permission' | 'no_usage'
@@ -124,6 +133,19 @@ function serialized(credential: GrokCredential): string {
   }, null, 2)}\n`
 }
 
+function sameGrokIdentity(left: GrokCredential, right: GrokCredential): boolean {
+  if (left.id === right.id) return true
+  if (left.email && right.email && left.email.toLowerCase() === right.email.toLowerCase()) return true
+  return Boolean(left.subject && right.subject && left.subject === right.subject)
+}
+
+function sameGrokMaterial(left: GrokCredential, right: GrokCredential): boolean {
+  return left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken &&
+    left.idToken === right.idToken &&
+    left.teamId === right.teamId
+}
+
 async function writeIfChanged(path: string, text: string): Promise<void> {
   try {
     if (await readFile(path, 'utf8') === text) return
@@ -175,23 +197,50 @@ export class GrokAccountManager {
   async scanDirectory(): Promise<GrokScanResult> {
     const directory = await this.directory()
     await mkdir(directory, { recursive: true })
-    return this.importPaths(await files(directory), true, false)
+    return this.commitPreparedWithOptions(
+      await this.prepareFiles(await files(directory)),
+      true,
+      false
+    )
   }
 
   async importDirectory(directory: string): Promise<GrokScanResult> {
-    if (!(await stat(directory)).isDirectory()) throw new Error('选择的路径不是文件夹')
-    return this.importPaths(await files(directory))
+    return this.importPrepared(await this.prepareDirectory(directory))
   }
 
   async importFiles(paths: string[]): Promise<GrokScanResult> {
-    return this.importPaths(paths)
+    return this.importPrepared(await this.prepareFiles(paths))
   }
 
   async importPasted(text: string): Promise<GrokScanResult> {
+    return this.importPrepared(await this.preparePasted(text))
+  }
+
+  async prepareDirectory(directory: string): Promise<GrokImportPreparation> {
+    if (!(await stat(directory)).isDirectory()) throw new Error('选择的路径不是文件夹')
+    return this.prepareFiles(await files(directory))
+  }
+
+  async preparePasted(text: string): Promise<GrokImportPreparation> {
     if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error('粘贴内容超过安全限制')
     const parsed = parseGrokCredentialText(text, { sourcePath: 'pasted-grok.json', format: 'paste' })
-    await this.options.deletedStore?.removeMany(parsed.credentials.map((credential) => credential.id))
-    return this.mergeImported(parsed.credentials, parsed.errors)
+    const credentials = dedupeGrokCredentials(parsed.credentials)
+    return {
+      credentials,
+      errors: parsed.errors,
+      recognized: credentials.length,
+      sourceCount: 1,
+      unrecognized: credentials.length === 0
+        ? [{ sourcePath: 'pasted-grok.json', sourceFormat: 'paste', detail: parsed.errors.at(-1) ?? '未找到可用 Grok 凭据' }]
+        : []
+    }
+  }
+
+  async importPrepared(prepared: GrokImportPreparation): Promise<GrokScanResult> {
+    await this.options.deletedStore?.removeMany(
+      prepared.credentials.map((credential) => credential.id)
+    )
+    return this.mergeImported(prepared.credentials, prepared.errors)
   }
 
   async listAccounts(): Promise<GrokAccountSummary[]> {
@@ -386,13 +435,10 @@ export class GrokAccountManager {
     return { ...result, skipped: result.skipped + incoming.length - fresh.length }
   }
 
-  private async importPaths(
-    paths: string[],
-    normalizeDirectorySources = false,
-    restoreDeleted = true
-  ): Promise<GrokScanResult> {
+  async prepareFiles(paths: string[]): Promise<GrokImportPreparation> {
     const credentials: GrokCredential[] = []
     const errors: string[] = []
+    const unrecognized: ImportSourceIssue[] = []
     for (const path of paths) {
       const format = formatForPath(path)
       if (!format) continue
@@ -401,20 +447,56 @@ export class GrokAccountManager {
         if (info.size > MAX_FILE_BYTES) throw new Error('文件超过 100MB')
         if (format === 'zip') {
           const archive = unzipSync(new Uint8Array(await readFile(path)))
+          let zipEntryUnrecognized = false
           for (const [name, data] of Object.entries(archive)) {
             const nested = formatForPath(name)
             if (!nested || nested === 'zip') continue
             const parsed = parseGrokCredentialText(strFromU8(data), { sourcePath: `${path}#${name}`, format: nested })
             credentials.push(...parsed.credentials)
+            errors.push(...parsed.errors)
+            zipEntryUnrecognized ||= parsed.credentials.length === 0
+          }
+          if (zipEntryUnrecognized) {
+            unrecognized.push({
+              sourcePath: path,
+              sourceFormat: format,
+              detail: 'ZIP 中有一个或多个条目未找到可用 Grok 凭据'
+            })
           }
         } else {
           const parsed = parseGrokCredentialText(await readFile(path, 'utf8'), { sourcePath: path, format })
           credentials.push(...parsed.credentials)
+          errors.push(...parsed.errors)
+          if (parsed.credentials.length === 0) {
+            unrecognized.push({
+              sourcePath: path,
+              sourceFormat: format,
+              detail: parsed.errors.at(-1) ?? '未找到可用 Grok 凭据'
+            })
+          }
         }
       } catch (error) {
-        errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
+        const detail = `${path}: ${error instanceof Error ? error.message : '读取失败'}`
+        errors.push(detail)
+        unrecognized.push({ sourcePath: path, sourceFormat: format, detail })
       }
     }
+    const deduped = dedupeGrokCredentials(credentials)
+    return {
+      credentials: deduped,
+      errors,
+      recognized: deduped.length,
+      sourceCount: paths.length,
+      unrecognized
+    }
+  }
+
+  private async commitPreparedWithOptions(
+    prepared: GrokImportPreparation,
+    normalizeDirectorySources = false,
+    restoreDeleted = true
+  ): Promise<GrokScanResult> {
+    const credentials = prepared.credentials
     if (this.options.deletedStore) {
       if (restoreDeleted) {
         await this.options.deletedStore.removeMany(credentials.map((credential) => credential.id))
@@ -422,12 +504,12 @@ export class GrokAccountManager {
         const deleted = await this.options.deletedStore.list()
         return this.mergeImported(
           credentials.filter((credential) => !deleted.has(credential.id)),
-          errors,
+          prepared.errors,
           normalizeDirectorySources
         )
       }
     }
-    return this.mergeImported(credentials, errors, normalizeDirectorySources)
+    return this.mergeImported(credentials, prepared.errors, normalizeDirectorySources)
   }
 
   private async mergeImported(
@@ -438,15 +520,26 @@ export class GrokAccountManager {
     const existingRecords = this.dedupeRecords(await this.managedCredentialRecords())
     const existing = existingRecords.map((item) => item.credential)
     const imported = dedupeGrokCredentials(importedValues)
-    const existingIds = new Set(existing.map((item) => item.id))
-    const freshIds = imported.filter((item) => !existingIds.has(item.id)).map((item) => item.id)
-    const importedCount = freshIds.length
+    const freshCredentials = imported.filter((item) =>
+      !existing.some((current) => sameGrokIdentity(current, item))
+    )
+    const changedExistingIds = existing
+      .filter((current) => imported.some((item) =>
+        sameGrokIdentity(current, item) && !sameGrokMaterial(current, item)
+      ))
+      .map((credential) => credential.id)
+    const importedCount = freshCredentials.length
     const merged = dedupeGrokCredentials([...existing, ...imported])
-    const stateById = new Map(existingRecords.map((item) => [item.credential.id, item.fileState]))
+    const stateById = new Map<string, ManagedFileState>()
+    for (const credential of merged) {
+      const current = existingRecords.find((record) => sameGrokIdentity(record.credential, credential))
+      if (current) stateById.set(credential.id, current.fileState)
+    }
     for (const credential of imported) {
-      if (!stateById.has(credential.id)) {
+      const mergedCredential = merged.find((candidate) => sameGrokIdentity(candidate, credential)) ?? credential
+      if (!stateById.has(mergedCredential.id)) {
         stateById.set(
-          credential.id,
+          mergedCredential.id,
           this.options.fileNameStyle !== 'library' ? fileState(credential.sourcePath) : 'enabled'
         )
       }
@@ -460,10 +553,10 @@ export class GrokAccountManager {
       targets.set(credential.id, path)
     }
     this.recordIndex.invalidate()
-    const normalizedTargets = new Map([...targets].map(([id, path]) => [id, resolve(path).toLowerCase()]))
     const duplicates = (await this.managedCredentialRecords()).filter((item) => {
-      const target = normalizedTargets.get(item.credential.id)
-      return target !== undefined && resolve(item.path).toLowerCase() !== target
+      const mergedCredential = merged.find((credential) => sameGrokIdentity(credential, item.credential))
+      const target = mergedCredential ? targets.get(mergedCredential.id) : undefined
+      return target !== undefined && resolve(item.path).toLowerCase() !== resolve(target).toLowerCase()
     })
     await Promise.all(duplicates.map((item) => rm(item.path, { force: true })))
     if (normalizeDirectorySources) {
@@ -480,7 +573,16 @@ export class GrokAccountManager {
       }))
     }
     this.recordIndex.invalidate()
-    await this.options.statusStore.removeMany(freshIds)
+    const affectedFinalIds = merged
+      .filter((credential) => imported.some((incoming) => sameGrokIdentity(credential, incoming)))
+      .map((credential) => credential.id)
+    await this.options.statusStore.removeMany([
+      ...new Set([
+        ...freshCredentials.map((credential) => credential.id),
+        ...changedExistingIds,
+        ...(changedExistingIds.length > 0 ? affectedFinalIds : [])
+      ])
+    ])
     await this.options.onCredentialsChanged?.()
     return {
       imported: importedCount,

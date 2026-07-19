@@ -9,6 +9,7 @@ import type {
   CodexTestMode,
   CredentialSourceFormat,
   DeleteAccountsResult,
+  ImportSourceIssue,
   NormalizedCredential,
   OAuthAuthorizationSession,
   RefreshTokenClientMode,
@@ -68,6 +69,14 @@ interface ImportFilesOptions {
   authoritative?: boolean
 }
 
+export interface CodexImportPreparation {
+  credentials: NormalizedCredential[]
+  errors: string[]
+  recognized: number
+  sourceCount: number
+  unrecognized?: ImportSourceIssue[]
+}
+
 interface ManagerTestProgress {
   done: number
   total: number
@@ -118,6 +127,26 @@ function credentialNeedsRefresh(credential: NormalizedCredential, now = Date.now
 
 function shouldAttemptRefreshTokenImport(text: string): boolean {
   return !EMBEDDED_ACCESS_TOKEN_PATTERN.test(text)
+}
+
+function sameCredentialIdentity(
+  left: NormalizedCredential,
+  right: NormalizedCredential
+): boolean {
+  if (left.id === right.id) return true
+  if (left.email && right.email && left.email.toLowerCase() === right.email.toLowerCase()) return true
+  return Boolean(left.subject && right.subject && left.subject === right.subject)
+}
+
+function sameCredentialMaterial(
+  left: NormalizedCredential,
+  right: NormalizedCredential
+): boolean {
+  return left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken &&
+    left.idToken === right.idToken &&
+    left.accountId === right.accountId &&
+    left.authKind === right.authKind
 }
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
@@ -204,33 +233,62 @@ export class AccountManager {
   }
 
   async importDirectory(directory: string): Promise<ScanResult> {
-    const info = await stat(directory)
-    if (!info.isDirectory()) throw new Error('选择的路径不是文件夹')
-    return this.importFiles(await collectSupportedFiles(directory), {
+    const prepared = await this.prepareDirectory(directory)
+    return this.commitPreparedWithOptions(prepared, {
       archiveSources: true,
       restoreDeleted: true
     })
   }
 
   async importFiles(paths: string[], options: ImportFilesOptions = {}): Promise<ScanResult> {
+    return this.commitPreparedWithOptions(await this.prepareFiles(paths), options)
+  }
+
+  async prepareDirectory(directory: string): Promise<CodexImportPreparation> {
+    const info = await stat(directory)
+    if (!info.isDirectory()) throw new Error('选择的路径不是文件夹')
+    return this.prepareFiles(await collectSupportedFiles(directory))
+  }
+
+  async prepareFiles(paths: string[]): Promise<CodexImportPreparation> {
     const credentials: NormalizedCredential[] = []
     const errors: string[] = []
-    let skipped = 0
+    const unrecognized: ImportSourceIssue[] = []
     for (const path of paths) {
       const format = formatForPath(path)
-      if (!format) {
-        skipped += 1
-        continue
-      }
+      if (!format) continue
       try {
         const parsed = await this.parseCredentialFile(path, format)
         credentials.push(...parsed.credentials)
         errors.push(...parsed.errors)
+        if (parsed.unrecognized || parsed.credentials.length === 0) {
+          unrecognized.push({
+            sourcePath: path,
+            sourceFormat: format,
+            detail: parsed.errors.at(-1) ?? '未找到可用 Codex 凭据'
+          })
+        }
       } catch (error) {
-        errors.push(`${path}: ${error instanceof Error ? error.message : '读取失败'}`)
+        const detail = `${path}: ${error instanceof Error ? error.message : '读取失败'}`
+        errors.push(detail)
+        unrecognized.push({ sourcePath: path, sourceFormat: format, detail })
       }
     }
-    let deduped = dedupeCredentials(credentials)
+    const deduped = dedupeCredentials(credentials)
+    return {
+      credentials: deduped,
+      errors,
+      recognized: deduped.length,
+      sourceCount: paths.length,
+      unrecognized
+    }
+  }
+
+  private async commitPreparedWithOptions(
+    prepared: CodexImportPreparation,
+    options: ImportFilesOptions = {}
+  ): Promise<ScanResult> {
+    let deduped = prepared.credentials
     if (this.options.deletedStore) {
       if (options.restoreDeleted === false) {
         const deleted = await this.options.deletedStore.list()
@@ -240,13 +298,17 @@ export class AccountManager {
       }
     }
     const existing = dedupeCredentials(await this.options.vault.list())
-    const existingIds = new Set(existing.map((credential) => credential.id))
-    const freshIds = deduped
-      .filter((credential) => !existingIds.has(credential.id))
+    const freshCredentials = deduped.filter((credential) =>
+      !existing.some((current) => sameCredentialIdentity(current, credential))
+    )
+    const changedExistingIds = existing
+      .filter((current) => deduped.some((credential) =>
+        sameCredentialIdentity(current, credential) && !sameCredentialMaterial(current, credential)
+      ))
       .map((credential) => credential.id)
-    const imported = freshIds.length
-    skipped += deduped.length - imported
-    const authoritative = options.authoritative === true && errors.length === 0
+    const imported = freshCredentials.length
+    const skipped = prepared.credentials.length - imported
+    const authoritative = options.authoritative === true && prepared.errors.length === 0
     const merged = authoritative ? deduped : dedupeCredentials([...existing, ...deduped])
     const mergedIds = new Set(merged.map((credential) => credential.id))
     const removedIds = existing
@@ -254,19 +316,40 @@ export class AccountManager {
       .map((credential) => credential.id)
     const stored = await this.persistManagedLibrary(merged, existing)
     await this.options.vault.replace(stored)
-    if (removedIds.length > 0 || freshIds.length > 0) {
-      await this.options.statusStore.removeMany([...new Set([...removedIds, ...freshIds])])
+    const affectedFinalIds = merged
+      .filter((credential) => deduped.some((incoming) => sameCredentialIdentity(credential, incoming)))
+      .map((credential) => credential.id)
+    const resetStatusIds = [
+      ...new Set([
+        ...removedIds,
+        ...freshCredentials.map((credential) => credential.id),
+        ...changedExistingIds,
+        ...(changedExistingIds.length > 0 ? affectedFinalIds : [])
+      ])
+    ]
+    if (resetStatusIds.length > 0) {
+      await this.options.statusStore.removeMany(resetStatusIds)
     }
     await this.options.onCredentialsChanged?.()
     return {
       imported,
       skipped,
-      errors,
+      recognized: prepared.recognized,
+      errors: prepared.errors,
       accounts: await this.listAccounts()
     }
   }
 
   async importPasted(text: string): Promise<ScanResult> {
+    const prepared = await this.preparePasted(text)
+    return this.importResolvedCredentials(
+      prepared.credentials,
+      prepared.errors,
+      prepared.recognized
+    )
+  }
+
+  async preparePasted(text: string): Promise<CodexImportPreparation> {
     if (Buffer.byteLength(text, 'utf8') > MAX_SOURCE_FILE_BYTES) {
       throw new Error('粘贴内容超过安全限制')
     }
@@ -275,6 +358,7 @@ export class AccountManager {
       format: 'paste'
     })
     let recognized = parsed.credentials.length
+    let partialRefreshFailure = false
     if (
       parsed.credentials.length === 0 &&
       this.options.refreshTokenImporter &&
@@ -284,18 +368,43 @@ export class AccountManager {
       if (refreshed.total > 0) {
         parsed = refreshed
         recognized = refreshed.total
+        partialRefreshFailure = refreshed.credentials.length < refreshed.total
       }
     }
-    return this.importResolvedCredentials(parsed.credentials, parsed.errors, recognized)
+    return {
+      credentials: dedupeCredentials(parsed.credentials),
+      errors: parsed.errors,
+      recognized,
+      sourceCount: 1,
+      unrecognized: parsed.credentials.length === 0 || partialRefreshFailure
+        ? [{ sourcePath: 'pasted-credential.json', sourceFormat: 'paste', detail: parsed.errors.at(-1) ?? '未找到可用 Codex 凭据' }]
+        : []
+    }
   }
 
   async importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult> {
+    const prepared = await this.prepareRefreshTokens(text, mode)
+    return this.importResolvedCredentials(prepared.credentials, prepared.errors, prepared.recognized)
+  }
+
+  async prepareRefreshTokens(
+    text: string,
+    mode: RefreshTokenClientMode
+  ): Promise<CodexImportPreparation> {
     if (Buffer.byteLength(text, 'utf8') > MAX_SOURCE_FILE_BYTES) {
       throw new Error('粘贴内容超过安全限制')
     }
     if (!this.options.refreshTokenImporter) throw new Error('Refresh Token 导入器不可用')
     const parsed = await this.options.refreshTokenImporter.resolve(text, mode)
-    return this.importResolvedCredentials(parsed.credentials, parsed.errors, parsed.total)
+    return {
+      credentials: dedupeCredentials(parsed.credentials),
+      errors: parsed.errors,
+      recognized: parsed.total,
+      sourceCount: 1,
+      unrecognized: parsed.credentials.length === 0 || parsed.total > parsed.credentials.length
+        ? [{ sourcePath: 'pasted-refresh-tokens.txt', sourceFormat: 'paste', detail: parsed.errors.at(-1) ?? '没有成功兑换任何 Refresh Token' }]
+        : []
+    }
   }
 
   startOAuthAuthorization(): OAuthAuthorizationSession {
@@ -304,16 +413,41 @@ export class AccountManager {
   }
 
   async completeOAuthAuthorization(sessionId: string, callbackInput: string): Promise<ScanResult> {
+    const prepared = await this.prepareOAuthAuthorization(sessionId, callbackInput)
+    return this.importResolvedCredentials(prepared.credentials, prepared.errors, prepared.recognized)
+  }
+
+  async prepareOAuthAuthorization(
+    sessionId: string,
+    callbackInput: string
+  ): Promise<CodexImportPreparation> {
     if (!this.options.oauthAuthorizationImporter) throw new Error('OAuth 授权导入器不可用')
     const parsed = await this.options.oauthAuthorizationImporter.complete(sessionId, callbackInput)
-    return this.importResolvedCredentials(parsed.credentials, parsed.errors)
+    return {
+      credentials: dedupeCredentials(parsed.credentials),
+      errors: parsed.errors,
+      recognized: parsed.total,
+      sourceCount: 1,
+      unrecognized: parsed.credentials.length === 0
+        ? [{ sourcePath: 'oauth-callback', sourceFormat: 'paste', detail: parsed.errors.at(-1) ?? 'OAuth 回调中没有可用凭据' }]
+        : []
+    }
+  }
+
+  async importPrepared(prepared: CodexImportPreparation): Promise<ScanResult> {
+    return this.importResolvedCredentials(
+      prepared.credentials,
+      prepared.errors,
+      prepared.recognized
+    )
   }
 
   async importCredentialsAdditive(input: readonly NormalizedCredential[]): Promise<ScanResult> {
     const credentials = dedupeCredentials(input)
     const existing = dedupeCredentials(await this.options.vault.list())
-    const existingIds = new Set(existing.map((credential) => credential.id))
-    const fresh = credentials.filter((credential) => !existingIds.has(credential.id))
+    const fresh = credentials.filter((credential) =>
+      !existing.some((current) => sameCredentialIdentity(current, credential))
+    )
     if (fresh.length === 0) {
       return { imported: 0, skipped: credentials.length, errors: [], accounts: await this.listAccounts() }
     }
@@ -338,15 +472,28 @@ export class AccountManager {
     }
     await this.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
     const existing = dedupeCredentials(await this.options.vault.list())
-    const existingIds = new Set(existing.map((credential) => credential.id))
-    const freshIds = credentials
-      .filter((credential) => !existingIds.has(credential.id))
+    const freshCredentials = credentials.filter((credential) =>
+      !existing.some((current) => sameCredentialIdentity(current, credential))
+    )
+    const changedExistingIds = existing
+      .filter((current) => credentials.some((credential) =>
+        sameCredentialIdentity(current, credential) && !sameCredentialMaterial(current, credential)
+      ))
       .map((credential) => credential.id)
-    const imported = freshIds.length
+    const imported = freshCredentials.length
     const merged = dedupeCredentials([...existing, ...credentials])
+    const affectedFinalIds = merged
+      .filter((credential) => credentials.some((incoming) => sameCredentialIdentity(credential, incoming)))
+      .map((credential) => credential.id)
     const stored = await this.persistManagedLibrary(merged, existing)
     await this.options.vault.replace(stored)
-    await this.options.statusStore.removeMany(freshIds)
+    await this.options.statusStore.removeMany([
+      ...new Set([
+        ...freshCredentials.map((credential) => credential.id),
+        ...changedExistingIds,
+        ...(changedExistingIds.length > 0 ? affectedFinalIds : [])
+      ])
+    ])
     await this.options.onCredentialsChanged?.()
     return {
       imported,
@@ -627,7 +774,7 @@ export class AccountManager {
   private async parseCredentialFile(
     path: string,
     format: CredentialSourceFormat
-  ): Promise<{ credentials: NormalizedCredential[]; errors: string[] }> {
+  ): Promise<{ credentials: NormalizedCredential[]; errors: string[]; unrecognized?: boolean }> {
     if (format !== 'zip') {
       const metadata = await stat(path)
       if (!metadata.isFile()) throw new Error('账号来源不是文件')
@@ -638,12 +785,14 @@ export class AccountManager {
         parsed.credentials.length > 0 ||
         !this.options.refreshTokenImporter ||
         !shouldAttemptRefreshTokenImport(text)
-      ) return parsed
+      ) return { ...parsed, unrecognized: parsed.credentials.length === 0 }
       const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto', {
         sourcePath: path,
         format
       })
-      return refreshed.total > 0 ? refreshed : parsed
+      return refreshed.total > 0
+        ? { ...refreshed, unrecognized: refreshed.credentials.length < refreshed.total }
+        : { ...parsed, unrecognized: true }
     }
 
     const archive = await readFile(path)
@@ -670,6 +819,7 @@ export class AccountManager {
     })
     const credentials: NormalizedCredential[] = []
     const errors: string[] = []
+    let unrecognized = false
     for (const [entryName, bytes] of Object.entries(entries)) {
       const entryFormat = formatForPath(entryName)
       if (!entryFormat || entryFormat === 'zip') continue
@@ -682,11 +832,13 @@ export class AccountManager {
         parsed.credentials.length > 0 ||
         !this.options.refreshTokenImporter ||
         !shouldAttemptRefreshTokenImport(entryText)
-        ? parsed
-        : await this.options.refreshTokenImporter.resolve(entryText, 'auto', {
+          ? { ...parsed, unrecognized: parsed.credentials.length === 0 }
+          : await this.options.refreshTokenImporter.resolve(entryText, 'auto', {
             sourcePath: `${path}::${entryName}`,
             format: entryFormat
           })
+      if ('total' in resolved) unrecognized ||= resolved.credentials.length < resolved.total
+      else unrecognized ||= resolved.credentials.length === 0
       credentials.push(
         ...resolved.credentials.map((credential) => ({
           ...credential,
@@ -696,7 +848,7 @@ export class AccountManager {
       )
       errors.push(...resolved.errors)
     }
-    return { credentials, errors }
+    return { credentials, errors, unrecognized }
   }
 
   private async persistManagedLibrary(

@@ -20,9 +20,11 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  ScanSearch,
   Settings,
   Square,
   Sun,
+  Tags,
   TestTube2,
   TimerReset,
   Trash2,
@@ -34,13 +36,17 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AppSnapshot, AppSnapshotPatch, AppSnapshotScope, UpdateState } from '../../shared/ipc'
 import type {
   AccountSummary,
+  AccountMetadataUpdateRequest,
   AppSettings,
   CodexTestMode,
   DisplayAccountStatus,
   CredentialExportFormat,
   CredentialExportLayout,
   OAuthAuthorizationSession,
-  LibraryImportResult,
+  ImportPreviewCommitResult,
+  ImportPreviewManualMode,
+  ImportPreviewResult,
+  LibraryHealthReport,
   RefreshTokenClientMode,
   ScanResult,
   SessionRepairPreview,
@@ -56,12 +62,15 @@ import {
 } from './account-filters'
 import { displayStatus, STATUS_LABELS } from './account-status'
 import { AccountFacetFilters } from './components/AccountFacetFilters'
+import { AccountMetadataDialog, type MetadataAccount } from './components/AccountMetadataDialog'
 import {
   CODEX_TEST_MODE_RUNNING,
   CODEX_TEST_MODE_SUCCESS,
   CodexTestModeControl
 } from './components/CodexTestModeControl'
 import { ConversationManagerDialog } from './components/ConversationManagerDialog'
+import { ImportPreviewDialog } from './components/ImportPreviewDialog'
+import { LibraryHealthDialog } from './components/LibraryHealthDialog'
 import { CurrentAccountOverview } from './components/CurrentAccountOverview'
 import { StatusFilterStrip } from './components/StatusFilterStrip'
 import { CpaPage, GrokLibraryPage } from './GrokPage'
@@ -186,6 +195,17 @@ function Quota({
   )
 }
 
+function AccountMetadataChips({ account }: { account: AccountSummary }): React.JSX.Element | null {
+  if (!account.group && !(account.tags?.length)) return null
+  return (
+    <div className="account-metadata-chips">
+      {account.group && <span className="account-group-chip">{account.group}</span>}
+      {(account.tags ?? []).slice(0, 3).map((tag) => <span key={tag} className="account-tag-chip">{tag}</span>)}
+      {(account.tags?.length ?? 0) > 3 && <span className="account-tag-more">+{account.tags!.length - 3}</span>}
+    </div>
+  )
+}
+
 export function App(): React.JSX.Element {
   const [theme, setTheme] = useState<ThemeMode>(() => {
     const value = initialTheme()
@@ -212,6 +232,7 @@ export function App(): React.JSX.Element {
   const [repairThreadIds, setRepairThreadIds] = useState<string[] | undefined>(undefined)
   const [conversationOpen, setConversationOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [importPreview, setImportPreview] = useState<ImportPreviewResult | null>(null)
   const [pasteText, setPasteText] = useState('')
   const [pasteImportMode, setPasteImportMode] = useState<PasteImportMode>('auto')
   const [oauthSession, setOauthSession] = useState<OAuthAuthorizationSession | null>(null)
@@ -224,6 +245,8 @@ export function App(): React.JSX.Element {
     priorities: Record<string, number>
   } | null>(null)
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
+  const [metadataAccounts, setMetadataAccounts] = useState<MetadataAccount[] | null>(null)
+  const [healthReport, setHealthReport] = useState<LibraryHealthReport | null>(null)
   const [contextMenu, setContextMenu] = useState<{
     account: AccountSummary
     x: number
@@ -236,7 +259,9 @@ export function App(): React.JSX.Element {
 
   const closeImportDialog = (force = false): void => {
     if (busy && !force) return
+    if (importPreview) void window.codexSwitcher.discardImportPreview(importPreview.sessionId)
     setImportOpen(false)
+    setImportPreview(null)
     setPasteText('')
     setOauthSession(null)
   }
@@ -254,7 +279,7 @@ export function App(): React.JSX.Element {
     setSettingsOpen(false)
     setCustomApiKey('')
   }
-  const importDialogRef = useDialogFocus<HTMLElement>(importOpen, closeImportDialog)
+  const importDialogRef = useDialogFocus<HTMLElement>(importOpen && !importPreview, closeImportDialog)
   const exportDialogRef = useDialogFocus<HTMLElement>(Boolean(exportDialog), closeExportDialog)
   const repairDialogRef = useDialogFocus<HTMLElement>(Boolean(repairPreview), closeRepairDialog)
   const settingsDialogRef = useDialogFocus<HTMLElement>(settingsOpen, closeSettingsDialog)
@@ -406,9 +431,11 @@ export function App(): React.JSX.Element {
       const next = {
         plan: hasFacetOption(availableAccountFacets.plans, current.plan) ? current.plan : '',
         domain: hasFacetOption(availableAccountFacets.domains, current.domain) ? current.domain : '',
-        reason: hasFacetOption(availableAccountFacets.reasons, current.reason) ? current.reason : ''
+        reason: hasFacetOption(availableAccountFacets.reasons, current.reason) ? current.reason : '',
+        group: hasFacetOption(availableAccountFacets.groups, current.group) ? current.group : '',
+        tag: hasFacetOption(availableAccountFacets.tags, current.tag) ? current.tag : ''
       }
-      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason
+      return next.plan === current.plan && next.domain === current.domain && next.reason === current.reason && next.group === current.group && next.tag === current.tag
         ? current
         : next
     })
@@ -421,7 +448,7 @@ export function App(): React.JSX.Element {
       if (statusFilter && displayStatus(account.status) !== statusFilter) return false
       if (!matchesAccountFacets(account, facetFilters)) return false
       if (!query) return true
-      return `${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.sourceDialect} ${account.sourcePath} ${account.detail}`
+      return `${account.alias ?? ''} ${account.email ?? ''} ${account.workspaceId ?? ''} ${account.planType ?? ''} ${account.group ?? ''} ${(account.tags ?? []).join(' ')} ${account.note ?? ''} ${account.sourceDialect} ${account.sourcePath} ${account.detail}`
         .toLowerCase()
         .includes(query)
     }).sort(compareAccounts(accountSort))
@@ -431,6 +458,18 @@ export function App(): React.JSX.Element {
     () => new Map((snapshot?.accounts ?? []).map((account) => [account.id, account])),
     [snapshot?.accounts]
   )
+  const allMetadataAccounts = useMemo<MetadataAccount[]>(() => {
+    const unique = new Map<string, MetadataAccount>()
+    for (const account of [
+      ...(snapshot?.accounts ?? []),
+      ...(snapshot?.grokAccounts ?? []),
+      ...(snapshot?.cpaCodexAccounts ?? []),
+      ...(snapshot?.cpaGrokAccounts ?? [])
+    ]) {
+      if (!unique.has(account.id)) unique.set(account.id, account)
+    }
+    return [...unique.values()]
+  }, [snapshot?.accounts, snapshot?.cpaCodexAccounts, snapshot?.cpaGrokAccounts, snapshot?.grokAccounts])
   const runningAccountIds = useMemo(
     () => new Set(snapshot?.testing.runningIds ?? []),
     [snapshot?.testing.runningIds]
@@ -444,7 +483,7 @@ export function App(): React.JSX.Element {
     : null, [selected, snapshot?.accounts])
   const automationAccounts = useMemo(() => (snapshot?.accounts ?? []).filter((account) => {
     const query = automationKeyword.trim().toLowerCase()
-    return !query || `${account.email ?? ''} ${account.planType ?? ''} ${account.detail}`.toLowerCase().includes(query)
+    return !query || `${account.alias ?? ''} ${account.email ?? ''} ${account.planType ?? ''} ${account.group ?? ''} ${(account.tags ?? []).join(' ')} ${account.note ?? ''} ${account.detail}`.toLowerCase().includes(query)
   }).sort(compareAccounts(automationSort)), [automationKeyword, automationSort, snapshot?.accounts])
   const virtualAccounts = useVirtualTableRows(accounts, (account) => account.id)
   const virtualAutomationAccounts = useVirtualTableRows(automationAccounts, (account) => account.id, 96)
@@ -495,28 +534,8 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const importMessage = (result: ScanResult | LibraryImportResult, source: string): { kind: 'ok' | 'warn'; text: string } => {
-    const total = result.imported + result.skipped
-    const recognized = result.recognized ?? total
-    const firstError = result.errors[0]
-    const detail = 'grokImported' in result
-      ? `Codex 新增 ${result.codexImported}、重复 ${result.codexSkipped}；Grok 新增 ${result.grokImported}、重复 ${result.grokSkipped}`
-      : `Codex 新增 ${result.imported}、重复 ${result.skipped}`
-    return {
-      kind: result.errors.length > 0 ? 'warn' : 'ok',
-      text: total === 0 && recognized > 0
-        ? `${source}：已识别 ${recognized} 条，但均未完成导入；失败 ${result.errors.length} 项${firstError ? `。首项：${firstError}` : ''}`
-        : total === 0 && result.errors.length > 0
-          ? `${source}：未能导入账号；${result.errors.length} 项存在问题${firstError ? `。首项：${firstError}` : ''}`
-          : total === 0
-            ? `${source}：未识别到 Codex 或 Grok 账号`
-        : `${source}：${detail}${result.errors.length ? `；${result.errors.length} 个文件存在问题` : ''}`
-    }
-  }
-
-  const runAccountImport = async (
-    action: () => Promise<ScanResult | LibraryImportResult | null>,
-    source: string
+  const runImportPreview = async (
+    action: () => Promise<ImportPreviewResult | null>
   ): Promise<boolean> => {
     setBusy(true)
     setMessage(null)
@@ -526,25 +545,18 @@ export function App(): React.JSX.Element {
         setMessage({ kind: 'warn', text: '已取消操作' })
         return false
       }
-      const mixedResult = 'grokImported' in result
-      applySnapshotPatch(mixedResult
-        ? { accounts: result.accounts, grokAccounts: result.grokAccounts }
-        : { accounts: result.accounts })
-      const codexImported = mixedResult ? result.codexImported : result.imported
-      const grokImported = mixedResult ? result.grokImported : 0
-      if (grokImported > 0) setGrokViewRevision((current) => current + 1)
-      if (codexImported > 0) {
-        setKeyword('')
-        setStatusFilter('')
-        setFacetFilters(EMPTY_ACCOUNT_FACET_FILTERS)
-        setActiveView('accounts')
-      } else if (grokImported > 0) {
-        setActiveView('grok')
+      setImportPreview(result)
+      if (result.items.length === 0) {
+        setMessage({
+          kind: 'warn',
+          text: result.recognized > 0
+            ? `已识别 ${result.recognized} 条，但均未完成导入${result.errors[0] ? `。首项：${result.errors[0]}` : ''}`
+            : result.errors[0]
+              ? `没有可导入账号：${result.errors[0]}`
+              : '没有识别到 Codex 或 Grok 凭证'
+        })
       }
-      setMessage(importMessage(result, source))
-      const recognized = result.imported + result.skipped > 0
-      if (recognized) closeImportDialog(true)
-      return recognized
+      return result.items.length > 0
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
       return false
@@ -558,22 +570,81 @@ export function App(): React.JSX.Element {
     const action = pasteImportMode === 'oauth'
       ? () => {
           if (!oauthSession) throw new Error('请先打开官方授权页')
-          return window.codexSwitcher.completeOAuthAuthorization(oauthSession.sessionId, pasteText)
+          return window.codexSwitcher.previewOAuthComplete(oauthSession.sessionId, pasteText)
         }
       : pasteImportMode === 'auto'
-        ? () => window.codexSwitcher.importAnyPasted(pasteText)
-        : () => window.codexSwitcher.importRefreshTokens(pasteText, pasteImportMode)
-    const source = pasteImportMode === 'oauth'
-      ? 'OpenAI OAuth 授权完成'
-      : pasteImportMode === 'mobile'
-      ? '移动端 RT 导入完成'
-      : pasteImportMode === 'codex'
-        ? 'Codex RT 导入完成'
-        : '粘贴导入完成'
-    if (await runAccountImport(action, source)) {
-      setPasteText('')
-      setOauthSession(null)
+        ? () => window.codexSwitcher.previewAnyPasted(pasteText)
+        : () => window.codexSwitcher.previewRefreshTokens(pasteText, pasteImportMode)
+    await runImportPreview(action)
+  }
+
+  const commitImportPreview = async (
+    decisions: Parameters<typeof window.codexSwitcher.commitImportPreview>[0]['decisions'],
+    skipUnrecognized = false
+  ): Promise<void> => {
+    if (!importPreview) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result: ImportPreviewCommitResult = await window.codexSwitcher.commitImportPreview({
+        sessionId: importPreview.sessionId,
+        decisions,
+        ...(skipUnrecognized ? { skipUnrecognized: true } : {})
+      })
+      applySnapshotPatch({ accounts: result.accounts, grokAccounts: result.grokAccounts })
+      if (result.grokImported > 0) setGrokViewRevision((current) => current + 1)
+      if (result.codexImported > 0) {
+        setKeyword('')
+        setStatusFilter('')
+        setFacetFilters(EMPTY_ACCOUNT_FACET_FILTERS)
+        setActiveView('accounts')
+      } else if (result.grokImported > 0) setActiveView('grok')
+      closeImportDialog(true)
+      setMessage({
+        kind: result.errors.length ? 'warn' : 'ok',
+        text: `导入完成：新增 ${result.added}，更新 ${result.updated}，跳过 ${result.ignored}${result.errors.length ? `；${result.errors.length} 项存在问题` : ''}`
+      })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
     }
+  }
+
+  const refineImportPreview = async (
+    sourceKey: string,
+    mode: ImportPreviewManualMode
+  ): Promise<void> => {
+    if (!importPreview) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await window.codexSwitcher.refineImportPreview({
+        sessionId: importPreview.sessionId,
+        sourceKey,
+        mode
+      })
+      const resolved = !result.unrecognized.some((source) => source.key === sourceKey)
+      const added = Math.max(0, result.items.length - importPreview.items.length)
+      setImportPreview(result)
+      setMessage(resolved
+        ? { kind: 'ok', text: `重新识别成功，已加入 ${added} 个账号，请确认后写入 aa` }
+        : {
+            kind: 'warn',
+            text: result.unrecognized.find((source) => source.key === sourceKey)?.detail
+              ?? '所选方式仍未识别到可用凭据，请选择其他方式'
+          })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const backFromImportPreview = (): void => {
+    if (!importPreview || busy) return
+    void window.codexSwitcher.discardImportPreview(importPreview.sessionId)
+    setImportPreview(null)
   }
 
   const startOAuthAuthorization = async (): Promise<void> => {
@@ -606,6 +677,66 @@ export function App(): React.JSX.Element {
         text: `已导出 ${result.imported} 个到 CPA${result.skipped ? `，${result.skipped} 个已有账号已更新凭证和优先级` : ''}`
       })
       setExportDialog(null)
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const openMetadataEditor = (ids: string[]): void => {
+    const wanted = new Set(ids)
+    const accounts = allMetadataAccounts.filter((account) => wanted.has(account.id))
+    if (accounts.length === 0) {
+      setMessage({ kind: 'error', text: '没有找到要编辑的账号' })
+      return
+    }
+    setMetadataAccounts(accounts)
+  }
+
+  const saveAccountMetadata = async (request: AccountMetadataUpdateRequest): Promise<void> => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      await window.codexSwitcher.updateAccountMetadata(request)
+      await reload(true, activeView)
+      setMetadataAccounts(null)
+      setMessage({ kind: 'ok', text: `已保存 ${request.accountIds.length} 个账号的别名、标签或分组` })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const inspectLibraries = async (): Promise<void> => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      setHealthReport(await window.codexSwitcher.inspectLibraries())
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const repairLibraries = async (issueIds: string[]): Promise<void> => {
+    if (!healthReport || issueIds.length === 0) return
+    if (!await requestConfirmation({
+      title: `修复 ${issueIds.length} 项账号库问题`,
+      message: '标准化操作可能拆分、重命名或合并受管理目录中的凭证文件。',
+      detail: '无法识别的文件会移动到应用隔离目录；外部导入源文件不会修改。',
+      confirmLabel: '确认修复',
+      tone: 'warning'
+    })) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await window.codexSwitcher.repairLibraries(healthReport.snapshotId, issueIds)
+      setHealthReport(result.report)
+      await reload(true, activeView)
+      setMessage({ kind: result.errors.length ? 'warn' : 'ok', text: result.message })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -1000,6 +1131,9 @@ export function App(): React.JSX.Element {
             <button onClick={() => setSettingsOpen(true)} disabled={busy}>
               <KeyRound size={16} />自定义 API
             </button>
+            <button onClick={() => void inspectLibraries()} disabled={busy}>
+              <ScanSearch size={16} />账号库体检
+            </button>
           </div>
         </details>
       </div>
@@ -1008,7 +1142,7 @@ export function App(): React.JSX.Element {
         <div className="selection-summary">
           <CheckCircle2 size={15} />
           <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
-          <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
+          <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.alias ?? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
         </div>
         <button onClick={() => void run(() => window.codexSwitcher.testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Play size={16} />测试选中
@@ -1024,6 +1158,9 @@ export function App(): React.JSX.Element {
         </button>
         <button onClick={() => setConversationOpen(true)} disabled={busy}>
           <MessagesSquare size={16} />对话管理
+        </button>
+        <button onClick={() => openMetadataEditor([...selected])} disabled={busy || selected.size === 0}>
+          <Tags size={16} />标签与分组
         </button>
         <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Trash2 size={16} />删除选中
@@ -1091,8 +1228,10 @@ export function App(): React.JSX.Element {
               >
                 <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggle(account.id)} /></td>
                 <td>
-                  <div className="account-title-line"><div className="account-email">{account.email ?? '邮箱未知'}</div>{account.active && <span className="active-badge"><BadgeCheck size={12} />正在使用</span>}</div>
+                  <div className="account-title-line"><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'}</div>{account.active && <span className="active-badge"><BadgeCheck size={12} />正在使用</span>}</div>
+                  {account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}
                   <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {switchCapability(account)}</div>
+                  <AccountMetadataChips account={account} />
                   <div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div>
                 </td>
                 <td>
@@ -1122,6 +1261,7 @@ export function App(): React.JSX.Element {
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
           requestConfirmation={requestConfirmation}
+          onEditMetadata={openMetadataEditor}
         />
       ) : activeView === 'cpa' ? (
         <CpaPage
@@ -1130,6 +1270,7 @@ export function App(): React.JSX.Element {
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
           requestConfirmation={requestConfirmation}
+          onEditMetadata={openMetadataEditor}
         />
       ) : (
         <main className="page-view automation-view">
@@ -1189,7 +1330,7 @@ export function App(): React.JSX.Element {
                       setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: checked ? settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) : [...settingsDraft.autoSwitchAccountIds, account.id] })
                     }}>
                       <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
-                      <td><div className="account-email">{account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div><div className="workspace-id">{switchCapability(account)}</div></td>
+                      <td><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div>{account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}<div className="workspace-id">{switchCapability(account)}</div><AccountMetadataChips account={account} /></td>
                       <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail">{account.detail}</div></>}</td>
                       <td>{account.planType ?? '未知'}</td>
                       <td><Quota account={account} running={running} now={clock} /></td>
@@ -1207,6 +1348,16 @@ export function App(): React.JSX.Element {
 
       {importOpen && (
         <div className="repair-backdrop" role="presentation">
+          {importPreview ? (
+            <ImportPreviewDialog
+              preview={importPreview}
+              busy={busy}
+              onBack={backFromImportPreview}
+              onClose={() => closeImportDialog()}
+              onCommit={(decisions, skipUnrecognized) => void commitImportPreview(decisions, skipUnrecognized)}
+              onRefine={refineImportPreview}
+            />
+          ) : (
           <section ref={importDialogRef} className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号" tabIndex={-1}>
             <div className="panel-header">
               <div><h2>导入账号到本地库</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span className="provider-label grok"><Zap size={11} />Grok</span><span>自动分类保存到 aa，不修改 CPA 目录</span></div></div>
@@ -1215,8 +1366,8 @@ export function App(): React.JSX.Element {
               </button>
             </div>
             <div className="import-source-actions">
-              <button aria-label="导入多个文件" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyFiles(), '文件导入完成')} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>Codex / Grok 自动分类</small></span></button>
-              <button aria-label="导入文件夹" onClick={() => void runAccountImport(() => window.codexSwitcher.importAnyDirectory(), '文件夹导入完成')} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别并保存到 aa</small></span></button>
+              <button aria-label="导入多个文件" onClick={() => void runImportPreview(() => window.codexSwitcher.previewAnyFiles())} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>先识别、去重并预览</small></span></button>
+              <button aria-label="导入文件夹" onClick={() => void runImportPreview(() => window.codexSwitcher.previewAnyDirectory())} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别后确认写入</small></span></button>
             </div>
             <div className="import-divider"><span>或粘贴凭据</span></div>
             <div className="option-group import-method-group">
@@ -1254,6 +1405,7 @@ export function App(): React.JSX.Element {
               </button>
             </div>
           </section>
+          )}
         </div>
       )}
 
@@ -1378,7 +1530,7 @@ export function App(): React.JSX.Element {
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <div className="context-account" title={contextMenu.account.email ?? contextMenu.account.sourcePath}>
-            {contextMenu.account.email ?? '邮箱未知'}
+            {contextMenu.account.alias ?? contextMenu.account.email ?? '邮箱未知'}
           </div>
           <button role="menuitem" onClick={() => contextAction(() => run(() => window.codexSwitcher.testAccounts([contextMenu.account.id], testMode), CODEX_TEST_MODE_SUCCESS[testMode]))}>
             <TestTube2 size={15} />检测此账号
@@ -1391,6 +1543,9 @@ export function App(): React.JSX.Element {
           </button>
           <button role="menuitem" onClick={() => contextAction(() => openExport([contextMenu.account.id]))}>
             <Download size={15} />导出此账号
+          </button>
+          <button role="menuitem" onClick={() => contextAction(() => openMetadataEditor([contextMenu.account.id]))}>
+            <Tags size={15} />编辑别名与标签
           </button>
           <button role="menuitem" onClick={() => contextAction(async () => {
             const result = await window.codexSwitcher.revealSource(contextMenu.account.id)
@@ -1582,6 +1737,24 @@ export function App(): React.JSX.Element {
             <div className="panel-actions"><button className="secondary-button" onClick={() => closeSettingsDialog()} disabled={busy}><X size={16} />取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}><CheckCircle2 size={16} />保存设置</button></div>
           </section>
         </div>
+      )}
+      {metadataAccounts && (
+        <AccountMetadataDialog
+          accounts={metadataAccounts}
+          allAccounts={allMetadataAccounts}
+          busy={busy}
+          onClose={() => { if (!busy) setMetadataAccounts(null) }}
+          onSave={(request) => void saveAccountMetadata(request)}
+        />
+      )}
+      {healthReport && (
+        <LibraryHealthDialog
+          report={healthReport}
+          busy={busy}
+          onClose={() => { if (!busy) setHealthReport(null) }}
+          onRefresh={() => void inspectLibraries()}
+          onRepair={(issueIds) => void repairLibraries(issueIds)}
+        />
       )}
       {confirmationDialog}
     </div>

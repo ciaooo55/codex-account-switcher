@@ -13,11 +13,25 @@ const api: CodexSwitcherApi = {
   importAnyFiles: () => ipcRenderer.invoke(ipcChannels.importAny),
   importAnyDirectory: () => ipcRenderer.invoke(ipcChannels.importAnyDirectory),
   importAnyPasted: (text) => ipcRenderer.invoke(ipcChannels.importAnyPasted, text),
+  previewAnyFiles: () => ipcRenderer.invoke(ipcChannels.importPreviewFiles),
+  previewAnyDirectory: () => ipcRenderer.invoke(ipcChannels.importPreviewDirectory),
+  previewAnyPasted: (text) => ipcRenderer.invoke(ipcChannels.importPreviewPasted, text),
+  previewRefreshTokens: (text, mode) =>
+    ipcRenderer.invoke(ipcChannels.importPreviewRefreshTokens, { text, mode }),
+  previewOAuthComplete: (sessionId, callbackInput) =>
+    ipcRenderer.invoke(ipcChannels.importPreviewOAuthComplete, { sessionId, callbackInput }),
+  commitImportPreview: (request) => ipcRenderer.invoke(ipcChannels.importPreviewCommit, request),
+  refineImportPreview: (request) => ipcRenderer.invoke(ipcChannels.importPreviewRefine, request),
+  discardImportPreview: (sessionId) => ipcRenderer.invoke(ipcChannels.importPreviewDiscard, sessionId),
   importRefreshTokens: (text, mode) => ipcRenderer.invoke(ipcChannels.importRefreshTokens, { text, mode }),
   startOAuthAuthorization: () => ipcRenderer.invoke(ipcChannels.oauthStart),
   completeOAuthAuthorization: (sessionId, callbackInput) =>
     ipcRenderer.invoke(ipcChannels.oauthComplete, { sessionId, callbackInput }),
   deleteAccounts: (ids) => ipcRenderer.invoke(ipcChannels.deleteAccounts, ids),
+  updateAccountMetadata: (request) => ipcRenderer.invoke(ipcChannels.accountMetadataUpdate, request),
+  inspectLibraries: () => ipcRenderer.invoke(ipcChannels.libraryHealthInspect),
+  repairLibraries: (snapshotId, issueIds) =>
+    ipcRenderer.invoke(ipcChannels.libraryHealthRepair, { snapshotId, issueIds }),
   exportAccounts: (request) => ipcRenderer.invoke(ipcChannels.exportAccounts, request),
   exportAccountsToCpa: (request) => ipcRenderer.invoke(ipcChannels.exportAccountsToCpa, request),
   testAccounts: (ids, mode) => ipcRenderer.invoke(ipcChannels.test, { ids, mode: mode ?? 'full' }),

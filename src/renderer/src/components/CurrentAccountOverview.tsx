@@ -66,10 +66,10 @@ export function CurrentAccountOverview({
       <div className="current-account-identity">
         <span>当前正在使用</span>
         <strong title={account.email ?? account.sourcePath}>
-          <BadgeCheck size={14} />{account.email ?? sourceName(account.sourcePath)}
+          <BadgeCheck size={14} />{account.alias ?? account.email ?? sourceName(account.sourcePath)}
           <em>{account.planType ?? '未知类型'}</em>
         </strong>
-        <small>额度检测 {dateTime(account.lastCheckedAt)}</small>
+        <small>{account.alias && account.email ? `${account.email} · ` : ''}额度检测 {dateTime(account.lastCheckedAt)}</small>
       </div>
       <div className="current-quota" title={fiveHour?.resetAt ? `重置 ${dateTime(fiveHour.resetAt)}` : undefined}>
         <span>5 小时</span><strong>{quotaText(fiveHour, checkedAt, now, false)}</strong>

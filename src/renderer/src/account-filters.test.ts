@@ -18,8 +18,8 @@ function account(overrides: Partial<FacetableAccount> = {}): FacetableAccount {
 describe('account facets', () => {
   it('derives only plan types, domains, reasons and statuses that exist in the data', () => {
     const facets = buildAccountFacets([
-      account(),
-      account({ email: 'team@outlook.com', planType: 'team', status: 'invalid', detail: 'Refresh token 已失效' }),
+      account({ group: '日常', tags: ['稳定'] }),
+      account({ email: 'team@outlook.com', planType: 'team', status: 'invalid', detail: 'Refresh token 已失效', group: '工作', tags: ['高优先级', '稳定'] }),
       account({ email: 'other@outlook.com', planType: 'team', status: 'network_error', detail: 'CPA 请求超时' }),
       account({ email: null, planType: null, status: 'quota_exhausted_weekly', detail: '周额度耗尽' })
     ])
@@ -39,6 +39,15 @@ describe('account facets', () => {
       'CPA 请求超时'
     ]))
     expect(facets.reasons).toHaveLength(2)
+    expect(facets.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: '__unknown_group__', count: 2 }),
+      expect.objectContaining({ value: '日常', count: 1 }),
+      expect.objectContaining({ value: '工作', count: 1 })
+    ]))
+    expect(facets.tags).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: '稳定', count: 2 }),
+      expect.objectContaining({ value: '高优先级', count: 1 })
+    ]))
     expect(facets.statusCounts).toMatchObject({
       valid: 1,
       invalid: 1,
@@ -54,18 +63,24 @@ describe('account facets', () => {
       email: 'team@outlook.com',
       planType: 'Team',
       status: 'invalid',
-      detail: '凭据被撤销'
+      detail: '凭据被撤销',
+      group: '工作',
+      tags: ['待刷新']
     })
 
     expect(matchesAccountFacets(invalidTeam, {
       plan: 'team',
       domain: 'outlook.com',
-      reason: '凭据被撤销'
+      reason: '凭据被撤销',
+      group: '工作',
+      tag: '待刷新'
     })).toBe(true)
     expect(matchesAccountFacets(invalidTeam, {
       plan: 'plus',
       domain: 'outlook.com',
-      reason: '凭据被撤销'
+      reason: '凭据被撤销',
+      group: '',
+      tag: ''
     })).toBe(false)
   })
 
