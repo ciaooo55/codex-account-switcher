@@ -16,7 +16,14 @@ import {
 } from 'electron'
 import electronUpdater from 'electron-updater'
 import { z } from 'zod'
-import { ipcChannels, type CpaCodexTestProgress, type GrokTestProgress, type TestProgress, type UpdateState } from '../shared/ipc'
+import {
+  ipcChannels,
+  type CpaCodexTestProgress,
+  type GrokTestProgress,
+  type ImportPreviewTestProgress,
+  type TestProgress,
+  type UpdateState
+} from '../shared/ipc'
 import type { AppSettings, AutoSwitchState, SecretCipher } from '../shared/types'
 import { AccountManager } from './services/account-manager'
 import { reconcileCodexStatuses, reconcileGrokStatuses } from './services/account-status-sync'
@@ -75,6 +82,8 @@ let testController: AbortController | null = null
 let grokTestController: AbortController | null = null
 let cpaGrokTestController: AbortController | null = null
 let cpaCodexTestController: AbortController | null = null
+let importPreviewTestController: AbortController | null = null
+let importPreviewTestSessionId: string | null = null
 let progress: TestProgress = {
   active: false,
   done: 0,
@@ -464,7 +473,42 @@ async function main(): Promise<void> {
     onStatusesChanged: () => reconcileGrokStatusStores()
   })
 
-  const importPreviewService = new ImportPreviewService(manager, grokManager)
+  const importPreviewService = new ImportPreviewService(manager, grokManager, {
+    concurrency: async () => (await settingsStore.get()).concurrency,
+    testCodex: async (credential, signal) => {
+      const settings = await settingsStore.get()
+      let latest = credential
+      const result = await new CredentialTester({
+        timeoutMs: settings.timeoutMs,
+        deepTestModel: settings.deepTestModel,
+        ...(testApiBase
+          ? {
+              compactUrl: `${testApiBase}/compact`,
+              usageUrl: `${testApiBase}/usage`,
+              refreshUrl: `${testApiBase}/oauth/token`,
+              personalAccessTokenWhoamiUrl: `${testApiBase}/personal-access-token/whoami`,
+              queryResetCredits: false
+            }
+          : {}),
+        onCredentialUpdated: (updated) => {
+          latest = updated
+        }
+      }).test(credential, signal, 'full')
+      return { credential: latest, result }
+    },
+    testGrok: async (credential, signal) => {
+      const settings = await settingsStore.get()
+      let latest = credential
+      const result = await new GrokCredentialTester({
+        timeoutMs: settings.timeoutMs,
+        ...(testApiBase ? { cliBaseUrl: `${testApiBase}/grok` } : {}),
+        onCredentialUpdated: async (updated) => {
+          latest = updated
+        }
+      }).test(credential, signal)
+      return { credential: latest, result }
+    }
+  })
   const libraryHealthService = new LibraryHealthService({
     codexDirectory: codexImportDirectory,
     grokDirectory: grokImportDirectory,
@@ -542,6 +586,7 @@ async function main(): Promise<void> {
 
   const assertAccountLibraryIdle = (): void => {
     if (testController) throw new Error('账号检测进行中，暂时不能修改账号库')
+    if (importPreviewTestController) throw new Error('导入凭证检测进行中，暂时不能修改账号库')
     if (switchOperationActive) throw new Error('账号切换或恢复进行中，暂时不能修改账号库')
     if (accountLibraryOperationActive) throw new Error('已有账号导入、扫描或删除操作正在执行')
     if (autoSwitchOperationActive) throw new Error('自动检测或切换正在执行，暂时不能修改账号库')
@@ -577,6 +622,7 @@ async function main(): Promise<void> {
     if (grokTestController) return 'Grok 账号检测正在运行'
     if (cpaGrokTestController) return 'CPA Grok 账号检测正在运行'
     if (cpaCodexTestController) return 'CPA Codex 账号检测正在运行'
+    if (importPreviewTestController) return '导入凭证检测正在运行'
     if (switchOperationActive) return '账号切换或恢复正在运行'
     if (accountLibraryOperationActive) return 'Codex 账号库操作正在运行'
     if (auxiliaryLibraryOperationCount > 0) return '账号文件操作正在运行'
@@ -1012,8 +1058,59 @@ async function main(): Promise<void> {
     }).parse(input)
     return runTrackedFileOperation(() => importPreviewService.refine(payload))
   })
+  ipcMain.handle(ipcChannels.importPreviewTest, async (event, input: unknown) => {
+    assertNoRunningTask('检测导入凭证')
+    const payload = z.object({
+      sessionId: z.string().uuid(),
+      itemKeys: z.array(z.string().min(1).max(256)).min(1).max(20_000).optional()
+    }).parse(input)
+    importPreviewTestController = new AbortController()
+    importPreviewTestSessionId = payload.sessionId
+    let latestProgress: ImportPreviewTestProgress = {
+      active: true,
+      sessionId: payload.sessionId,
+      done: 0,
+      total: payload.itemKeys?.length ?? 0,
+      runningKeys: [],
+      updatedItem: null
+    }
+    const sendImportPreviewProgress = (next: ImportPreviewTestProgress): void => {
+      latestProgress = next
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(ipcChannels.importPreviewTestProgress, next)
+      }
+    }
+    try {
+      return await importPreviewService.test(payload, {
+        signal: importPreviewTestController.signal,
+        onProgress: ({ done, total, runningKeys, updatedItem }) =>
+          sendImportPreviewProgress({
+            active: true,
+            sessionId: payload.sessionId,
+            done,
+            total,
+            runningKeys,
+            updatedItem: updatedItem ?? null
+          })
+      })
+    } finally {
+      importPreviewTestController = null
+      importPreviewTestSessionId = null
+      sendImportPreviewProgress({
+        ...latestProgress,
+        active: false,
+        runningKeys: [],
+        updatedItem: null
+      })
+    }
+  })
+  ipcMain.handle(ipcChannels.importPreviewCancelTest, () => {
+    importPreviewTestController?.abort()
+  })
   ipcMain.handle(ipcChannels.importPreviewDiscard, (_event, input: unknown) => {
-    importPreviewService.discard(z.string().uuid().parse(input))
+    const sessionId = z.string().uuid().parse(input)
+    if (importPreviewTestSessionId === sessionId) importPreviewTestController?.abort()
+    importPreviewService.discard(sessionId)
   })
   ipcMain.handle(ipcChannels.importRefreshTokens, (_event, input: unknown) => {
     const payload = z.object({
@@ -1853,6 +1950,11 @@ async function main(): Promise<void> {
   }
   app.once('before-quit', () => {
     isQuitting = true
+    testController?.abort()
+    grokTestController?.abort()
+    cpaGrokTestController?.abort()
+    cpaCodexTestController?.abort()
+    importPreviewTestController?.abort()
     autoSwitchScheduler.stop()
     tray?.destroy()
     tray = null

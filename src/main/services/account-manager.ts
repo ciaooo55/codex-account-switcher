@@ -643,6 +643,12 @@ export class AccountManager {
     return { tested: results.length, results, cancelled: Boolean(options.signal?.aborted) }
   }
 
+  async persistImportedTestResults(results: readonly TestResult[]): Promise<void> {
+    for (const result of results) await this.options.statusStore.setBuffered(result)
+    await this.options.statusStore.flush()
+    if (results.length > 0) await this.options.onStatusesChanged?.()
+  }
+
   async switchAccount(id: string): Promise<SwitchResult> {
     const credential = await this.options.vault.get(id)
     if (!credential) return { ok: false, message: '账号不存在', backupPath: null }

@@ -365,6 +365,12 @@ export class GrokAccountManager {
     }
   }
 
+  async persistImportedTestResults(results: readonly GrokTestResult[]): Promise<void> {
+    for (const result of results) await this.options.statusStore.setBuffered(result)
+    await this.options.statusStore.flush()
+    if (results.length > 0) await this.options.onStatusesChanged?.()
+  }
+
   async upsertRefreshed(credential: GrokCredential): Promise<void> {
     const directory = await this.directory()
     const records = this.activeTestRecords?.get(credential.id)

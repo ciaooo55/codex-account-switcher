@@ -33,7 +33,13 @@ import {
   X
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AppSnapshot, AppSnapshotPatch, AppSnapshotScope, UpdateState } from '../../shared/ipc'
+import type {
+  AppSnapshot,
+  AppSnapshotPatch,
+  AppSnapshotScope,
+  ImportPreviewTestProgress,
+  UpdateState
+} from '../../shared/ipc'
 import type {
   AccountSummary,
   AccountMetadataUpdateRequest,
@@ -233,6 +239,7 @@ export function App(): React.JSX.Element {
   const [conversationOpen, setConversationOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreviewResult | null>(null)
+  const [importPreviewTesting, setImportPreviewTesting] = useState<ImportPreviewTestProgress | null>(null)
   const [pasteText, setPasteText] = useState('')
   const [pasteImportMode, setPasteImportMode] = useState<PasteImportMode>('auto')
   const [oauthSession, setOauthSession] = useState<OAuthAuthorizationSession | null>(null)
@@ -258,10 +265,12 @@ export function App(): React.JSX.Element {
   const { requestConfirmation, confirmationDialog } = useConfirmation()
 
   const closeImportDialog = (force = false): void => {
-    if (busy && !force) return
+    if ((busy || importPreviewTesting?.active) && !force) return
+    if (importPreviewTesting?.active) void window.codexSwitcher.cancelImportPreviewTests()
     if (importPreview) void window.codexSwitcher.discardImportPreview(importPreview.sessionId)
     setImportOpen(false)
     setImportPreview(null)
+    setImportPreviewTesting(null)
     setPasteText('')
     setOauthSession(null)
   }
@@ -350,6 +359,16 @@ export function App(): React.JSX.Element {
         return { ...current, cpaGrokAccounts, cpaGrokTesting }
       })
     )
+    const stopImportPreviewTesting = window.codexSwitcher.onImportPreviewTestProgress((testing) => {
+      setImportPreviewTesting(testing)
+      if (!testing.updatedItem) return
+      setImportPreview((current) => current?.sessionId === testing.sessionId
+        ? {
+            ...current,
+            items: current.items.map((item) => item.key === testing.updatedItem?.key ? testing.updatedItem : item)
+          }
+        : current)
+    })
     const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
       if (!autoSwitch.running) {
@@ -362,6 +381,7 @@ export function App(): React.JSX.Element {
       stopGrokTesting()
       stopCpaCodexTesting()
       stopCpaGrokTesting()
+      stopImportPreviewTesting()
       stopAutoSwitch()
     }
   }, [])
@@ -546,6 +566,7 @@ export function App(): React.JSX.Element {
         return false
       }
       setImportPreview(result)
+      setImportPreviewTesting(null)
       if (result.items.length === 0) {
         setMessage({
           kind: 'warn',
@@ -641,10 +662,45 @@ export function App(): React.JSX.Element {
     }
   }
 
+  const testImportPreview = async (itemKeys?: string[]): Promise<void> => {
+    if (!importPreview || busy || importPreviewTesting?.active) return
+    const sessionId = importPreview.sessionId
+    setMessage(null)
+    setImportPreviewTesting({
+      active: true,
+      sessionId,
+      done: 0,
+      total: itemKeys?.length ?? importPreview.items.length,
+      runningKeys: [],
+      updatedItem: null
+    })
+    try {
+      const result = await window.codexSwitcher.testImportPreview({
+        sessionId,
+        ...(itemKeys ? { itemKeys } : {})
+      })
+      setImportPreview((current) => current?.sessionId === sessionId ? result.preview : current)
+      setMessage(result.cancelled
+        ? { kind: 'warn', text: `已取消导入检测，保留了 ${result.tested} 个已完成结果` }
+        : { kind: 'ok', text: `导入凭证检测完成：${result.tested} 个账号` })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setImportPreviewTesting((current) => current?.sessionId === sessionId
+        ? { ...current, active: false, runningKeys: [], updatedItem: null }
+        : current)
+    }
+  }
+
+  const cancelImportPreviewTests = (): void => {
+    void window.codexSwitcher.cancelImportPreviewTests()
+  }
+
   const backFromImportPreview = (): void => {
-    if (!importPreview || busy) return
+    if (!importPreview || busy || importPreviewTesting?.active) return
     void window.codexSwitcher.discardImportPreview(importPreview.sessionId)
     setImportPreview(null)
+    setImportPreviewTesting(null)
   }
 
   const startOAuthAuthorization = async (): Promise<void> => {
@@ -1352,10 +1408,13 @@ export function App(): React.JSX.Element {
             <ImportPreviewDialog
               preview={importPreview}
               busy={busy}
+              testing={importPreviewTesting}
               onBack={backFromImportPreview}
               onClose={() => closeImportDialog()}
               onCommit={(decisions, skipUnrecognized) => void commitImportPreview(decisions, skipUnrecognized)}
               onRefine={refineImportPreview}
+              onTest={testImportPreview}
+              onCancelTest={cancelImportPreviewTests}
             />
           ) : (
           <section ref={importDialogRef} className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号" tabIndex={-1}>

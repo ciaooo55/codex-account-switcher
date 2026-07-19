@@ -26,8 +26,11 @@ import type {
   LibraryImportResult,
   ImportPreviewCommitRequest,
   ImportPreviewCommitResult,
+  ImportPreviewBatchTestResult,
+  ImportPreviewItem,
   ImportPreviewRefineRequest,
   ImportPreviewResult,
+  ImportPreviewTestRequest,
   LibraryHealthReport,
   LibraryHealthRepairResult,
   ManagedFileStateResult,
@@ -97,6 +100,15 @@ export interface AppSnapshot {
   customApi: CustomApiProfileSummary
 }
 
+export interface ImportPreviewTestProgress {
+  active: boolean
+  sessionId: string
+  done: number
+  total: number
+  runningKeys: string[]
+  updatedItem: ImportPreviewItem | null
+}
+
 export type AppSnapshotScope = 'accounts' | 'grok' | 'cpa' | 'automation'
 export type AppSnapshotPatch = Partial<AppSnapshot>
 
@@ -122,6 +134,8 @@ export interface CodexSwitcherApi {
   previewOAuthComplete(sessionId: string, callbackInput: string): Promise<ImportPreviewResult>
   commitImportPreview(request: ImportPreviewCommitRequest): Promise<ImportPreviewCommitResult>
   refineImportPreview(request: ImportPreviewRefineRequest): Promise<ImportPreviewResult>
+  testImportPreview(request: ImportPreviewTestRequest): Promise<ImportPreviewBatchTestResult>
+  cancelImportPreviewTests(): Promise<void>
   discardImportPreview(sessionId: string): Promise<void>
   importRefreshTokens(text: string, mode: RefreshTokenClientMode): Promise<ScanResult>
   startOAuthAuthorization(): Promise<OAuthAuthorizationSession>
@@ -184,6 +198,7 @@ export interface CodexSwitcherApi {
   onGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
   onCpaGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
   onCpaCodexTestProgress(listener: (progress: CpaCodexTestProgress) => void): () => void
+  onImportPreviewTestProgress(listener: (progress: ImportPreviewTestProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
   onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
 }
@@ -205,6 +220,9 @@ export const ipcChannels = {
   importPreviewOAuthComplete: 'accounts:import-preview-oauth-complete',
   importPreviewCommit: 'accounts:import-preview-commit',
   importPreviewRefine: 'accounts:import-preview-refine',
+  importPreviewTest: 'accounts:import-preview-test',
+  importPreviewCancelTest: 'accounts:import-preview-test-cancel',
+  importPreviewTestProgress: 'accounts:import-preview-test-progress',
   importPreviewDiscard: 'accounts:import-preview-discard',
   importRefreshTokens: 'accounts:import-refresh-tokens',
   oauthStart: 'accounts:oauth-start',

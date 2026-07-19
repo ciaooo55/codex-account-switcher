@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { CodexSwitcherApi, CpaCodexTestProgress, GrokTestProgress, TestProgress, UpdateState } from '../shared/ipc'
+import type {
+  CodexSwitcherApi,
+  CpaCodexTestProgress,
+  GrokTestProgress,
+  ImportPreviewTestProgress,
+  TestProgress,
+  UpdateState
+} from '../shared/ipc'
 import type { AutoSwitchState } from '../shared/types'
 import { ipcChannels } from '../shared/ipc'
 
@@ -22,6 +29,8 @@ const api: CodexSwitcherApi = {
     ipcRenderer.invoke(ipcChannels.importPreviewOAuthComplete, { sessionId, callbackInput }),
   commitImportPreview: (request) => ipcRenderer.invoke(ipcChannels.importPreviewCommit, request),
   refineImportPreview: (request) => ipcRenderer.invoke(ipcChannels.importPreviewRefine, request),
+  testImportPreview: (request) => ipcRenderer.invoke(ipcChannels.importPreviewTest, request),
+  cancelImportPreviewTests: () => ipcRenderer.invoke(ipcChannels.importPreviewCancelTest),
   discardImportPreview: (sessionId) => ipcRenderer.invoke(ipcChannels.importPreviewDiscard, sessionId),
   importRefreshTokens: (text, mode) => ipcRenderer.invoke(ipcChannels.importRefreshTokens, { text, mode }),
   startOAuthAuthorization: () => ipcRenderer.invoke(ipcChannels.oauthStart),
@@ -105,6 +114,11 @@ const api: CodexSwitcherApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: CpaCodexTestProgress): void => listener(progress)
     ipcRenderer.on(ipcChannels.cpaCodexTestProgress, wrapped)
     return () => ipcRenderer.removeListener(ipcChannels.cpaCodexTestProgress, wrapped)
+  },
+  onImportPreviewTestProgress: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: ImportPreviewTestProgress): void => listener(progress)
+    ipcRenderer.on(ipcChannels.importPreviewTestProgress, wrapped)
+    return () => ipcRenderer.removeListener(ipcChannels.importPreviewTestProgress, wrapped)
   },
   onUpdateState: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, state: UpdateState): void => listener(state)

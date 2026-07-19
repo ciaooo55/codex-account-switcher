@@ -5,7 +5,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 ## 主要功能
 
 - 统一导入入口可选择单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.json.无用量`、`.json.无权限`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、Codex/Grok 混合文件、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录。
-- 导入会先进入预检中心，不会在用户确认前写入账号库；预检按 Codex/Grok、邮箱、等级、来源和“新增/更新/重复/身份冲突”筛选，支持逐条选择新增、合并更新或跳过。任何无法识别的来源都会单独列出并锁定确认按钮，可手动选择 Codex JSON/AT、Grok JSON/AT、Codex RT 或移动端 RT 重新识别；只有识别成功或显式勾选跳过后才能继续，绝不会无脑写入。
+- 导入会先进入预检中心，不会在用户确认前写入账号库；预检按 Codex/Grok、邮箱、等级、来源和“新增/更新/重复/身份冲突”筛选，支持点击整行累积单选/多选、筛选结果全选、逐条选择新增/合并更新/跳过，以及“检测选中”或“一键检测全部”。检测按设置的并发数逐账号实时显示状态和额度，刷新后的 token 仅保留在主进程会话中，确认写入后才保存选中账号及其检测结果。任何无法识别的来源都会单独列出并锁定确认按钮，可手动选择 Codex JSON/AT、Grok JSON/AT、Codex RT 或移动端 RT 重新识别；只有识别成功或显式勾选跳过后才能继续，绝不会无脑写入。
 - 支持直接粘贴混有 Markdown 代码块或说明文字的凭据内容，清洗后提取有效账号。
 - 对齐 Sub2API 的 OpenAI 导入方式：浏览器 PKCE 授权、Codex CLI Refresh Token、OpenAI 移动端 Refresh Token、Codex JSON / 裸 Access Token 批量、Personal Access Token（`at-...`）。RT 支持每行一个、带等级标签、Markdown 转义字符和重复项；兑换后保存旋转的新 RT 及对应 `client_id`。
 - 所有成功导入或粘贴的凭据都会清洗为统一的一账号一 JSON：Codex 保存到程序目录的 `aa/codex`，Grok 保存到 `aa/grok`；文件名为 `邮箱_等级.json`，无等级时使用 `unknown`。外部源文件只参与一次导入，删除或移动源文件不影响账号库。

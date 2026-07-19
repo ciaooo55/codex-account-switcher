@@ -371,6 +371,16 @@ export interface ImportPreviewItem {
   disposition: ImportPreviewDisposition
   detail: string
   suggestedDecision: ImportPreviewDecision
+  test?: ImportPreviewTestSummary | null
+}
+
+export interface ImportPreviewTestSummary {
+  status: DisplayAccountStatus
+  detail: string
+  checkedAt: string
+  httpStatus: number | null
+  refreshed: boolean
+  usage: UsageSummary | null
 }
 
 export interface ImportPreviewUnrecognized extends ImportSourceIssue {
@@ -394,6 +404,17 @@ export interface ImportPreviewResult {
   errors: string[]
   items: ImportPreviewItem[]
   unrecognized: ImportPreviewUnrecognized[]
+}
+
+export interface ImportPreviewTestRequest {
+  sessionId: string
+  itemKeys?: string[]
+}
+
+export interface ImportPreviewBatchTestResult {
+  tested: number
+  cancelled: boolean
+  preview: ImportPreviewResult
 }
 
 export interface ImportPreviewCommitRequest {

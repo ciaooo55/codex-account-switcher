@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import type {
+  AccountStatus,
   CredentialSourceFormat,
+  DisplayAccountStatus,
   GrokCredential,
+  GrokTestResult,
+  ImportPreviewBatchTestResult,
   ImportPreviewCommitRequest,
   ImportPreviewCommitResult,
   ImportPreviewDecision,
@@ -11,8 +15,12 @@ import type {
   ImportPreviewManualMode,
   ImportPreviewRefineRequest,
   ImportPreviewResult,
+  ImportPreviewTestRequest,
+  ImportPreviewTestSummary,
   ImportPreviewUnrecognized,
-  NormalizedCredential
+  NormalizedCredential,
+  TestResult,
+  UsageSummary
 } from '../../shared/types'
 import type { AccountManager, CodexImportPreparation } from './account-manager'
 import type { GrokAccountManager, GrokImportPreparation } from './grok-account-manager'
@@ -25,6 +33,32 @@ type PreparedCredential =
   | { provider: 'codex'; credential: NormalizedCredential }
   | { provider: 'grok'; credential: GrokCredential }
 
+type StoredPreviewTest =
+  | { provider: 'codex'; result: TestResult }
+  | { provider: 'grok'; result: GrokTestResult }
+
+interface ImportPreviewServiceOptions {
+  concurrency: () => Promise<number>
+  testCodex: (
+    credential: NormalizedCredential,
+    signal?: AbortSignal
+  ) => Promise<{ credential: NormalizedCredential; result: TestResult }>
+  testGrok: (
+    credential: GrokCredential,
+    signal?: AbortSignal
+  ) => Promise<{ credential: GrokCredential; result: GrokTestResult }>
+}
+
+interface ImportPreviewTestOptions {
+  signal?: AbortSignal
+  onProgress?: (progress: {
+    done: number
+    total: number
+    runningKeys: string[]
+    updatedItem?: ImportPreviewItem
+  }) => void
+}
+
 interface StoredImportSession {
   createdAt: number
   expiresAt: number
@@ -35,6 +69,42 @@ interface StoredImportSession {
   unrecognized: ImportPreviewUnrecognized[]
   sourceText: Map<string, string>
   credentials: Map<string, PreparedCredential>
+  tests: Map<string, StoredPreviewTest>
+}
+
+function displayStatus(status: AccountStatus): DisplayAccountStatus {
+  if (
+    status === 'untested' ||
+    status === 'valid' ||
+    status === 'quota_exhausted_5h' ||
+    status === 'quota_exhausted_weekly'
+  ) return status
+  if (status === 'quota_exhausted') return 'quota_exhausted_5h'
+  if (['invalid', 'no_permission', 'workspace_deactivated', 'non_refreshable'].includes(status)) {
+    return 'invalid'
+  }
+  return 'unknown_error'
+}
+
+function cloneUsage(usage: UsageSummary | null): UsageSummary | null {
+  if (!usage) return null
+  return {
+    ...usage,
+    windows: usage.windows.map((window) => ({ ...window })),
+    credits: usage.credits ? { ...usage.credits } : usage.credits,
+    spendLimit: usage.spendLimit ? { ...usage.spendLimit } : usage.spendLimit
+  }
+}
+
+function previewTestSummary(result: TestResult | GrokTestResult): ImportPreviewTestSummary {
+  return {
+    status: 'stage' in result ? displayStatus(result.status) : result.status,
+    detail: result.detail,
+    checkedAt: result.checkedAt,
+    httpStatus: result.httpStatus,
+    refreshed: result.refreshed,
+    usage: cloneUsage(result.usage)
+  }
 }
 
 function sameCodexIdentity(left: NormalizedCredential, right: NormalizedCredential): boolean {
@@ -144,7 +214,8 @@ function codexItem(
     ),
     disposition: state.value,
     detail: state.detail,
-    suggestedDecision: state.decision
+    suggestedDecision: state.decision,
+    test: null
   }
 }
 
@@ -180,7 +251,8 @@ function grokItem(
     switchable: false,
     disposition: state.value,
     detail: state.detail,
-    suggestedDecision: state.decision
+    suggestedDecision: state.decision,
+    test: null
   }
 }
 
@@ -192,7 +264,12 @@ function publicSession(id: string, session: StoredImportSession): ImportPreviewR
     sourceCount: session.sourceCount,
     recognized: session.recognized,
     errors: [...session.errors],
-    items: session.items.map((item) => ({ ...item })),
+    items: session.items.map((item) => ({
+      ...item,
+      test: item.test
+        ? { ...item.test, usage: cloneUsage(item.test.usage) }
+        : item.test
+    })),
     unrecognized: session.unrecognized.map((item) => ({ ...item }))
   }
 }
@@ -202,7 +279,8 @@ export class ImportPreviewService {
 
   constructor(
     private readonly codexManager: AccountManager,
-    private readonly grokManager: GrokAccountManager
+    private readonly grokManager: GrokAccountManager,
+    private readonly options?: ImportPreviewServiceOptions
   ) {}
 
   async create(
@@ -267,7 +345,8 @@ export class ImportPreviewService {
       items,
       unrecognized,
       sourceText,
-      credentials
+      credentials,
+      tests: new Map()
     }
     const id = randomUUID()
     this.sessions.set(id, session)
@@ -364,6 +443,135 @@ export class ImportPreviewService {
     return publicSession(request.sessionId, session)
   }
 
+  async test(
+    request: ImportPreviewTestRequest,
+    options: ImportPreviewTestOptions = {}
+  ): Promise<ImportPreviewBatchTestResult> {
+    this.prune()
+    const session = this.sessions.get(request.sessionId)
+    if (!session) throw new Error('导入预检已过期，请重新识别凭证')
+    if (!this.options) throw new Error('当前环境未配置导入凭证检测器')
+    session.expiresAt = Date.now() + SESSION_TTL_MS
+
+    const requestedKeys = request.itemKeys
+      ? [...new Set(request.itemKeys)]
+      : session.items.map((item) => item.key)
+    const availableKeys = new Set(session.items.map((item) => item.key))
+    const unknownKey = requestedKeys.find((key) => !availableKeys.has(key))
+    if (unknownKey) throw new Error('检测列表包含已失效的导入账号，请刷新预览后重试')
+    if (requestedKeys.length === 0) throw new Error('请至少选择一个要检测的账号')
+
+    const [existingCodex, existingGrok, configuredConcurrency] = await Promise.all([
+      this.codexManager.listCredentials(),
+      this.grokManager.listCredentials(),
+      this.options.concurrency()
+    ])
+    const runningKeys = new Set<string>()
+    let cursor = 0
+    let done = 0
+    options.onProgress?.({ done, total: requestedKeys.length, runningKeys: [] })
+
+    const worker = async (): Promise<void> => {
+      while (!options.signal?.aborted) {
+        const key = requestedKeys[cursor++]
+        if (!key) return
+        const stored = session.credentials.get(key)
+        const previousItem = session.items.find((item) => item.key === key)
+        if (!stored || !previousItem) throw new Error('导入预检内容不完整，请重新识别凭证')
+        runningKeys.add(key)
+        options.onProgress?.({ done, total: requestedKeys.length, runningKeys: [...runningKeys] })
+
+        let nextStored: PreparedCredential = stored
+        let storedTest: StoredPreviewTest
+        try {
+          if (stored.provider === 'codex') {
+            const tested = await this.options!.testCodex(stored.credential, options.signal)
+            const planType = tested.result.usage?.planType?.trim()
+            const credential = planType && tested.credential.planType !== planType
+              ? { ...tested.credential, planType }
+              : tested.credential
+            nextStored = { provider: 'codex', credential }
+            storedTest = { provider: 'codex', result: tested.result }
+          } else {
+            const tested = await this.options!.testGrok(stored.credential, options.signal)
+            const planType = tested.result.usage?.planType?.trim()
+            const credential = planType && tested.credential.planType !== planType
+              ? { ...tested.credential, planType }
+              : tested.credential
+            nextStored = { provider: 'grok', credential }
+            storedTest = { provider: 'grok', result: tested.result }
+          }
+        } catch {
+          if (options.signal?.aborted) {
+            runningKeys.delete(key)
+            return
+          }
+          const checkedAt = new Date().toISOString()
+          storedTest = stored.provider === 'codex'
+            ? {
+                provider: 'codex',
+                result: {
+                  accountId: stored.credential.id,
+                  status: 'network_error',
+                  detail: '检测任务异常终止',
+                  checkedAt,
+                  httpStatus: null,
+                  stage: 'local',
+                  refreshed: false,
+                  usage: null
+                }
+              }
+            : {
+                provider: 'grok',
+                result: {
+                  accountId: stored.credential.id,
+                  status: 'unknown_error',
+                  detail: '检测任务异常终止',
+                  checkedAt,
+                  httpStatus: null,
+                  refreshed: false,
+                  usage: null
+                }
+              }
+        }
+
+        if (options.signal?.aborted) {
+          runningKeys.delete(key)
+          return
+        }
+
+        const rebuilt = nextStored.provider === 'codex'
+          ? codexItem(nextStored.credential, existingCodex, 0)
+          : grokItem(nextStored.credential, existingGrok, 0)
+        const updatedItem: ImportPreviewItem = {
+          ...rebuilt,
+          key,
+          test: previewTestSummary(storedTest.result)
+        }
+        session.credentials.set(key, nextStored)
+        session.tests.set(key, storedTest)
+        session.items = session.items.map((item) => item.key === key ? updatedItem : item)
+        session.expiresAt = Date.now() + SESSION_TTL_MS
+        runningKeys.delete(key)
+        done += 1
+        options.onProgress?.({
+          done,
+          total: requestedKeys.length,
+          runningKeys: [...runningKeys],
+          updatedItem: { ...updatedItem, test: updatedItem.test ? { ...updatedItem.test, usage: cloneUsage(updatedItem.test.usage) } : null }
+        })
+      }
+    }
+
+    const concurrency = Math.max(1, Math.min(12, configuredConcurrency))
+    await Promise.all(Array.from({ length: Math.min(concurrency, requestedKeys.length) }, () => worker()))
+    return {
+      tested: done,
+      cancelled: Boolean(options.signal?.aborted),
+      preview: publicSession(request.sessionId, session)
+    }
+  }
+
   async commit(request: ImportPreviewCommitRequest): Promise<ImportPreviewCommitResult> {
     this.prune()
     const session = this.sessions.get(request.sessionId)
@@ -373,6 +581,8 @@ export class ImportPreviewService {
     }
     const codexCredentials: NormalizedCredential[] = []
     const grokCredentials: GrokCredential[] = []
+    const codexTests: TestResult[] = []
+    const grokTests: GrokTestResult[] = []
     let added = 0
     let updated = 0
     let ignored = request.skipUnrecognized === true ? session.unrecognized.length : 0
@@ -384,8 +594,15 @@ export class ImportPreviewService {
       }
       const stored = session.credentials.get(item.key)
       if (!stored) throw new Error('导入预检内容不完整，请重新识别凭证')
-      if (stored.provider === 'codex') codexCredentials.push(stored.credential)
-      else grokCredentials.push(stored.credential)
+      const tested = session.tests.get(item.key)
+      const targetId = item.existingCredentialId ?? stored.credential.id
+      if (stored.provider === 'codex') {
+        codexCredentials.push(stored.credential)
+        if (tested?.provider === 'codex') codexTests.push({ ...tested.result, accountId: targetId })
+      } else {
+        grokCredentials.push(stored.credential)
+        if (tested?.provider === 'grok') grokTests.push({ ...tested.result, accountId: targetId })
+      }
       if (item.disposition === 'new') added += 1
       else if (item.disposition === 'update' || item.disposition === 'conflict') updated += 1
       else ignored += 1
@@ -420,6 +637,14 @@ export class ImportPreviewService {
             errors: [],
             accounts: await this.grokManager.listAccounts()
           })
+    ])
+    await Promise.all([
+      codexTests.length > 0
+        ? this.codexManager.persistImportedTestResults(codexTests)
+        : Promise.resolve(),
+      grokTests.length > 0
+        ? this.grokManager.persistImportedTestResults(grokTests)
+        : Promise.resolve()
     ])
     this.sessions.delete(request.sessionId)
     return {

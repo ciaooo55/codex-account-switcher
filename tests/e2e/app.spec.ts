@@ -293,11 +293,15 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     const importPreview = page.getByRole('dialog', { name: '导入预检' })
     await expect(importPreview).toBeVisible()
     await expect(importPreview).toContainText('新增 2')
+    await importPreview.getByRole('button', { name: '一键检测全部' }).click()
+    await expect(page.getByText('导入凭证检测完成：2 个账号')).toBeVisible()
+    await expect(importPreview.getByText('有效')).toHaveCount(2)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'import-preview-tested.png'), fullPage: true })
     await importPreview.getByRole('button', { name: '确认写入 aa' }).click()
     await expect(page.getByText('导入完成：新增 2，更新 0，跳过 0')).toBeVisible()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
-    expect(await readdir(join(userData, 'aa', 'codex'))).toContain('folder-e2e@example.com_unknown.json')
-    expect(await readdir(join(userData, 'aa', 'grok'))).toContain('grok-e2e@example.com_unknown.json')
+    expect(await readdir(join(userData, 'aa', 'codex'))).toContain('folder-e2e@example.com_plus.json')
+    expect(await readdir(join(userData, 'aa', 'grok'))).toContain('grok-e2e@example.com_supergrok.json')
     expect(await readdir(join(userData, 'grok-accounts'))).toEqual(cpaFilesBeforeImport)
     await unlink(join(importSourceDirectory, 'folder-accounts.md'))
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toBeVisible()
@@ -338,7 +342,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.waitForTimeout(220)
     await accountDeleteConfirmation.getByRole('button', { name: '确认删除' }).click()
     await expect(page.getByRole('row', { name: /folder-e2e@example\.com/ })).toHaveCount(0)
-    expect(await readdir(join(userData, 'aa', 'codex'))).not.toContain('folder-e2e@example.com_unknown.json')
+    expect(await readdir(join(userData, 'aa', 'codex'))).not.toContain('folder-e2e@example.com_plus.json')
 
     const selectionTeamRow = codexRow('team-e2e@example.com')
     const selectionAccountRow = codexRow('e2e@example.com')
@@ -352,6 +356,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByLabel('选择 team-e2e@example.com', { exact: true })).toBeChecked()
     await selectionAccountRow.click()
 
+    const beforeCodexTestAll = requests.length
     await page.getByRole('button', { name: '测试当前页面全部' }).click()
     await expect(page.getByText('检测中').first()).toBeVisible()
     const blockedRestart = await page.evaluate(() => window.codexSwitcher.restartCodex())
@@ -405,7 +410,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(viewport.width - 8)
     expect(menuBounds!.y + menuBounds!.height).toBeLessThanOrEqual(viewport.height - 8)
     await page.keyboard.press('Escape')
-    expect(requests.slice(0, 4).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
+    expect(requests.slice(beforeCodexTestAll).sort()).toEqual(['/compact', '/compact', '/usage', '/usage'])
 
     const beforeUsageOnly = requests.length
     await page.getByRole('button', { name: '仅额度', exact: true }).click()

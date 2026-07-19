@@ -2,7 +2,12 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSnapshot, CodexSwitcherApi, TestProgress } from '../../shared/ipc'
+import type {
+  AppSnapshot,
+  CodexSwitcherApi,
+  ImportPreviewTestProgress,
+  TestProgress
+} from '../../shared/ipc'
 import type {
   ConversationListResult,
   ConversationSummary,
@@ -200,6 +205,7 @@ function importCommit(overrides: Partial<ImportPreviewCommitResult> = {}): Impor
 }
 
 let progressListener: ((progress: TestProgress) => void) | null = null
+let importPreviewProgressListener: ((progress: ImportPreviewTestProgress) => void) | null = null
 const browserStorage = new Map<string, string>()
 
 const localStorageMock: Storage = {
@@ -282,6 +288,31 @@ function api(): CodexSwitcherApi {
       accounts: snapshot.accounts, grokAccounts: [], added: 0, updated: 0, ignored: 0
     }),
     refineImportPreview: vi.fn().mockResolvedValue(importPreview()),
+    testImportPreview: vi.fn().mockImplementation(async (request) => {
+      const preview = importPreview()
+      const selected = request.itemKeys ?? preview.items.map((item) => item.key)
+      return {
+        tested: selected.length,
+        cancelled: false,
+        preview: {
+          ...preview,
+          items: preview.items.map((item) => selected.includes(item.key)
+            ? {
+                ...item,
+                test: {
+                  status: 'valid' as const,
+                  detail: '检测有效',
+                  checkedAt: '2026-07-16T01:00:00.000Z',
+                  httpStatus: 200,
+                  refreshed: false,
+                  usage: null
+                }
+              }
+            : item)
+        }
+      }
+    }),
+    cancelImportPreviewTests: vi.fn().mockResolvedValue(undefined),
     discardImportPreview: vi.fn().mockResolvedValue(undefined),
     importRefreshTokens: vi.fn().mockResolvedValue({
       imported: 1, skipped: 0, errors: [], accounts: snapshot.accounts
@@ -453,6 +484,12 @@ function api(): CodexSwitcherApi {
     onGrokTestProgress: vi.fn().mockImplementation(() => () => undefined),
     onCpaGrokTestProgress: vi.fn().mockImplementation(() => () => undefined),
     onCpaCodexTestProgress: vi.fn().mockImplementation(() => () => undefined),
+    onImportPreviewTestProgress: vi.fn().mockImplementation((listener) => {
+      importPreviewProgressListener = listener
+      return () => {
+        importPreviewProgressListener = null
+      }
+    }),
     onAutoSwitchState: vi.fn().mockImplementation(() => () => undefined),
     onTestProgress: vi.fn().mockImplementation((listener) => {
       progressListener = listener
@@ -466,6 +503,7 @@ function api(): CodexSwitcherApi {
 describe('App', () => {
   beforeEach(() => {
     progressListener = null
+    importPreviewProgressListener = null
     browserStorage.clear()
     Object.defineProperty(window, 'localStorage', {
       configurable: true,
@@ -656,6 +694,76 @@ describe('App', () => {
       decisions: { 'codex:account-import': 'add' }
     }))
     expect(await screen.findByText('导入完成：新增 2，更新 0，跳过 0')).toBeInTheDocument()
+  })
+
+  it('supports additive import selection and tests only the chosen preview rows', async () => {
+    const bridge = api()
+    const first = importPreview().items[0]
+    const second = {
+      ...first,
+      key: 'codex:account-duplicate',
+      credentialId: 'account-duplicate',
+      existingCredentialId: 'existing-duplicate',
+      email: 'duplicate@example.com',
+      disposition: 'duplicate' as const,
+      detail: '账号和凭证内容均已存在',
+      suggestedDecision: 'skip' as const
+    }
+    const preview = importPreview({ recognized: 2, items: [first, second] })
+    vi.mocked(bridge.previewAnyFiles).mockResolvedValue(preview)
+    vi.mocked(bridge.testImportPreview).mockImplementation(async (request) => ({
+      tested: request.itemKeys?.length ?? preview.items.length,
+      cancelled: false,
+      preview: {
+        ...preview,
+        items: preview.items.map((item) => request.itemKeys?.includes(item.key)
+          ? {
+              ...item,
+              test: {
+                status: 'valid' as const,
+                detail: '检测有效',
+                checkedAt: '2026-07-16T01:00:00.000Z',
+                httpStatus: 200,
+                refreshed: false,
+                usage: null
+              }
+            }
+          : item)
+      }
+    }))
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '导入账号' }))
+    fireEvent.click(screen.getByRole('button', { name: '导入多个文件' }))
+    const dialog = await screen.findByRole('dialog', { name: '导入预检' })
+    const firstRow = within(dialog).getByRole('row', { name: /imported@example\.com/ })
+    const secondRow = within(dialog).getByRole('row', { name: /duplicate@example\.com/ })
+
+    expect(within(dialog).getByLabelText('选择导入 imported@example.com')).toBeChecked()
+    expect(within(dialog).getByLabelText('选择导入 duplicate@example.com')).not.toBeChecked()
+    fireEvent.click(secondRow)
+    expect(within(dialog).getByLabelText('选择导入 imported@example.com')).toBeChecked()
+    expect(within(dialog).getByLabelText('选择导入 duplicate@example.com')).toBeChecked()
+    fireEvent.click(firstRow)
+    expect(within(dialog).getByLabelText('选择导入 imported@example.com')).not.toBeChecked()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '检测选中' }))
+    await waitFor(() => expect(bridge.testImportPreview).toHaveBeenCalledWith({
+      sessionId: preview.sessionId,
+      itemKeys: [second.key]
+    }))
+    expect(await within(dialog).findByText('检测有效')).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认写入 aa' }))
+    await waitFor(() => expect(bridge.commitImportPreview).toHaveBeenCalledWith({
+      sessionId: preview.sessionId,
+      decisions: {
+        [first.key]: 'skip',
+        [second.key]: 'replace'
+      }
+    }))
   })
 
   it('shows newly imported Codex accounts even when the previous filter hid untested rows', async () => {

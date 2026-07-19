@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { GrokCredential, ImportPreviewDecision, NormalizedCredential } from '../../shared/types'
+import type {
+  GrokCredential,
+  GrokTestResult,
+  ImportPreviewDecision,
+  NormalizedCredential,
+  TestResult
+} from '../../shared/types'
 import type { AccountManager } from './account-manager'
 import type { GrokAccountManager } from './grok-account-manager'
 import { ImportPreviewService } from './import-preview'
@@ -128,6 +134,89 @@ describe('ImportPreviewService', () => {
       skipUnrecognized: true
     })
     expect(result).toMatchObject({ imported: 0, ignored: 1, skipped: 1 })
+  })
+
+  it('tests preview credentials incrementally without writing them before commit', async () => {
+    const incomingCodex = codex()
+    const refreshedCodex = codex({
+      accessToken: 'rotated-codex-access-secret',
+      refreshToken: 'rotated-codex-refresh-secret',
+      planType: 'team'
+    })
+    const incomingGrok = grok()
+    const codexResult: TestResult = {
+      accountId: incomingCodex.id,
+      status: 'valid',
+      detail: 'Codex 凭证有效',
+      checkedAt: '2026-07-16T01:00:00.000Z',
+      httpStatus: 200,
+      stage: 'deep-test',
+      refreshed: true,
+      usage: {
+        planType: 'team',
+        checkedAt: '2026-07-16T01:00:00.000Z',
+        windows: [{
+          id: 'weekly', label: 'Codex 周额度', usedPercent: 20, remainingPercent: 80,
+          resetAt: '2026-07-23T01:00:00.000Z', resetInSeconds: null, windowSeconds: 604_800
+        }]
+      }
+    }
+    const grokResult: GrokTestResult = {
+      accountId: incomingGrok.id,
+      status: 'quota_exhausted_weekly',
+      detail: 'Grok 周额度已耗尽',
+      checkedAt: '2026-07-16T01:00:01.000Z',
+      httpStatus: 429,
+      refreshed: false,
+      usage: null
+    }
+    const codexManager = {
+      listCredentials: vi.fn().mockResolvedValue([]),
+      listAccounts: vi.fn().mockResolvedValue([]),
+      importPrepared: vi.fn().mockResolvedValue({ imported: 1, skipped: 0, errors: [], accounts: [] }),
+      persistImportedTestResults: vi.fn().mockResolvedValue(undefined)
+    } as unknown as AccountManager
+    const grokManager = {
+      listCredentials: vi.fn().mockResolvedValue([]),
+      listAccounts: vi.fn().mockResolvedValue([]),
+      importPrepared: vi.fn().mockResolvedValue({ imported: 1, skipped: 0, errors: [], accounts: [] }),
+      persistImportedTestResults: vi.fn().mockResolvedValue(undefined)
+    } as unknown as GrokAccountManager
+    const onProgress = vi.fn()
+    const service = new ImportPreviewService(codexManager, grokManager, {
+      concurrency: vi.fn().mockResolvedValue(2),
+      testCodex: vi.fn().mockResolvedValue({ credential: refreshedCodex, result: codexResult }),
+      testGrok: vi.fn().mockResolvedValue({ credential: incomingGrok, result: grokResult })
+    })
+    const preview = await service.create(
+      { credentials: [incomingCodex], errors: [], recognized: 1, sourceCount: 2 },
+      { credentials: [incomingGrok], errors: [], recognized: 1, sourceCount: 2 }
+    )
+
+    const tested = await service.test({ sessionId: preview.sessionId }, { onProgress })
+
+    expect(tested).toMatchObject({ tested: 2, cancelled: false })
+    expect(tested.preview.items.map((item) => item.test?.status)).toEqual(['valid', 'quota_exhausted_weekly'])
+    expect(onProgress.mock.calls.filter(([value]) => value.updatedItem).map(([value]) => value.updatedItem.key)).toHaveLength(2)
+    expect(codexManager.importPrepared).not.toHaveBeenCalled()
+    expect(grokManager.importPrepared).not.toHaveBeenCalled()
+    const serialized = JSON.stringify(tested)
+    for (const secret of [
+      incomingCodex.accessToken,
+      incomingCodex.refreshToken,
+      incomingGrok.accessToken,
+      incomingGrok.refreshToken,
+      refreshedCodex.accessToken,
+      refreshedCodex.refreshToken
+    ]) expect(serialized).not.toContain(secret)
+
+    const decisions = Object.fromEntries(tested.preview.items.map((item) => [item.key, 'add' as const]))
+    await service.commit({ sessionId: preview.sessionId, decisions })
+
+    expect(codexManager.importPrepared).toHaveBeenCalledWith(expect.objectContaining({ credentials: [refreshedCodex] }))
+    expect(grokManager.importPrepared).toHaveBeenCalledWith(expect.objectContaining({ credentials: [incomingGrok] }))
+    expect(codexManager.persistImportedTestResults).toHaveBeenCalledWith([codexResult])
+    expect(grokManager.persistImportedTestResults).toHaveBeenCalledWith([grokResult])
   })
 
   it('reparses an unrecognized pasted source only after an explicit manual mode is selected', async () => {
