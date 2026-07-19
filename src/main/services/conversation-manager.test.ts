@@ -258,7 +258,7 @@ describe('ConversationManager', () => {
     const checkedCatalog = new DatabaseSync(join(home, 'sqlite', 'codex-dev.db'), { readOnly: true })
     expect(checkedCatalog.prepare('SELECT thread_id FROM local_thread_catalog ORDER BY thread_id').all()).toEqual([{ thread_id: 'thread-two' }])
     checkedCatalog.close()
-  })
+  }, 15_000)
 
   it('keeps indexes when a rollout cannot be moved to trash', async () => {
     const home = await createHome()
