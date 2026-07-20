@@ -950,27 +950,20 @@ describe('App', () => {
     expect(within(preview).getByRole('button', { name: '确认写入 aa' })).toBeEnabled()
   })
 
-  it('persists an account alias, group, tags and note from the selection toolbar', async () => {
+  it('persists an account group from the library overview', async () => {
     const bridge = api()
     window.codexSwitcher = bridge
     render(<App />)
     fireEvent.click(await screen.findByRole('row', { name: /person@example\.com/ }))
-    fireEvent.click(screen.getByRole('button', { name: '标签与分组' }))
+    fireEvent.click(screen.getByRole('button', { name: '分组 (1)' }))
 
-    const dialog = await screen.findByRole('dialog', { name: '账号标签与分组' })
-    fireEvent.change(within(dialog).getByLabelText('账号别名'), { target: { value: '主力 Plus' } })
-    fireEvent.change(within(dialog).getByLabelText(/分组/), { target: { value: '日常' } })
-    fireEvent.change(within(dialog).getByLabelText(/标签/), { target: { value: '稳定, 高优先级' } })
-    fireEvent.change(within(dialog).getByLabelText('备注'), { target: { value: '本机备注' } })
+    const dialog = await screen.findByRole('dialog', { name: '账号分组' })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: '账号分组' }), { target: { value: '日常' } })
     fireEvent.click(within(dialog).getByRole('button', { name: '保存' }))
 
     await waitFor(() => expect(bridge.updateAccountMetadata).toHaveBeenCalledWith({
       accountIds: ['account-a'],
-      alias: '主力 Plus',
       group: '日常',
-      tags: ['稳定', '高优先级'],
-      tagMode: 'replace',
-      note: '本机备注'
     }))
   })
 

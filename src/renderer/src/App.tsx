@@ -24,7 +24,7 @@ import {
   Settings,
   Square,
   Sun,
-  Tags,
+  UsersRound,
   TestTube2,
   TimerReset,
   Trash2,
@@ -249,12 +249,10 @@ function Quota({
 }
 
 function AccountMetadataChips({ account }: { account: AccountSummary }): React.JSX.Element | null {
-  if (!account.group && !(account.tags?.length)) return null
+  if (!account.group) return null
   return (
     <div className="account-metadata-chips">
       {account.group && <span className="account-group-chip">{account.group}</span>}
-      {(account.tags ?? []).slice(0, 3).map((tag) => <span key={tag} className="account-tag-chip">{tag}</span>)}
-      {(account.tags?.length ?? 0) > 3 && <span className="account-tag-more">+{account.tags!.length - 3}</span>}
     </div>
   )
 }
@@ -808,7 +806,7 @@ export function App(): React.JSX.Element {
       await window.codexSwitcher.updateAccountMetadata(request)
       await reload(true, activeView)
       setMetadataAccounts(null)
-      setMessage({ kind: 'ok', text: `已保存 ${request.accountIds.length} 个账号的别名、标签或分组` })
+      setMessage({ kind: 'ok', text: `已保存 ${request.accountIds.length} 个账号的分组` })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -1205,6 +1203,15 @@ export function App(): React.JSX.Element {
         />
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
         <div className="library-path"><span>本地账号目录</span><strong title={`${snapshot.importDirectory}\\codex`}>{snapshot.importDirectory}\\codex</strong></div>
+        <div className="library-account-actions">
+          <button
+            onClick={() => openMetadataEditor([...selected])}
+            disabled={busy || selected.size === 0}
+            title={selected.size === 0 ? '先选择账号，再编辑分组' : `编辑 ${selected.size} 个账号的分组`}
+          >
+            <UsersRound size={16} />分组{selected.size > 0 ? ` (${selected.size})` : ''}
+          </button>
+        </div>
       </section>
       <StatusFilterStrip
         value={statusFilter}
@@ -1289,9 +1296,6 @@ export function App(): React.JSX.Element {
         </button>
         <button onClick={() => setConversationOpen(true)} disabled={busy}>
           <MessagesSquare size={16} />对话管理
-        </button>
-        <button onClick={() => openMetadataEditor([...selected])} disabled={busy || selected.size === 0}>
-          <Tags size={16} />标签与分组
         </button>
         <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Trash2 size={16} />删除选中
@@ -1679,7 +1683,7 @@ export function App(): React.JSX.Element {
             <Download size={15} />导出此账号
           </button>
           <button role="menuitem" onClick={() => contextAction(() => openMetadataEditor([contextMenu.account.id]))}>
-            <Tags size={15} />编辑别名与标签
+            <UsersRound size={15} />编辑分组
           </button>
           <button role="menuitem" onClick={() => contextAction(async () => {
             const result = await window.codexSwitcher.revealSource(contextMenu.account.id)
