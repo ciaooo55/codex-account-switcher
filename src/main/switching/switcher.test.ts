@@ -53,9 +53,14 @@ async function fixture() {
 }
 
 describe('CredentialSwitcher', () => {
-  it('switches to a custom API key provider and keeps unrelated provider definitions', async () => {
+    it('switches to a custom API key provider and keeps unrelated provider definitions', async () => {
     const paths = await fixture()
-    const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      fetchModels: async () => ['grok-4.5', 'gpt-custom', 'mimo-v2.5-pro']
+    })
     const historyPath = join(paths.dir, 'sessions', 'rollout-history.jsonl')
     const history = '{"type":"session_meta","payload":{"model_provider":"openai"}}\n'
     await mkdir(join(paths.dir, 'sessions'))
@@ -68,6 +73,7 @@ describe('CredentialSwitcher', () => {
     })
 
     expect(result.ok).toBe(true)
+    expect(result.message).toContain('已同步 3 个第三方模型')
     expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toEqual({
       auth_mode: 'apikey',
       OPENAI_API_KEY: 'custom-secret-key'
@@ -75,12 +81,49 @@ describe('CredentialSwitcher', () => {
     const config = await readFile(paths.configPath, 'utf8')
     expect(config).toContain('model_provider = "openai"')
     expect(config).toContain('openai_base_url = "http://127.0.0.1:18317/v1"')
+    expect(config).toContain('model_catalog_json =')
+    expect(config).toContain('model-catalogs')
     expect(config).not.toContain('[model_providers.codex_account_switcher]')
     expect(config).toContain('[model_providers.custom]')
+    const catalog = JSON.parse(
+      await readFile(join(paths.dir, 'model-catalogs', 'account-switcher.json'), 'utf8')
+    ) as { models: Array<{ slug: string; visibility: string }> }
+    expect(catalog.models.map((model) => model.slug)).toEqual([
+      'gpt-custom',
+      'grok-4.5',
+      'mimo-v2.5-pro'
+    ])
+    expect(catalog.models.every((model) => model.visibility === 'list')).toBe(true)
     expect(await readFile(historyPath, 'utf8')).toBe(history)
     expect(await readFile(result.backupPath!, 'utf8')).not.toContain('api-secret')
   })
-  it('atomically writes ChatGPT auth, patches config and keeps encrypted backups', async () => {
+
+  it('still switches when /v1/models fails and writes a single-model catalog', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      fetchModels: async () => {
+        throw new Error('network down')
+      }
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'grok-4.5',
+      apiKey: 'custom-secret-key'
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('模型列表仅含当前模型')
+    const catalog = JSON.parse(
+      await readFile(join(paths.dir, 'model-catalogs', 'account-switcher.json'), 'utf8')
+    ) as { models: Array<{ slug: string }> }
+    expect(catalog.models.map((model) => model.slug)).toEqual(['grok-4.5'])
+  })
+
+    it('atomically writes ChatGPT auth, patches config and keeps encrypted backups', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
 

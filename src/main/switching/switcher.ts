@@ -21,6 +21,12 @@ import {
   restoreManagedConfig,
   type ManagedConfigSnapshot
 } from './config'
+import {
+  buildModelCatalog,
+  fetchOpenAiCompatibleModelIds,
+  modelCatalogPath,
+  writeModelCatalogFile
+} from '../services/model-catalog'
 
 interface BackupPayload {
   createdAt: string
@@ -41,6 +47,8 @@ interface SwitcherOptions {
   backupRetention: number
   cipher: SecretCipher
   validate?: (paths: { authPath: string; configPath: string }) => Promise<boolean>
+  catalogTimeoutMs?: number
+  fetchModels?: (input: { baseUrl: string; apiKey: string }) => Promise<string[]>
 }
 
 async function readOptional(path: string): Promise<string | null> {
@@ -209,7 +217,36 @@ export class CredentialSwitcher {
     const previousConfig = (await readOptional(this.options.configPath)) ?? ''
     let backupPath: string | null = null
     try {
-      const appliedConfig = applyCustomApiConfig(previousConfig, input)
+      const catalogFile = modelCatalogPath(dirname(this.options.configPath))
+      let remoteModels: string[] = []
+      let catalogNote = ''
+      try {
+        remoteModels = this.options.fetchModels
+          ? await this.options.fetchModels({ baseUrl: input.baseUrl, apiKey: input.apiKey })
+          : await fetchOpenAiCompatibleModelIds({
+              baseUrl: input.baseUrl,
+              apiKey: input.apiKey,
+              timeoutMs: this.options.catalogTimeoutMs
+            })
+        catalogNote =
+          remoteModels.length > 0
+            ? `，已同步 ${remoteModels.length} 个第三方模型到桌面模型列表`
+            : '，模型列表仅含当前模型（/v1/models 为空）'
+      } catch (error) {
+        catalogNote =
+          error instanceof Error
+            ? `，模型列表仅含当前模型（${error.message}）`
+            : '，模型列表仅含当前模型（拉取 /v1/models 失败）'
+      }
+
+      const catalog = buildModelCatalog(remoteModels, input.model)
+      await writeModelCatalogFile(catalogFile, catalog)
+
+      const appliedConfig = applyCustomApiConfig(previousConfig, {
+        baseUrl: input.baseUrl,
+        model: input.model,
+        modelCatalogPath: catalogFile
+      })
       backupPath = await this.writeBackup({
         createdAt: new Date().toISOString(),
         authText: previousAuth,
@@ -218,12 +255,18 @@ export class CredentialSwitcher {
       const authText = `${JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: input.apiKey }, null, 2)}\n`
       await writeAtomic(this.options.authPath, authText)
       await writeAtomic(this.options.configPath, appliedConfig.text)
-      const written = JSON.parse(await readFile(this.options.authPath, 'utf8')) as { OPENAI_API_KEY?: unknown }
+      const written = JSON.parse(await readFile(this.options.authPath, 'utf8')) as {
+        OPENAI_API_KEY?: unknown
+      }
       if (typeof written.OPENAI_API_KEY !== 'string' || !written.OPENAI_API_KEY.trim()) {
         throw new Error('API Key 配置校验失败')
       }
       await this.pruneBackups()
-      return { ok: true, message: '已切换到自定义 API 模式', backupPath }
+      return {
+        ok: true,
+        message: `已切换到自定义 API 模式${catalogNote}`,
+        backupPath
+      }
     } catch (error) {
       try {
         if (previousAuth === null) await rm(this.options.authPath, { force: true })
@@ -234,7 +277,10 @@ export class CredentialSwitcher {
       }
       return {
         ok: false,
-        message: error instanceof Error ? `自定义 API 切换失败，已回滚：${error.message}` : '自定义 API 切换失败，已回滚',
+        message:
+          error instanceof Error
+            ? `自定义 API 切换失败，已回滚：${error.message}`
+            : '自定义 API 切换失败，已回滚',
         backupPath
       }
     }

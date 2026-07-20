@@ -5,6 +5,7 @@ export type ManagedConfigKey =
   | 'openai_base_url'
   | 'model'
   | 'model_reasoning_effort'
+  | 'model_catalog_json'
   | 'cli_auth_credentials_store'
 
 export type ManagedConfigSnapshot = Record<ManagedConfigKey, string | null> & {
@@ -16,6 +17,7 @@ const MANAGED_KEYS: ManagedConfigKey[] = [
   'openai_base_url',
   'model',
   'model_reasoning_effort',
+  'model_catalog_json',
   'cli_auth_credentials_store'
 ]
 
@@ -102,6 +104,7 @@ export function applyChatGptConfig(text: string): {
       openai_base_url: null,
       model: null,
       model_reasoning_effort: null,
+      model_catalog_json: null,
       cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
     })
   }
@@ -135,7 +138,7 @@ function removeProviderSection(text: string, providerId: string): string {
 
 export function applyCustomApiConfig(
   text: string,
-  input: { baseUrl: string; model: string }
+  input: { baseUrl: string; model: string; modelCatalogPath: string }
 ): { text: string; snapshot: ManagedConfigSnapshot } {
   const snapshot = snapshotManagedConfig(text)
   const withoutPrevious = removeProviderSection(text, OWNED_PROVIDER_ID).trimEnd()
@@ -145,6 +148,7 @@ export function applyCustomApiConfig(
     openai_base_url: `openai_base_url = ${tomlString(baseUrl)}`,
     model: `model = ${tomlString(input.model)}`,
     model_reasoning_effort: null,
+    model_catalog_json: `model_catalog_json = ${tomlString(input.modelCatalogPath)}`,
     cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
   }).trimEnd()
   return { snapshot, text: `${managed}\n` }

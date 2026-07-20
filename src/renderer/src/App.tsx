@@ -1734,7 +1734,7 @@ export function App(): React.JSX.Element {
             </div>
             <section className="custom-api-panel" aria-label="自定义 API">
               <div className="section-heading">
-                <div><strong>自定义 API</strong><span>地址和模型会记忆，Key 使用 Windows DPAPI 加密且不会回显</span></div>
+                <div><strong>自定义 API</strong><span>地址和模型会记忆；切换时同步 /v1/models 到 model_catalog_json，Key 使用 Windows DPAPI 加密且不会回显</span></div>
                 <span className={`saved-secret ${snapshot.customApi.hasApiKey ? 'ready' : ''}`}>{snapshot.customApi.hasApiKey ? 'Key 已保存' : '未保存 Key'}</span>
               </div>
               <label>API 地址<input value={settingsDraft.customApiBaseUrl} onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiBaseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
@@ -1753,7 +1753,7 @@ export function App(): React.JSX.Element {
                 await reload()
                 if (await requestConfirmation({
                   title: '重启 Codex 使 API 生效',
-                  message: '自定义 API 已保存。立即重启后，新请求会使用刚刚保存的地址和模型。',
+                  message: '自定义 API 已保存。立即重启后，新请求与模型下拉列表会使用刚刚同步的模型目录。',
                   detail: '历史对话仍保留在原来的 openai 分组，不会被移除或改写。',
                   confirmLabel: '立即重启',
                   cancelLabel: '稍后重启',
