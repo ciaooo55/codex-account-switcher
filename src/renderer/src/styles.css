@@ -106,12 +106,22 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .status-filter-strip button:first-child { border-left: 1px solid #2b353d; }
 .status-filter-strip button:hover:not(:disabled) { color: #dfe7ec; background: #1d252b; border-color: #46535c; }
 .status-filter-strip button.active { color: #f2f7fa; background: #24313a; border-color: #51758b; box-shadow: inset 0 -2px #60acd2; }
+.status-filter-strip button:hover:not(:disabled) { transform: none; box-shadow: inset 0 -2px rgba(96,172,210,.42); }
+.status-filter-strip .filter-valid.active { color: #bcebc8; background: #193124; border-color: #3f7854; box-shadow: inset 0 -2px #58bd78; }
+.status-filter-strip .filter-quota_exhausted.active, .status-filter-strip .filter-quota_exhausted_5h.active, .status-filter-strip .filter-quota_exhausted_weekly.active { color: #f0d292; background: #302817; border-color: #78622c; box-shadow: inset 0 -2px #d1a33f; }
+.status-filter-strip .filter-invalid.active { color: #f2b3ae; background: #352020; border-color: #804541; box-shadow: inset 0 -2px #d46c65; }
 .status-filter-strip button.active::after { display: none; }
 .status-filter-strip button span { font-size: 11px; white-space: nowrap; }
 .status-filter-strip button strong { min-width: 22px; color: #b9c6ce; font-size: 11px; text-align: right; }
 .status-filter-strip .filter-valid strong { color: #72dc7f; }
 .status-filter-strip .filter-quota_exhausted strong, .status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #e3b341; }
 .status-filter-strip .filter-invalid strong { color: #ff8d85; }
+.category-context-menu { width: 224px; }
+.category-context-menu .context-account { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.category-context-menu .context-account span { color: #7f8d97; font-size: 9px; font-weight: 500; }
+.category-context-menu .context-test { color: #8dc9e8; }
+.category-context-menu .context-enable { color: #8bd3a1; }
+.category-context-menu .context-disable { color: #e4c178; }
 .search-field { display: flex; align-items: center; gap: 8px; min-width: 260px; max-width: 620px; flex: 1; color: #75838c; background: #141a1e; border: 1px solid #303b43; border-radius: 5px; padding-left: 10px; }
 .search-field input { flex: 1; border: 0; background: transparent; padding-left: 0; }
 .search-field input:focus { outline: 0; }
@@ -644,6 +654,9 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .account-context-menu button:hover:not(:disabled) { background: #eaf0f2; }
 .context-account { color: #687680; border-color: #d9e0e3; }
 .account-context-menu .context-danger { color: #a9403e; border-color: #d9e0e3; }
+.category-context-menu .context-test { color: #347899; }
+.category-context-menu .context-enable { color: #32704a; }
+.category-context-menu .context-disable { color: #8a6518; }
 .danger-button { color: #a03b39; border-color: #deb7b5; background: #faeeee; }
 .danger-button:hover:not(:disabled) { color: #8f302f; border-color: #cf9693; background: #f6e2e1; }
 
@@ -668,6 +681,9 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .status-filter-strip button:first-child { border-left-color: #d1d9dd; }
 .status-filter-strip button:hover:not(:disabled) { color: #2d3a42; background: #ebf0f2; border-color: #b9c5cb; }
 .status-filter-strip button.active { color: #2c4654; background: #e8f1f5; border-color: #a9c6d5; box-shadow: inset 0 -2px #5594b3; }
+.status-filter-strip .filter-valid.active { color: #245f3c; background: #e7f4eb; border-color: #9bc9aa; box-shadow: inset 0 -2px #4f9c68; }
+.status-filter-strip .filter-quota_exhausted.active, .status-filter-strip .filter-quota_exhausted_5h.active, .status-filter-strip .filter-quota_exhausted_weekly.active { color: #76550f; background: #f8f1df; border-color: #d9c27f; box-shadow: inset 0 -2px #b88a27; }
+.status-filter-strip .filter-invalid.active { color: #8b3532; background: #f8e9e8; border-color: #d6aaa7; box-shadow: inset 0 -2px #bc5b56; }
 .status-filter-strip button strong { color: #53616a; }
 .status-filter-strip .filter-valid strong { color: #2d7a4c; }
 .status-filter-strip .filter-quota_exhausted strong, .status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #986b14; }

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AccountStatusSyncPatch,
   CodexSwitcherApi,
   CpaCodexTestProgress,
   GrokTestProgress,
@@ -114,6 +115,11 @@ const api: CodexSwitcherApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: CpaCodexTestProgress): void => listener(progress)
     ipcRenderer.on(ipcChannels.cpaCodexTestProgress, wrapped)
     return () => ipcRenderer.removeListener(ipcChannels.cpaCodexTestProgress, wrapped)
+  },
+  onAccountStatusSync: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, patch: AccountStatusSyncPatch): void => listener(patch)
+    ipcRenderer.on(ipcChannels.accountStatusSync, wrapped)
+    return () => ipcRenderer.removeListener(ipcChannels.accountStatusSync, wrapped)
   },
   onImportPreviewTestProgress: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: ImportPreviewTestProgress): void => listener(progress)

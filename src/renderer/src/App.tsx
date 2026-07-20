@@ -34,6 +34,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AccountStatusSyncPatch,
   AppSnapshot,
   AppSnapshotPatch,
   AppSnapshotScope,
@@ -45,6 +46,7 @@ import type {
   AccountMetadataUpdateRequest,
   AppSettings,
   CodexTestMode,
+  CpaCodexAccountSummary,
   DisplayAccountStatus,
   CredentialExportFormat,
   CredentialExportLayout,
@@ -53,9 +55,12 @@ import type {
   ImportPreviewManualMode,
   ImportPreviewResult,
   LibraryHealthReport,
+  GrokAccountSummary,
+  GrokTestResult,
   RefreshTokenClientMode,
   ScanResult,
   SessionRepairPreview,
+  TestResult,
   UsageWindow
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
@@ -78,7 +83,7 @@ import { ConversationManagerDialog } from './components/ConversationManagerDialo
 import { ImportPreviewDialog } from './components/ImportPreviewDialog'
 import { LibraryHealthDialog } from './components/LibraryHealthDialog'
 import { CurrentAccountOverview } from './components/CurrentAccountOverview'
-import { StatusFilterStrip } from './components/StatusFilterStrip'
+import { StatusFilterStrip, type StatusCategoryAction } from './components/StatusFilterStrip'
 import { CpaPage, GrokLibraryPage } from './GrokPage'
 import { useDialogFocus } from './hooks/useDialogFocus'
 import { useConfirmation } from './hooks/useConfirmation'
@@ -88,6 +93,48 @@ import { useVirtualTableRows } from './hooks/useVirtualTableRows'
 type ThemeMode = 'light' | 'dark'
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
 const THEME_STORAGE_KEY = 'codex-account-switcher/theme'
+
+function applyCodexStatusUpdates<T extends AccountSummary | CpaCodexAccountSummary>(accounts: readonly T[], results: readonly TestResult[] | undefined): T[] {
+  if (!results?.length) return accounts as T[]
+  const updates = new Map(results.map((result) => [result.accountId, result]))
+  return accounts.map((account) => {
+    const result = updates.get(account.id)
+    return result ? {
+      ...account,
+      status: result.status,
+      detail: result.detail,
+      lastCheckedAt: result.checkedAt,
+      usage: result.usage,
+      planType: result.usage?.planType?.trim() || account.planType
+    } : account
+  })
+}
+
+function applyGrokStatusUpdates(accounts: readonly GrokAccountSummary[], results: readonly GrokTestResult[] | undefined): GrokAccountSummary[] {
+  if (!results?.length) return accounts as GrokAccountSummary[]
+  const updates = new Map(results.map((result) => [result.accountId, result]))
+  return accounts.map((account) => {
+    const result = updates.get(account.id)
+    return result ? {
+      ...account,
+      status: result.status,
+      detail: result.detail,
+      lastCheckedAt: result.checkedAt,
+      usage: result.usage,
+      planType: result.usage?.planType?.trim() || account.planType
+    } : account
+  })
+}
+
+function applyStatusSync(current: AppSnapshot, patch: AccountStatusSyncPatch): AppSnapshot {
+  return {
+    ...current,
+    accounts: applyCodexStatusUpdates(current.accounts, patch.accounts),
+    cpaCodexAccounts: applyCodexStatusUpdates(current.cpaCodexAccounts, patch.cpaCodexAccounts),
+    grokAccounts: applyGrokStatusUpdates(current.grokAccounts, patch.grokAccounts),
+    cpaGrokAccounts: applyGrokStatusUpdates(current.cpaGrokAccounts, patch.cpaGrokAccounts)
+  }
+}
 
 function initialTheme(): ThemeMode {
   try {
@@ -350,6 +397,9 @@ export function App(): React.JSX.Element {
         return { ...current, cpaCodexAccounts, cpaCodexTesting }
       })
     )
+    const stopAccountStatusSync = window.codexSwitcher.onAccountStatusSync((patch) => {
+      setSnapshot((current) => current ? applyStatusSync(current, patch) : current)
+    })
     const stopCpaGrokTesting = window.codexSwitcher.onCpaGrokTestProgress((cpaGrokTesting) =>
       setSnapshot((current) => {
         if (!current) return current
@@ -380,6 +430,7 @@ export function App(): React.JSX.Element {
       stopUpdates()
       stopGrokTesting()
       stopCpaCodexTesting()
+      stopAccountStatusSync()
       stopCpaGrokTesting()
       stopImportPreviewTesting()
       stopAutoSwitch()
@@ -988,6 +1039,28 @@ export function App(): React.JSX.Element {
     }
   }
 
+  const handleCodexCategoryAction = (
+    action: StatusCategoryAction,
+    category: DisplayAccountStatus | ''
+  ): void => {
+    const categoryAccounts = (snapshot?.accounts ?? []).filter((account) =>
+      !category || displayStatus(account.status) === category
+    )
+    const ids = categoryAccounts.map((account) => account.id)
+    if (action === 'select') {
+      setSelected(new Set(ids))
+      return
+    }
+    if (action === 'test') {
+      void run(
+        () => window.codexSwitcher.testAccounts(ids, testMode),
+        `${category ? STATUS_LABELS[category] : '全部账号'} ${ids.length} 个检测完成`
+      )
+      return
+    }
+    if (action === 'delete') void deleteAccounts(ids)
+  }
+
   const openContextMenu = (event: React.MouseEvent, account: AccountSummary): void => {
     event.preventDefault()
     setSelected(new Set([account.id]))
@@ -1139,6 +1212,8 @@ export function App(): React.JSX.Element {
         total={snapshot.accounts.length}
         onChange={setStatusFilter}
         label="Codex 账号状态"
+        onAction={handleCodexCategoryAction}
+        disabled={busy || snapshot.testing.active}
       />
 
       <div className="toolbar codex-toolbar">

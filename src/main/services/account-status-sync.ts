@@ -160,7 +160,7 @@ async function reconcile<TResult extends SyncTestResult>(
   rightCredentials: readonly CredentialIdentity[],
   leftStore: StatusStoreLike<TResult>,
   rightStore: StatusStoreLike<TResult>
-): Promise<{ leftUpdated: number; rightUpdated: number }> {
+): Promise<{ leftUpdated: number; rightUpdated: number; leftResults: TResult[]; rightResults: TResult[] }> {
   const [leftStatuses, rightStatuses] = await Promise.all([leftStore.getAll(), rightStore.getAll()])
   const rightIndex = buildIndex(rightCredentials)
   const leftUpdates = new Map<string, TResult>()
@@ -186,7 +186,12 @@ async function reconcile<TResult extends SyncTestResult>(
     leftStore.setMany([...leftUpdates.values()]),
     rightStore.setMany([...rightUpdates.values()])
   ])
-  return { leftUpdated: leftUpdates.size, rightUpdated: rightUpdates.size }
+  return {
+    leftUpdated: leftUpdates.size,
+    rightUpdated: rightUpdates.size,
+    leftResults: [...leftUpdates.values()],
+    rightResults: [...rightUpdates.values()]
+  }
 }
 
 export function reconcileCodexStatuses(
@@ -194,7 +199,7 @@ export function reconcileCodexStatuses(
   cpaCredentials: readonly NormalizedCredential[],
   libraryStore: StatusStoreLike<TestResult>,
   cpaStore: StatusStoreLike<TestResult>
-): Promise<{ leftUpdated: number; rightUpdated: number }> {
+): Promise<{ leftUpdated: number; rightUpdated: number; leftResults: TestResult[]; rightResults: TestResult[] }> {
   return reconcile(
     libraryCredentials.map(asCodexIdentity),
     cpaCredentials.map(asCodexIdentity),
@@ -208,7 +213,7 @@ export function reconcileGrokStatuses(
   cpaCredentials: readonly GrokCredential[],
   libraryStore: StatusStoreLike<GrokTestResult>,
   cpaStore: StatusStoreLike<GrokTestResult>
-): Promise<{ leftUpdated: number; rightUpdated: number }> {
+): Promise<{ leftUpdated: number; rightUpdated: number; leftResults: GrokTestResult[]; rightResults: GrokTestResult[] }> {
   return reconcile(
     libraryCredentials.map(asGrokIdentity),
     cpaCredentials.map(asGrokIdentity),

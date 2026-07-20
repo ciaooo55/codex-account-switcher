@@ -22,6 +22,7 @@ import type {
   CustomApiProfileSummary,
   GrokAccountSummary,
   GrokBatchTestResult,
+  GrokTestResult,
   GrokScanResult,
   LibraryImportResult,
   ImportPreviewCommitRequest,
@@ -39,7 +40,8 @@ import type {
   RefreshTokenClientMode,
   SessionRepairPreview,
   SessionRepairResult,
-  SwitchResult
+  SwitchResult,
+  TestResult
 } from './types'
 
 export interface TestProgress {
@@ -64,6 +66,13 @@ export interface CpaCodexTestProgress {
   total: number
   runningIds: string[]
   updatedAccount: CpaCodexAccountSummary | null
+}
+
+export interface AccountStatusSyncPatch {
+  accounts?: TestResult[]
+  cpaCodexAccounts?: TestResult[]
+  grokAccounts?: GrokTestResult[]
+  cpaGrokAccounts?: GrokTestResult[]
 }
 
 export type UpdateStatus =
@@ -198,6 +207,7 @@ export interface CodexSwitcherApi {
   onGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
   onCpaGrokTestProgress(listener: (progress: GrokTestProgress) => void): () => void
   onCpaCodexTestProgress(listener: (progress: CpaCodexTestProgress) => void): () => void
+  onAccountStatusSync(listener: (patch: AccountStatusSyncPatch) => void): () => void
   onImportPreviewTestProgress(listener: (progress: ImportPreviewTestProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
   onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
@@ -264,6 +274,7 @@ export const ipcChannels = {
   cpaCodexDelete: 'cpa-codex:delete',
   cpaCodexSetEnabled: 'cpa-codex:set-enabled',
   cpaCodexTestProgress: 'cpa-codex:test-progress',
+  accountStatusSync: 'accounts:status-sync',
   grokSetEnabled: 'grok:set-enabled',
   restart: 'codex:restart',
   settingsUpdate: 'settings:update',

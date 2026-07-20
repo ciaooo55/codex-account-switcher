@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
+  AccountStatusSyncPatch,
   AppSnapshot,
   CodexSwitcherApi,
   ImportPreviewTestProgress,
@@ -205,6 +206,7 @@ function importCommit(overrides: Partial<ImportPreviewCommitResult> = {}): Impor
 }
 
 let progressListener: ((progress: TestProgress) => void) | null = null
+let accountStatusSyncListener: ((patch: AccountStatusSyncPatch) => void) | null = null
 let importPreviewProgressListener: ((progress: ImportPreviewTestProgress) => void) | null = null
 const browserStorage = new Map<string, string>()
 
@@ -484,6 +486,10 @@ function api(): CodexSwitcherApi {
     onGrokTestProgress: vi.fn().mockImplementation(() => () => undefined),
     onCpaGrokTestProgress: vi.fn().mockImplementation(() => () => undefined),
     onCpaCodexTestProgress: vi.fn().mockImplementation(() => () => undefined),
+    onAccountStatusSync: vi.fn().mockImplementation((listener) => {
+      accountStatusSyncListener = listener
+      return () => { accountStatusSyncListener = null }
+    }),
     onImportPreviewTestProgress: vi.fn().mockImplementation((listener) => {
       importPreviewProgressListener = listener
       return () => {
@@ -503,6 +509,7 @@ function api(): CodexSwitcherApi {
 describe('App', () => {
   beforeEach(() => {
     progressListener = null
+    accountStatusSyncListener = null
     importPreviewProgressListener = null
     browserStorage.clear()
     Object.defineProperty(window, 'localStorage', {
@@ -629,6 +636,18 @@ describe('App', () => {
     expect(bridge.testCpaGrokAccounts).not.toHaveBeenCalled()
   })
 
+  it('tests only the account status category opened from the filter context menu', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: '有效 1' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '测试该分类' }))
+
+    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a'], 'full'))
+  })
+
   it('manages CPA Codex files independently and supports additive row selection', async () => {
     const bridge = api()
     const cpaSnapshot: AppSnapshot = {
@@ -655,6 +674,9 @@ describe('App', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: /^CPA 账号管理/ }))
+    fireEvent.contextMenu(await screen.findByRole('button', { name: '有效 1' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '全部停用 .json.0' }))
+    await waitFor(() => expect(bridge.setCpaCodexEnabled).toHaveBeenCalledWith(['c'.repeat(64)], false))
     fireEvent.click(screen.getByRole('button', { name: '同步全部到 aa' }))
     await waitFor(() => expect(bridge.syncCpaCodexToLibrary).toHaveBeenCalledWith(undefined))
     const row = await screen.findByRole('row', { name: /cpa-codex@example\.com/ })
@@ -1671,5 +1693,34 @@ describe('App', () => {
 
     expect((await screen.findAllByText('已失效')).length).toBeGreaterThan(0)
     expect(screen.getByText('凭据已失效')).toBeInTheDocument()
+  })
+
+  it('applies linked CPA status changes without reloading the page', async () => {
+    const bridge = api()
+    const cpaAccount = { ...snapshot.accounts[0], id: 'cpa-linked', email: 'linked-cpa@example.com', disabled: false }
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({ ...snapshot, cpaCodexAccounts: [cpaAccount] })
+    vi.mocked(bridge.getPageSnapshot).mockResolvedValue({ cpaCodexAccounts: [cpaAccount] })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+    fireEvent.click(screen.getByRole('button', { name: /^CPA 账号管理/ }))
+    await screen.findByText('linked-cpa@example.com')
+    vi.mocked(bridge.getPageSnapshot).mockClear()
+
+    accountStatusSyncListener?.({
+      cpaCodexAccounts: [{
+        accountId: cpaAccount.id,
+        status: 'quota_exhausted_weekly',
+        detail: '周额度已耗尽',
+        checkedAt: '2026-07-20T10:00:00.000Z',
+        httpStatus: 200,
+        stage: 'usage',
+        refreshed: false,
+        usage: null
+      }]
+    })
+
+    await waitFor(() => expect(screen.getAllByText('周额度耗尽').length).toBeGreaterThan(0))
+    expect(bridge.getPageSnapshot).not.toHaveBeenCalled()
   })
 })

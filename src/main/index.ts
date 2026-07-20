@@ -18,6 +18,7 @@ import electronUpdater from 'electron-updater'
 import { z } from 'zod'
 import {
   ipcChannels,
+  type AccountStatusSyncPatch,
   type CpaCodexTestProgress,
   type GrokTestProgress,
   type ImportPreviewTestProgress,
@@ -537,12 +538,16 @@ async function main(): Promise<void> {
         manager.listCredentials(),
         cpaCodexManager.listCredentials()
       ])
-      await reconcileCodexStatuses(
+      const synced = await reconcileCodexStatuses(
         libraryCredentials,
         cpaCredentials,
         statusStore,
         cpaCodexStatusStore
       )
+      const patch: AccountStatusSyncPatch = {}
+      if (synced.leftResults.length > 0) patch.accounts = synced.leftResults
+      if (synced.rightResults.length > 0) patch.cpaCodexAccounts = synced.rightResults
+      if (Object.keys(patch).length > 0) mainWindow?.webContents.send(ipcChannels.accountStatusSync, patch)
     })
     codexStatusSyncQueue = operation.catch(() => undefined)
     return operation
@@ -555,12 +560,16 @@ async function main(): Promise<void> {
         grokManager.listCredentials(),
         cpaGrokManager.listCredentials()
       ])
-      await reconcileGrokStatuses(
+      const synced = await reconcileGrokStatuses(
         libraryCredentials,
         cpaCredentials,
         grokStatusStore,
         cpaGrokStatusStore
       )
+      const patch: AccountStatusSyncPatch = {}
+      if (synced.leftResults.length > 0) patch.grokAccounts = synced.leftResults
+      if (synced.rightResults.length > 0) patch.cpaGrokAccounts = synced.rightResults
+      if (Object.keys(patch).length > 0) mainWindow?.webContents.send(ipcChannels.accountStatusSync, patch)
     })
     grokStatusSyncQueue = operation.catch(() => undefined)
     return operation

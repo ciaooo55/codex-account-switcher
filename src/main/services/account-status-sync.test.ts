@@ -125,7 +125,7 @@ describe('account status reconciliation', () => {
       [cpa.id]: codexResult(cpa.id, '2026-07-19T01:00:00Z', 0)
     })
 
-    await reconcileCodexStatuses([local], [cpa], localStore, cpaStore)
+    const synced = await reconcileCodexStatuses([local], [cpa], localStore, cpaStore)
 
     expect((await localStore.getAll())[local.id]).toMatchObject({
       accountId: local.id,
@@ -133,6 +133,10 @@ describe('account status reconciliation', () => {
       usage: { windows: [{ remainingPercent: 0 }] }
     })
     expect((await cpaStore.getAll())[cpa.id].accountId).toBe(cpa.id)
+    expect(synced.leftResults).toEqual([
+      expect.objectContaining({ accountId: local.id, status: 'quota_exhausted_weekly' })
+    ])
+    expect(synced.rightResults).toEqual([])
   })
 
   it('synchronizes changed quota content even when timestamps and status are identical', async () => {
