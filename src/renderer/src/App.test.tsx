@@ -648,6 +648,26 @@ describe('App', () => {
     await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a'], 'full'))
   })
 
+  it('tests only the group opened from the group filter context menu', async () => {
+    const bridge = api()
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      accounts: [
+        { ...snapshot.accounts[0], group: '主力' },
+        { ...snapshot.accounts[1], status: 'valid', detail: '正常可用', group: '备用' }
+      ]
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    const groupFilters = screen.getByRole('group', { name: 'Codex 账号状态分组筛选' })
+    fireEvent.contextMenu(within(groupFilters).getByRole('button', { name: '主力 1' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '测试该分组' }))
+
+    await waitFor(() => expect(bridge.testAccounts).toHaveBeenCalledWith(['account-a'], 'full'))
+  })
+
   it('manages CPA Codex files independently and supports additive row selection', async () => {
     const bridge = api()
     const cpaSnapshot: AppSnapshot = {

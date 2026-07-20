@@ -239,6 +239,26 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
       void remove(categoryIds)
     }
   }
+  const handleGroupAction = (action: StatusCategoryAction, group: string): void => {
+    const groupIds = snapshot.cpaCodexAccounts
+      .filter((account) => {
+        if (status && displayStatus(account.status) !== status) return false
+        return !group || matchesAccountFacets(account, { ...EMPTY_ACCOUNT_FACET_FILTERS, group })
+      })
+      .map((account) => account.id)
+    if (action === 'select') {
+      setSelected(new Set(groupIds))
+    } else if (action === 'test') {
+      void run(
+        () => window.codexSwitcher.testCpaCodexAccounts(groupIds, testMode),
+        `CPA Codex 当前分组检测完成`
+      )
+    } else if (action === 'enable' || action === 'disable') {
+      setEnabled(action === 'enable', groupIds)
+    } else if (action === 'delete') {
+      void remove(groupIds)
+    }
+  }
   return <div className="page-view accounts-view cpa-provider-view">
     <section className="library-overview">
       <div><span>Codex 唯一账号</span><strong>{snapshot.cpaCodexAccounts.length}</strong></div>
@@ -246,7 +266,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
       <div><span>已停用</span><strong>{snapshot.cpaCodexAccounts.filter((item) => item.disabled).length}</strong></div>
       <div className="library-path"><span>CPA 共享目录</span><strong title={snapshot.grokDirectory}>{snapshot.grokDirectory}</strong></div>
     </section>
-    <StatusFilterStrip value={status} counts={facets.statusCounts} total={snapshot.cpaCodexAccounts.length} onChange={setStatus} label="CPA Codex 账号状态" onAction={handleCategoryAction} managedFiles disabled={busy || snapshot.cpaCodexTesting.active} groups={availableFacets.groups} groupValue={facetFilters.group} onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))} />
+    <StatusFilterStrip value={status} counts={facets.statusCounts} total={snapshot.cpaCodexAccounts.length} onChange={setStatus} label="CPA Codex 账号状态" onAction={handleCategoryAction} managedFiles disabled={busy || snapshot.cpaCodexTesting.active} groups={availableFacets.groups} groupValue={facetFilters.group} onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))} onGroupAction={handleGroupAction} />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.scanCpaCodexDirectory(), 'CPA Codex 扫描完成')} disabled={busy}><RefreshCw size={16} />重新扫描</button><button onClick={() => syncToLibrary()} disabled={busy || snapshot.cpaCodexTesting.active}><FolderSync size={16} />同步全部到 aa</button></div>
       <div className="toolbar-group"><CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.cpaCodexTesting.active} label="CPA Codex 检测模式" /><button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(accounts.map((account) => account.id), testMode), `CPA Codex 当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.cpaCodexTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
@@ -415,9 +435,29 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
       void remove(categoryIds)
     }
   }
+  const handleGroupAction = (action: StatusCategoryAction, group: string): void => {
+    const groupIds = sourceAccounts
+      .filter((account) => {
+        if (status && account.status !== status) return false
+        return !group || matchesAccountFacets(account, { ...EMPTY_ACCOUNT_FACET_FILTERS, group })
+      })
+      .map((account) => account.id)
+    if (action === 'select') {
+      setSelected(new Set(groupIds))
+    } else if (action === 'test') {
+      void run(
+        () => testAccounts(groupIds),
+        `${cpa ? 'CPA ' : ''}Grok 当前分组检测完成`
+      )
+    } else if (cpa && (action === 'enable' || action === 'disable')) {
+      setEnabled(action === 'enable', groupIds)
+    } else if (action === 'delete') {
+      void remove(groupIds)
+    }
+  }
   return <div className="page-view accounts-view grok-view cpa-provider-view">
     <section className="library-overview"><div><span>Grok 唯一账号</span><strong>{sourceAccounts.length}</strong></div><div><span>{cpa ? 'CPA 凭据文件' : '本地托管文件'}</span><strong>{cpa ? snapshot.cpaDirectoryStats.grokFiles : sourceAccounts.length}</strong></div><div><span>已停用</span><strong>{sourceAccounts.filter((item) => item.disabled).length}</strong></div><div className="library-path"><span>{cpa ? 'CPA 共享目录' : '本地账号目录'}</span><strong title={cpa ? snapshot.grokDirectory : `${snapshot.importDirectory}\\grok`}>{cpa ? snapshot.grokDirectory : `${snapshot.importDirectory}\\grok`}</strong></div></section>
-    <StatusFilterStrip value={status} counts={facets.statusCounts} total={sourceAccounts.length} onChange={setStatus} label={`${cpa ? 'CPA ' : ''}Grok 账号状态`} onAction={handleCategoryAction} managedFiles={cpa} disabled={busy || testing.active} groups={availableFacets.groups} groupValue={facetFilters.group} onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))} />
+    <StatusFilterStrip value={status} counts={facets.statusCounts} total={sourceAccounts.length} onChange={setStatus} label={`${cpa ? 'CPA ' : ''}Grok 账号状态`} onAction={handleCategoryAction} managedFiles={cpa} disabled={busy || testing.active} groups={availableFacets.groups} groupValue={facetFilters.group} onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))} onGroupAction={handleGroupAction} />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(scan, `${cpa ? 'CPA ' : ''}Grok 扫描完成`)} disabled={busy || testing.active}><RefreshCw size={16} />重新扫描</button>{cpa && <button onClick={() => syncToLibrary()} disabled={busy || testing.active}><FolderSync size={16} />同步全部到 aa</button>}</div>
       <div className="toolbar-group"><button onClick={() => void run(() => testAccounts(accounts.map((account) => account.id)), `Grok 当前筛选 ${accounts.length} 个账号检测完成`)} disabled={busy || testing.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{testing.active && <button className="danger-button" onClick={() => void cancelTests()}><Square size={15} />取消</button>}</div>

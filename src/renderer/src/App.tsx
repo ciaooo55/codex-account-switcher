@@ -1018,6 +1018,29 @@ export function App(): React.JSX.Element {
     if (action === 'delete') void deleteAccounts(ids)
   }
 
+  const handleCodexGroupAction = (action: StatusCategoryAction, group: string): void => {
+    const groupAccounts = (snapshot?.accounts ?? []).filter((account) => {
+      if (statusFilter && displayStatus(account.status) !== statusFilter) return false
+      return !group || matchesAccountFacets(account, { ...EMPTY_ACCOUNT_FACET_FILTERS, group })
+    })
+    const ids = groupAccounts.map((account) => account.id)
+    const groupLabel = group
+      ? availableAccountFacets.groups.find((option) => option.value === group)?.label ?? group
+      : '全部分组'
+    if (action === 'select') {
+      setSelected(new Set(ids))
+      return
+    }
+    if (action === 'test') {
+      void run(
+        () => window.codexSwitcher.testAccounts(ids, testMode),
+        `${groupLabel} ${ids.length} 个检测完成`
+      )
+      return
+    }
+    if (action === 'delete') void deleteAccounts(ids)
+  }
+
   const openContextMenu = (event: React.MouseEvent, account: AccountSummary): void => {
     event.preventDefault()
     setSelected(new Set([account.id]))
@@ -1174,6 +1197,7 @@ export function App(): React.JSX.Element {
         groups={availableAccountFacets.groups}
         groupValue={facetFilters.group}
         onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))}
+        onGroupAction={handleCodexGroupAction}
       />
 
       <div className="toolbar codex-toolbar">

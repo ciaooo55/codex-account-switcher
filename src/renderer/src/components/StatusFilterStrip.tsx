@@ -17,7 +17,8 @@ export function StatusFilterStrip({
   disabled = false,
   groups = [],
   groupValue = '',
-  onGroupChange
+  onGroupChange,
+  onGroupAction
 }: {
   value: DisplayAccountStatus | ''
   counts: Readonly<Partial<Record<DisplayAccountStatus, number>>>
@@ -30,11 +31,20 @@ export function StatusFilterStrip({
   groups?: readonly AccountFacetOption[]
   groupValue?: string
   onGroupChange?: (group: string) => void
+  onGroupAction?: (action: StatusCategoryAction, group: string) => void
 }): React.JSX.Element {
-  const [menu, setMenu] = useState<{ status: DisplayAccountStatus | ''; x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<{
+    target: 'status' | 'group'
+    value: DisplayAccountStatus | string
+    label: string
+    count: number
+    x: number
+    y: number
+  } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!menu) return
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus()
     const close = (): void => setMenu(null)
     const closeOutside = (event: PointerEvent): void => {
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return
@@ -50,23 +60,40 @@ export function StatusFilterStrip({
       window.removeEventListener('keydown', closeOnEscape)
     }
   }, [menu])
-  const openMenu = (event: React.MouseEvent, status: DisplayAccountStatus | ''): void => {
+  const menuPosition = (event: React.MouseEvent): { x: number; y: number } => ({
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 238)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - (managedFiles ? 250 : 170)))
+  })
+  const openStatusMenu = (event: React.MouseEvent, status: DisplayAccountStatus | ''): void => {
     if (!onAction || disabled) return
     event.preventDefault()
     setMenu({
-      status,
-      x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - (managedFiles ? 250 : 170))
+      target: 'status',
+      value: status,
+      label: status ? STATUS_LABELS[status] : '全部账号',
+      count: status ? counts[status] ?? 0 : total,
+      ...menuPosition(event)
+    })
+  }
+  const openGroupMenu = (event: React.MouseEvent, group: AccountFacetOption | null): void => {
+    if (!onGroupAction || disabled) return
+    event.preventDefault()
+    setMenu({
+      target: 'group',
+      value: group?.value ?? '',
+      label: group?.label ?? '全部分组',
+      count: group?.count ?? (value ? counts[value] ?? 0 : total),
+      ...menuPosition(event)
     })
   }
   const runAction = (action: StatusCategoryAction): void => {
-    if (!menu || menuCount === 0) return
-    const status = menu.status
+    if (!menu || menu.count === 0) return
+    const currentMenu = menu
     setMenu(null)
-    onAction?.(action, status)
+    if (currentMenu.target === 'group') onGroupAction?.(action, currentMenu.value)
+    else onAction?.(action, currentMenu.value as DisplayAccountStatus | '')
   }
-  const menuLabel = menu?.status ? STATUS_LABELS[menu.status] : '全部账号'
-  const menuCount = menu?.status ? counts[menu.status] ?? 0 : total
+  const menuKind = menu?.target === 'group' ? '分组' : '分类'
   return (
     <>
       <div className="status-filter-strip" aria-label={label}>
@@ -75,7 +102,7 @@ export function StatusFilterStrip({
         aria-pressed={value === ''}
         title="左键筛选，右键批量操作"
         onClick={() => onChange('')}
-        onContextMenu={(event) => openMenu(event, '')}
+        onContextMenu={(event) => openStatusMenu(event, '')}
       >
         <span>全部</span><strong>{total}</strong>
       </button>
@@ -88,7 +115,7 @@ export function StatusFilterStrip({
           aria-pressed={value === status}
           title="左键筛选，右键批量操作"
           onClick={() => onChange(status as DisplayAccountStatus)}
-          onContextMenu={(event) => openMenu(event, status as DisplayAccountStatus)}
+          onContextMenu={(event) => openStatusMenu(event, status as DisplayAccountStatus)}
         >
           <span>{statusLabel}</span><strong>{counts[status as DisplayAccountStatus] ?? 0}</strong>
         </button>
@@ -98,7 +125,9 @@ export function StatusFilterStrip({
           <button
             className={groupValue === '' ? 'active' : ''}
             aria-pressed={groupValue === ''}
+            title="左键筛选，右键批量操作"
             onClick={() => onGroupChange('')}
+            onContextMenu={(event) => openGroupMenu(event, null)}
           >
             <span>全部分组</span>
           </button>
@@ -107,7 +136,9 @@ export function StatusFilterStrip({
               key={group.value}
               className={groupValue === group.value ? 'active' : ''}
               aria-pressed={groupValue === group.value}
+              title="左键筛选，右键批量操作"
               onClick={() => onGroupChange(group.value)}
+              onContextMenu={(event) => openGroupMenu(event, group)}
             >
               <span>{group.label}</span><strong>{group.count}</strong>
             </button>
@@ -115,13 +146,13 @@ export function StatusFilterStrip({
         </div>
       )}
       </div>
-      {menu && <div ref={menuRef} className="account-context-menu category-context-menu" role="menu" aria-label={`${label}分类操作`} style={{ left: menu.x, top: menu.y }}>
-        <div className="context-account">{menuLabel}<span>{menuCount} 个账号</span></div>
-        <button role="menuitem" disabled={menuCount === 0} onClick={() => runAction('select')}><CheckSquare2 size={15} />选择该分类</button>
-        <button className="context-test" role="menuitem" disabled={menuCount === 0} onClick={() => runAction('test')}><TestTube2 size={15} />测试该分类</button>
-        {managedFiles && <button className="context-enable" role="menuitem" disabled={menuCount === 0} onClick={() => runAction('enable')}><Power size={15} />全部启用 .json</button>}
-        {managedFiles && <button className="context-disable" role="menuitem" disabled={menuCount === 0} onClick={() => runAction('disable')}><PowerOff size={15} />全部停用 .json.0</button>}
-        <button className="context-danger" role="menuitem" disabled={menuCount === 0} onClick={() => runAction('delete')}><Trash2 size={15} />删除该分类全部账号</button>
+      {menu && <div ref={menuRef} className="account-context-menu category-context-menu" role="menu" aria-label={`${label}${menuKind}操作`} style={{ left: menu.x, top: menu.y }}>
+        <div className="context-account">{menu.label}<span>{menu.count} 个账号</span></div>
+        <button role="menuitem" disabled={menu.count === 0} onClick={() => runAction('select')}><CheckSquare2 size={15} />选择该{menuKind}</button>
+        <button className="context-test" role="menuitem" disabled={menu.count === 0} onClick={() => runAction('test')}><TestTube2 size={15} />测试该{menuKind}</button>
+        {managedFiles && <button className="context-enable" role="menuitem" disabled={menu.count === 0} onClick={() => runAction('enable')}><Power size={15} />全部启用 .json</button>}
+        {managedFiles && <button className="context-disable" role="menuitem" disabled={menu.count === 0} onClick={() => runAction('disable')}><PowerOff size={15} />全部停用 .json.0</button>}
+        <button className="context-danger" role="menuitem" disabled={menu.count === 0} onClick={() => runAction('delete')}><Trash2 size={15} />删除该{menuKind}全部账号</button>
       </div>}
     </>
   )
