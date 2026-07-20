@@ -1179,7 +1179,7 @@ export function App(): React.JSX.Element {
       </header>
 
       {message && (
-        <div className={`message ${message.kind}`} role="status" aria-live="polite">
+        <div className={`message ${message.kind}`} role="status" aria-live="polite" aria-atomic="true">
           {message.kind === 'ok' ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
           <span>{message.text}</span>
           <button className="message-close" title="关闭提示" aria-label="关闭提示" onClick={() => setMessage(null)}><X size={14} /></button>
