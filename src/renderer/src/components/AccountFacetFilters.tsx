@@ -55,18 +55,6 @@ export function AccountFacetFilters({
           ))}
         </select>
       )}
-      {facets.groups.length > 0 && (
-        <select
-          aria-label={`${label}账号分组`}
-          value={value.group}
-          onChange={(event) => onChange({ ...value, group: event.target.value })}
-        >
-          <option value="">全部分组</option>
-          {facets.groups.map((option) => (
-            <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-          ))}
-        </select>
-      )}
       {active && (
         <button
           className="icon-button clear-facets"

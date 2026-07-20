@@ -24,7 +24,6 @@ import {
   Settings,
   Square,
   Sun,
-  UsersRound,
   TestTube2,
   TimerReset,
   Trash2,
@@ -43,7 +42,6 @@ import type {
 } from '../../shared/ipc'
 import type {
   AccountSummary,
-  AccountMetadataUpdateRequest,
   AppSettings,
   CodexTestMode,
   CpaCodexAccountSummary,
@@ -73,7 +71,6 @@ import {
 } from './account-filters'
 import { displayStatus, STATUS_LABELS } from './account-status'
 import { AccountFacetFilters } from './components/AccountFacetFilters'
-import { AccountMetadataDialog, type MetadataAccount } from './components/AccountMetadataDialog'
 import {
   CODEX_TEST_MODE_RUNNING,
   CODEX_TEST_MODE_SUCCESS,
@@ -297,7 +294,6 @@ export function App(): React.JSX.Element {
     priorities: Record<string, number>
   } | null>(null)
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
-  const [metadataAccounts, setMetadataAccounts] = useState<MetadataAccount[] | null>(null)
   const [healthReport, setHealthReport] = useState<LibraryHealthReport | null>(null)
   const [contextMenu, setContextMenu] = useState<{
     account: AccountSummary
@@ -527,18 +523,6 @@ export function App(): React.JSX.Element {
     () => new Map((snapshot?.accounts ?? []).map((account) => [account.id, account])),
     [snapshot?.accounts]
   )
-  const allMetadataAccounts = useMemo<MetadataAccount[]>(() => {
-    const unique = new Map<string, MetadataAccount>()
-    for (const account of [
-      ...(snapshot?.accounts ?? []),
-      ...(snapshot?.grokAccounts ?? []),
-      ...(snapshot?.cpaCodexAccounts ?? []),
-      ...(snapshot?.cpaGrokAccounts ?? [])
-    ]) {
-      if (!unique.has(account.id)) unique.set(account.id, account)
-    }
-    return [...unique.values()]
-  }, [snapshot?.accounts, snapshot?.cpaCodexAccounts, snapshot?.cpaGrokAccounts, snapshot?.grokAccounts])
   const runningAccountIds = useMemo(
     () => new Set(snapshot?.testing.runningIds ?? []),
     [snapshot?.testing.runningIds]
@@ -782,31 +766,6 @@ export function App(): React.JSX.Element {
         text: `已导出 ${result.imported} 个到 CPA${result.skipped ? `，${result.skipped} 个已有账号已更新凭证和优先级` : ''}`
       })
       setExportDialog(null)
-    } catch (error) {
-      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const openMetadataEditor = (ids: string[]): void => {
-    const wanted = new Set(ids)
-    const accounts = allMetadataAccounts.filter((account) => wanted.has(account.id))
-    if (accounts.length === 0) {
-      setMessage({ kind: 'error', text: '没有找到要编辑的账号' })
-      return
-    }
-    setMetadataAccounts(accounts)
-  }
-
-  const saveAccountMetadata = async (request: AccountMetadataUpdateRequest): Promise<void> => {
-    setBusy(true)
-    setMessage(null)
-    try {
-      await window.codexSwitcher.updateAccountMetadata(request)
-      await reload(true, activeView)
-      setMetadataAccounts(null)
-      setMessage({ kind: 'ok', text: `已保存 ${request.accountIds.length} 个账号的分组` })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -1203,15 +1162,6 @@ export function App(): React.JSX.Element {
         />
         <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
         <div className="library-path"><span>本地账号目录</span><strong title={`${snapshot.importDirectory}\\codex`}>{snapshot.importDirectory}\\codex</strong></div>
-        <div className="library-account-actions">
-          <button
-            onClick={() => openMetadataEditor([...selected])}
-            disabled={busy || selected.size === 0}
-            title={selected.size === 0 ? '先选择账号，再编辑分组' : `编辑 ${selected.size} 个账号的分组`}
-          >
-            <UsersRound size={16} />分组{selected.size > 0 ? ` (${selected.size})` : ''}
-          </button>
-        </div>
       </section>
       <StatusFilterStrip
         value={statusFilter}
@@ -1221,6 +1171,9 @@ export function App(): React.JSX.Element {
         label="Codex 账号状态"
         onAction={handleCodexCategoryAction}
         disabled={busy || snapshot.testing.active}
+        groups={availableAccountFacets.groups}
+        groupValue={facetFilters.group}
+        onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))}
       />
 
       <div className="toolbar codex-toolbar">
@@ -1396,7 +1349,6 @@ export function App(): React.JSX.Element {
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
           requestConfirmation={requestConfirmation}
-          onEditMetadata={openMetadataEditor}
         />
       ) : activeView === 'cpa' ? (
         <CpaPage
@@ -1405,7 +1357,6 @@ export function App(): React.JSX.Element {
           notify={(kind, text) => setMessage({ kind, text })}
           onBusyChange={setBusy}
           requestConfirmation={requestConfirmation}
-          onEditMetadata={openMetadataEditor}
         />
       ) : (
         <main className="page-view automation-view">
@@ -1682,9 +1633,6 @@ export function App(): React.JSX.Element {
           <button role="menuitem" onClick={() => contextAction(() => openExport([contextMenu.account.id]))}>
             <Download size={15} />导出此账号
           </button>
-          <button role="menuitem" onClick={() => contextAction(() => openMetadataEditor([contextMenu.account.id]))}>
-            <UsersRound size={15} />编辑分组
-          </button>
           <button role="menuitem" onClick={() => contextAction(async () => {
             const result = await window.codexSwitcher.revealSource(contextMenu.account.id)
             if (!result.ok) setMessage({ kind: 'error', text: result.message })
@@ -1875,15 +1823,6 @@ export function App(): React.JSX.Element {
             <div className="panel-actions"><button className="secondary-button" onClick={() => closeSettingsDialog()} disabled={busy}><X size={16} />取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}><CheckCircle2 size={16} />保存设置</button></div>
           </section>
         </div>
-      )}
-      {metadataAccounts && (
-        <AccountMetadataDialog
-          accounts={metadataAccounts}
-          allAccounts={allMetadataAccounts}
-          busy={busy}
-          onClose={() => { if (!busy) setMetadataAccounts(null) }}
-          onSave={(request) => void saveAccountMetadata(request)}
-        />
       )}
       {healthReport && (
         <LibraryHealthDialog

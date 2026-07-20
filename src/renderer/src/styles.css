@@ -56,9 +56,7 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .library-overview span { margin-bottom: 4px; color: #7e8c96; font-size: 10px; }
 .library-overview strong { color: #e8eef2; font-size: 15px; line-height: 20px; }
 .library-overview .library-path strong { color: #aab6bf; font-size: 11px; font-weight: 600; }
-.codex-overview { grid-template-columns: 116px minmax(470px, 1.4fr) 108px minmax(280px, 1fr) minmax(176px, .55fr); }
-.library-account-actions { display: flex; align-items: center; justify-content: flex-end; padding-inline: var(--space-3) !important; }
-.library-account-actions button { min-width: 142px; }
+.codex-overview { grid-template-columns: 116px minmax(470px, 1.4fr) 108px minmax(280px, 1fr); }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; white-space: nowrap !important; border: 0 !important; }
 .current-summary { background: #122024; box-shadow: inset 3px 0 #4db7b1; }
 .current-summary strong { display: flex; align-items: center; gap: 6px; color: #b4f0ec; font-size: 12px; }
@@ -122,6 +120,8 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .status-filter-strip button.active::after { display: none; }
 .status-filter-strip button span { font-size: 11px; white-space: nowrap; }
 .status-filter-strip button strong { min-width: 22px; color: #b9c6ce; font-size: 11px; text-align: right; }
+.group-filter-buttons { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-1); margin-left: auto; padding-left: var(--space-2); border-left: 1px solid #2b353d; }
+.group-filter-buttons button { min-height: 29px; }
 .status-filter-strip .filter-valid strong { color: #72dc7f; }
 .status-filter-strip .filter-quota_exhausted strong, .status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #e3b341; }
 .status-filter-strip .filter-invalid strong { color: #ff8d85; }
@@ -181,10 +181,8 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .account-email { min-width: 0; color: #edf3f6; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
 .account-secondary-email { display: block; min-width: 0; margin-top: 3px; color: #84919b; font-size: 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-metadata-chips { display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 5px; overflow: hidden; }
-.account-group-chip, .account-tag-chip, .account-tag-more { flex: 0 1 auto; min-width: 0; max-width: 104px; overflow: hidden; padding: 1px 5px; border: 1px solid; border-radius: 4px; font-size: 9px; font-style: normal; font-weight: 650; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.account-group-chip { flex: 0 1 auto; min-width: 0; max-width: 104px; overflow: hidden; padding: 1px 5px; border: 1px solid; border-radius: 4px; font-size: 9px; font-style: normal; font-weight: 650; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .account-group-chip { color: #9dd8f1; background: #142a35; border-color: #315c70; }
-.account-tag-chip { color: #b7dbbb; background: #18291d; border-color: #365f3d; }
-.account-tag-more { flex: 0 0 auto; color: #9ba8b0; background: #20272c; border-color: #3b454c; }
 .workspace-id, .muted { color: #7f8b97; font-size: 11px; margin-top: 5px; }
 .compact-row-meta { display: none; margin-top: 5px; color: #73828c; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .active-badge, .format-label, .provider-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; font-size: 9px; line-height: 15px; font-weight: 750; white-space: nowrap; }
@@ -450,20 +448,6 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .import-preview-actions { flex: 0 0 auto; margin: 0 !important; padding: 12px 16px !important; background: #171b20; }
 .import-preview-actions > span { margin-right: auto; color: #87949d; font-size: 11px; }
 .import-preview-actions > span strong { color: #e6edf1; }
-.metadata-dialog { width: min(610px, 96vw); }
-.metadata-account-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 10px 12px; background: #13191d; border: 1px solid #303941; border-radius: 6px; }
-.metadata-account-summary strong { min-width: 0; overflow: hidden; color: #e5ecef; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.metadata-account-summary span { flex: 0 0 auto; color: #9eabb4; font-size: 10px; }
-.metadata-form { display: grid; gap: 13px; }
-.metadata-form > label { display: grid; gap: 6px; color: #aab5bd; font-size: 11px; font-weight: 600; }
-.metadata-form > label > span { display: flex; align-items: center; gap: 6px; }
-.metadata-form input:not([type='checkbox']), .metadata-form select, .metadata-form textarea { width: 100%; }
-.metadata-form textarea { min-height: 96px; resize: vertical; padding: 9px; line-height: 1.5; }
-.metadata-toggle-field { grid-template-columns: 18px minmax(92px, auto) minmax(0, 1fr); align-items: center; }
-.metadata-toggle-field > input[type='checkbox'] { width: 15px; height: 15px; margin: 0; accent-color: #4b9b69; }
-.metadata-toggle-field > span { min-width: 92px; }
-.metadata-toggle-field > select { grid-column: 3; }
-.metadata-toggle-field > input:not([type='checkbox']) { grid-column: 3; }
 .health-dialog { display: flex; flex-direction: column; width: min(980px, 97vw); height: min(760px, 94vh); max-height: 94vh; overflow: hidden; padding: 0; }
 .health-dialog > .panel-header { flex: 0 0 auto; margin: 0; padding: 16px 18px 13px; }
 .health-summary { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr)) auto; align-items: stretch; margin: 12px 14px 0; border: 1px solid #303a41; border-radius: 6px; overflow: hidden; }
@@ -695,6 +679,7 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .status-filter-strip .filter-quota_exhausted.active, .status-filter-strip .filter-quota_exhausted_5h.active, .status-filter-strip .filter-quota_exhausted_weekly.active { color: #76550f; background: #f8f1df; border-color: #d9c27f; box-shadow: inset 0 -2px #b88a27; }
 .status-filter-strip .filter-invalid.active { color: #8b3532; background: #f8e9e8; border-color: #d6aaa7; box-shadow: inset 0 -2px #bc5b56; }
 .status-filter-strip button strong { color: #53616a; }
+.group-filter-buttons { border-left-color: #d1d9dd; }
 .status-filter-strip .filter-valid strong { color: #2d7a4c; }
 .status-filter-strip .filter-quota_exhausted strong, .status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #986b14; }
 .status-filter-strip .filter-invalid strong { color: #af4542; }
@@ -716,8 +701,6 @@ td { color: #3b4851; border-color: #dce2e5; }
 .account-email { color: #253039; }
 .account-secondary-email { color: #77858e; }
 .account-group-chip { color: #356d86; background: #e7f1f5; border-color: #b2cdd9; }
-.account-tag-chip { color: #356e48; background: #e7f2ea; border-color: #b4d1bd; }
-.account-tag-more { color: #687680; background: #edf1f3; border-color: #c9d2d7; }
 .workspace-id, .muted { color: #74828b; }
 .source-path { color: #45535c; }
 
@@ -871,9 +854,6 @@ td { color: #3b4851; border-color: #dce2e5; }
 .import-preview-actions { background: #f9fbfc; }
 .import-preview-actions > span, .panel-action-note { color: #71808a; }
 .import-preview-actions > span strong { color: #2d3840; }
-.metadata-account-summary { background: #f2f6f7; border-color: #d3dce0; }
-.metadata-account-summary strong { color: #2d3840; }
-.metadata-account-summary span, .metadata-form > label { color: #687780; }
 .health-summary { border-color: #d2dade; }
 .health-summary > div { border-color: #d2dade; }
 .health-summary span { color: #71808a; }
@@ -939,9 +919,6 @@ td { color: #3b4851; border-color: #dce2e5; }
   .preview-unrecognized-refine { align-items: stretch; }
   .preview-unrecognized-refine select { flex: 1 1 auto; width: auto; }
   .import-preview-actions > span, .panel-action-note { flex-basis: 100%; }
-  .metadata-toggle-field { grid-template-columns: 18px minmax(0, 1fr); }
-  .metadata-toggle-field > span { min-width: 0; }
-  .metadata-toggle-field > select, .metadata-toggle-field > input:not([type='checkbox']) { grid-column: 1 / -1; }
   .health-summary { margin-inline: 8px; }
   .health-filters { padding-inline: 8px; }
   .health-issue { padding-inline: 8px; }

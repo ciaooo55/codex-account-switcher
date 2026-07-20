@@ -43,4 +43,31 @@ describe('StatusFilterStrip', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: '全部停用 .json.0' }))
     expect(onAction).toHaveBeenCalledWith('disable', 'quota_exhausted_weekly')
   })
+
+  it('renders dynamic groups as right-side filter buttons', () => {
+    const onGroupChange = vi.fn()
+    render(
+      <StatusFilterStrip
+        value=""
+        counts={{ valid: 3 }}
+        total={5}
+        onChange={vi.fn()}
+        label="Codex 账号状态"
+        groups={[
+          { value: 'primary', label: '主力', count: 2 },
+          { value: 'backup', label: '备用', count: 3 }
+        ]}
+        groupValue="primary"
+        onGroupChange={onGroupChange}
+      />
+    )
+
+    const groupFilters = screen.getByRole('group', { name: 'Codex 账号状态分组筛选' })
+    expect(groupFilters).toHaveClass('group-filter-buttons')
+    expect(screen.getByRole('button', { name: '主力 2' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '备用 3' }))
+    expect(onGroupChange).toHaveBeenCalledWith('backup')
+    fireEvent.click(screen.getByRole('button', { name: '全部分组' }))
+    expect(onGroupChange).toHaveBeenCalledWith('')
+  })
 })

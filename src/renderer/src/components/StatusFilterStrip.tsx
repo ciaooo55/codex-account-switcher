@@ -1,6 +1,7 @@
 import { CheckSquare2, Power, PowerOff, TestTube2, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DisplayAccountStatus } from '../../../shared/types'
+import type { AccountFacetOption } from '../account-filters'
 import { STATUS_LABELS } from '../account-status'
 
 export type StatusCategoryAction = 'select' | 'test' | 'delete' | 'enable' | 'disable'
@@ -13,7 +14,10 @@ export function StatusFilterStrip({
   label,
   onAction,
   managedFiles = false,
-  disabled = false
+  disabled = false,
+  groups = [],
+  groupValue = '',
+  onGroupChange
 }: {
   value: DisplayAccountStatus | ''
   counts: Readonly<Partial<Record<DisplayAccountStatus, number>>>
@@ -23,6 +27,9 @@ export function StatusFilterStrip({
   onAction?: (action: StatusCategoryAction, status: DisplayAccountStatus | '') => void
   managedFiles?: boolean
   disabled?: boolean
+  groups?: readonly AccountFacetOption[]
+  groupValue?: string
+  onGroupChange?: (group: string) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ status: DisplayAccountStatus | ''; x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -86,6 +93,27 @@ export function StatusFilterStrip({
           <span>{statusLabel}</span><strong>{counts[status as DisplayAccountStatus] ?? 0}</strong>
         </button>
       ))}
+      {onGroupChange && groups.length > 0 && (
+        <div className="group-filter-buttons" role="group" aria-label={`${label}分组筛选`}>
+          <button
+            className={groupValue === '' ? 'active' : ''}
+            aria-pressed={groupValue === ''}
+            onClick={() => onGroupChange('')}
+          >
+            <span>全部分组</span>
+          </button>
+          {groups.map((group) => (
+            <button
+              key={group.value}
+              className={groupValue === group.value ? 'active' : ''}
+              aria-pressed={groupValue === group.value}
+              onClick={() => onGroupChange(group.value)}
+            >
+              <span>{group.label}</span><strong>{group.count}</strong>
+            </button>
+          ))}
+        </div>
+      )}
       </div>
       {menu && <div ref={menuRef} className="account-context-menu category-context-menu" role="menu" aria-label={`${label}分类操作`} style={{ left: menu.x, top: menu.y }}>
         <div className="context-account">{menuLabel}<span>{menuCount} 个账号</span></div>

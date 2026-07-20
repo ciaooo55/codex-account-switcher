@@ -950,23 +950,6 @@ describe('App', () => {
     expect(within(preview).getByRole('button', { name: '确认写入 aa' })).toBeEnabled()
   })
 
-  it('persists an account group from the library overview', async () => {
-    const bridge = api()
-    window.codexSwitcher = bridge
-    render(<App />)
-    fireEvent.click(await screen.findByRole('row', { name: /person@example\.com/ }))
-    fireEvent.click(screen.getByRole('button', { name: '分组 (1)' }))
-
-    const dialog = await screen.findByRole('dialog', { name: '账号分组' })
-    fireEvent.change(within(dialog).getByRole('combobox', { name: '账号分组' }), { target: { value: '日常' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(bridge.updateAccountMetadata).toHaveBeenCalledWith({
-      accountIds: ['account-a'],
-      group: '日常',
-    }))
-  })
-
   it('previews library health issues and repairs only after confirmation', async () => {
     const bridge = api()
     vi.mocked(bridge.inspectLibraries).mockResolvedValue({
