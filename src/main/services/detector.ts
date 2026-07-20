@@ -426,6 +426,7 @@ function isQuotaError(status: number, detail: string, payload: unknown): boolean
   const text = detail.toLowerCase()
   return (
     text.includes('usage limit reached') ||
+    text.includes('usage limit has been reached') ||
     text.includes('insufficient quota') ||
     text.includes('insufficient credits') ||
     text.includes('payment required') ||
@@ -819,13 +820,28 @@ export class CredentialTester {
       return this.stage('workspace_deactivated', 'Team/K12 工作区已停用', compactResponse.status, 'deep-test', usage)
     }
     if (isQuotaError(compactResponse.status, compactDetail, compactPayload)) {
-      const quota = exhaustedCodexQuota(usage)
+      let quotaUsage = usage
+      if (!quotaUsage) {
+        const retryResponse = await this.request(
+          this.usageUrl,
+          { method: 'GET', headers: usageHeaders(credential) },
+          signal,
+          credential
+        )
+        if (!('networkError' in retryResponse) && retryResponse.ok) {
+          quotaUsage = parseUsageResponse(
+            await responsePayload(retryResponse),
+            this.now().toISOString()
+          )
+        }
+      }
+      const quota = exhaustedCodexQuota(quotaUsage)
       return this.stage(
         quota?.status ?? 'quota_exhausted',
         quota?.detail ?? compactDetail,
         compactResponse.status,
         'deep-test',
-        usage
+        quotaUsage
       )
     }
     if (isModelError(compactDetail, compactPayload)) {

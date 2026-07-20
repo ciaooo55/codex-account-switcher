@@ -52,6 +52,7 @@ describe('account facets', () => {
       valid: 1,
       invalid: 1,
       unknown_error: 1,
+      quota_exhausted: 0,
       quota_exhausted_weekly: 1,
       quota_exhausted_5h: 0,
       untested: 0

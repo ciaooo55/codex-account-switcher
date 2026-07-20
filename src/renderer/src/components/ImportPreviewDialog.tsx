@@ -42,6 +42,7 @@ const DECISION_LABELS: Record<ImportPreviewDecision, string> = {
 const TEST_STATUS_ORDER: DisplayAccountStatus[] = [
   'untested',
   'valid',
+  'quota_exhausted',
   'quota_exhausted_5h',
   'quota_exhausted_weekly',
   'invalid',

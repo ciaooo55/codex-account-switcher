@@ -186,6 +186,7 @@ export type DisplayAccountStatus =
   | 'untested'
   | 'valid'
   | 'invalid'
+  | 'quota_exhausted'
   | 'quota_exhausted_weekly'
   | 'quota_exhausted_5h'
   | 'unknown_error'

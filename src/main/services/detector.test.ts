@@ -501,6 +501,41 @@ describe('CredentialTester', () => {
     expect(weeklyFetch).toHaveBeenCalledTimes(1)
   })
 
+  it('retries usage evidence when a deep test only reports a generic quota error', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('temporary usage failure'))
+      .mockResolvedValueOnce(jsonResponse(429, {
+        error: { message: 'The usage limit has been reached' }
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        plan_type: 'plus',
+        rate_limit: {
+          allowed: false,
+          limit_reached: true,
+          primary_window: {
+            used_percent: 100,
+            limit_window_seconds: 604_800,
+            reset_after_seconds: 3600
+          },
+          secondary_window: null
+        }
+      }))
+    const tester = new CredentialTester({ fetchImpl })
+
+    await expect(tester.test(credential())).resolves.toMatchObject({
+      status: 'quota_exhausted_weekly',
+      detail: '周额度已耗尽',
+      usage: expect.objectContaining({
+        windows: [expect.objectContaining({
+          windowSeconds: 604_800,
+          remainingPercent: 0
+        })]
+      })
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
   it('does not invalidate a usage-authenticated Team account when compact rejects the request format', async () => {
     const tester = new CredentialTester({
       fetchImpl: vi

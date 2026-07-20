@@ -21,7 +21,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(57, 139, 253
 input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: #3ea867; vertical-align: middle; }
 
 .app-shell { width: 100%; height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.app-header { min-height: 58px; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #13181d; border-bottom: 1px solid #2a333a; }
+.app-header { min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 6px 14px; background: #13181d; border-bottom: 1px solid #2a333a; }
 .app-identity { flex: 1 1 280px; min-width: 220px; }
 .identity-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .product-mark { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto; color: #8ee2b0; background: #162a20; border: 1px solid #326747; border-radius: 6px; }
@@ -110,7 +110,7 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .status-filter-strip button span { font-size: 11px; white-space: nowrap; }
 .status-filter-strip button strong { min-width: 22px; color: #b9c6ce; font-size: 11px; text-align: right; }
 .status-filter-strip .filter-valid strong { color: #72dc7f; }
-.status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #e3b341; }
+.status-filter-strip .filter-quota_exhausted strong, .status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #e3b341; }
 .status-filter-strip .filter-invalid strong { color: #ff8d85; }
 .search-field { display: flex; align-items: center; gap: 8px; min-width: 260px; max-width: 620px; flex: 1; color: #75838c; background: #141a1e; border: 1px solid #303b43; border-radius: 5px; padding-left: 10px; }
 .search-field input { flex: 1; border: 0; background: transparent; padding-left: 0; }
@@ -121,6 +121,13 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .facet-filters .clear-facets { width: 32px; min-height: 34px; flex: 0 0 32px; }
 .selection-count { margin-left: auto; color: #84929c; font-size: 11px; white-space: nowrap; }
 .table-wrap { flex: 1; overflow: auto; background: #0d1115; scrollbar-color: #3b4750 #11161a; }
+.accounts-view .codex-overview { min-height: 44px; }
+.accounts-view .library-overview > div { padding: 6px 11px; }
+.accounts-view .status-filter-strip { min-height: 36px; padding: 4px 12px; }
+.accounts-view .toolbar { min-height: 42px; padding: 5px 12px; }
+.accounts-view .selection-toolbar { min-height: 42px; padding: 5px 12px; }
+.accounts-view .selection-summary { min-width: 190px; }
+.accounts-view .filter-row { padding: 6px 12px; }
 table { width: 100%; min-width: 1240px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 .virtual-spacer td { padding: 0 !important; border: 0 !important; background: transparent !important; box-shadow: none !important; }
 th { position: sticky; top: 0; z-index: 2; height: 38px; padding: 0 10px; text-align: left; color: #8e9aa3; background: #171d22; border-bottom: 1px solid #354048; font-size: 11px; font-weight: 700; }
@@ -663,7 +670,7 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .status-filter-strip button.active { color: #2c4654; background: #e8f1f5; border-color: #a9c6d5; box-shadow: inset 0 -2px #5594b3; }
 .status-filter-strip button strong { color: #53616a; }
 .status-filter-strip .filter-valid strong { color: #2d7a4c; }
-.status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #986b14; }
+.status-filter-strip .filter-quota_exhausted strong, .status-filter-strip .filter-quota_exhausted_weekly strong, .status-filter-strip .filter-quota_exhausted_5h strong { color: #986b14; }
 .status-filter-strip .filter-invalid strong { color: #af4542; }
 .search-field { color: #7a8992; background: #f9fbfc; border-color: #cbd5da; }
 .search-field input { background: transparent; }

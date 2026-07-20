@@ -106,6 +106,7 @@ export function buildAccountFacets(accounts: readonly FacetableAccount[]): Accou
   const statusCounts: Record<DisplayAccountStatus, number> = {
     untested: 0,
     valid: 0,
+    quota_exhausted: 0,
     quota_exhausted_5h: 0,
     quota_exhausted_weekly: 0,
     invalid: 0,

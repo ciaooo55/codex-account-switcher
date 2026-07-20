@@ -76,10 +76,10 @@ function displayStatus(status: AccountStatus): DisplayAccountStatus {
   if (
     status === 'untested' ||
     status === 'valid' ||
+    status === 'quota_exhausted' ||
     status === 'quota_exhausted_5h' ||
     status === 'quota_exhausted_weekly'
   ) return status
-  if (status === 'quota_exhausted') return 'quota_exhausted_5h'
   if (['invalid', 'no_permission', 'workspace_deactivated', 'non_refreshable'].includes(status)) {
     return 'invalid'
   }
