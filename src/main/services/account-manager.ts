@@ -211,6 +211,13 @@ function summarizeAccount(
 }
 
 export class AccountManager {
+  private activeAuthIdentityCache: {
+    authPath: string
+    mtimeMs: number
+    size: number
+    credential: NormalizedCredential | null
+  } | null = null
+
   private readonly managedLibrary: ManagedCredentialLibrary | null
 
   constructor(private readonly options: AccountManagerOptions) {
@@ -890,12 +897,29 @@ export class AccountManager {
     credentials?: readonly NormalizedCredential[]
   ): Promise<string | null> {
     try {
-      const text = await readFile(authPath, 'utf8')
-      const parsed = parseCredentialText(text, {
-        sourcePath: authPath,
-        format: 'json'
-      })
-      const active = parsed.credentials[0]
+      const info = await stat(authPath)
+      const cached = this.activeAuthIdentityCache
+      const cacheHit = Boolean(
+        cached
+        && cached.authPath === authPath
+        && cached.mtimeMs === info.mtimeMs
+        && cached.size === info.size
+      )
+      let active = cacheHit ? cached!.credential : null
+      if (!cacheHit) {
+        const text = await readFile(authPath, 'utf8')
+        const parsed = parseCredentialText(text, {
+          sourcePath: authPath,
+          format: 'json'
+        })
+        active = parsed.credentials[0] ?? null
+        this.activeAuthIdentityCache = {
+          authPath,
+          mtimeMs: info.mtimeMs,
+          size: info.size,
+          credential: active
+        }
+      }
       if (!active) return null
       const match = findMatchingCodexCredential(
         active,
@@ -903,7 +927,9 @@ export class AccountManager {
       )
       return match?.id ?? active.id
     } catch {
+      this.activeAuthIdentityCache = null
       return null
     }
   }
 }
+

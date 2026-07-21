@@ -91,6 +91,39 @@ type ThemeMode = 'light' | 'dark'
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
 const THEME_STORAGE_KEY = 'codex-account-switcher/theme'
 
+const EMPTY_TEST_PROGRESS = { active: false, done: 0, total: 0, runningIds: [] as string[], updatedAccount: null }
+const EMPTY_CPA_DIRECTORY_STATS = {
+  credentialFiles: 0,
+  codexFiles: 0,
+  grokFiles: 0,
+  duplicateFiles: 0,
+  mixedFiles: 0,
+  unrecognizedFiles: 0
+}
+
+function bootstrapSnapshotFromAccountsPage(patch: AppSnapshotPatch): AppSnapshot {
+  if (!patch.settings || !patch.importDirectory || !patch.autoSwitch || !patch.customApi || !patch.accounts || !patch.testing) {
+    throw new Error('首屏账号库快照不完整')
+  }
+  return {
+    accounts: patch.accounts,
+    settings: patch.settings,
+    importDirectory: patch.importDirectory,
+    testing: patch.testing,
+    autoSwitch: patch.autoSwitch,
+    grokAccounts: patch.grokAccounts ?? [],
+    cpaGrokAccounts: patch.cpaGrokAccounts ?? [],
+    grokDirectory: patch.grokDirectory ?? patch.settings.grokDirectory,
+    grokTesting: patch.grokTesting ?? { ...EMPTY_TEST_PROGRESS },
+    cpaGrokTesting: patch.cpaGrokTesting ?? { ...EMPTY_TEST_PROGRESS },
+    cpaCodexAccounts: patch.cpaCodexAccounts ?? [],
+    cpaCodexTesting: patch.cpaCodexTesting ?? { ...EMPTY_TEST_PROGRESS },
+    cpaDirectoryStats: patch.cpaDirectoryStats ?? { ...EMPTY_CPA_DIRECTORY_STATS },
+    customApi: patch.customApi
+  }
+}
+
+
 function applyCodexStatusUpdates<T extends AccountSummary | CpaCodexAccountSummary>(accounts: readonly T[], results: readonly TestResult[] | undefined): T[] {
   if (!results?.length) return accounts as T[]
   const updates = new Map(results.map((result) => [result.accountId, result]))
@@ -261,6 +294,7 @@ export function App(): React.JSX.Element {
     return value
   })
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
+  const [secondaryLibrariesHydrated, setSecondaryLibrariesHydrated] = useState(false)
   const [selected, setSelected] = usePrunedSelection(snapshot?.accounts.map((account) => account.id) ?? [])
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState<DisplayAccountStatus | ''>('')
@@ -358,10 +392,39 @@ export function App(): React.JSX.Element {
   }
 
   useEffect(() => {
-    void window.codexSwitcher.getSnapshot().then((next) => {
-      setSnapshot(next)
-      setSettingsDraft(next.settings)
-    })
+    let cancelled = false
+    void (async () => {
+      try {
+        const page = await window.codexSwitcher.getPageSnapshot('accounts')
+        if (cancelled) return
+        const next = bootstrapSnapshotFromAccountsPage(page)
+        setSnapshot(next)
+        setSettingsDraft(next.settings)
+        // Warm other libraries after accounts are in hand. Merge onto current/next so a
+        // pre-commit warm response cannot be dropped by applySnapshotPatch(current=null).
+        void Promise.all([
+          window.codexSwitcher.getPageSnapshot('grok').catch(() => null),
+          window.codexSwitcher.getPageSnapshot('cpa').catch(() => null)
+        ]).then(([grok, cpa]) => {
+          if (cancelled) return
+          setSnapshot((current) => {
+            const base = current ?? next
+            return {
+              ...base,
+              ...(grok ?? {}),
+              ...(cpa ?? {})
+            }
+          })
+          setSecondaryLibrariesHydrated(true)
+        })
+      } catch {
+        const next = await window.codexSwitcher.getSnapshot()
+        if (cancelled) return
+        setSnapshot(next)
+        setSettingsDraft(next.settings)
+        setSecondaryLibrariesHydrated(true)
+      }
+    })()
     void window.codexSwitcher.getUpdateState().then(setUpdateState)
     const stopTesting = window.codexSwitcher.onTestProgress((testing) =>
       setSnapshot((current) => {
@@ -422,6 +485,7 @@ export function App(): React.JSX.Element {
       }
     })
     return () => {
+      cancelled = true
       stopTesting()
       stopUpdates()
       stopGrokTesting()
@@ -1147,10 +1211,10 @@ export function App(): React.JSX.Element {
             <ListChecks size={16} />Codex 账号库 <span className="tab-count">{snapshot.accounts.length}</span>
           </button>
           <button className={activeView === 'grok' ? 'active' : ''} aria-pressed={activeView === 'grok'} onClick={() => setActiveView('grok')}>
-            <Zap size={16} />Grok 账号库 <span className="tab-count grok">{snapshot.grokAccounts.length}</span>
+            <Zap size={16} />Grok 账号库 <span className="tab-count grok">{secondaryLibrariesHydrated ? snapshot.grokAccounts.length : '…'}</span>
           </button>
           <button className={activeView === 'cpa' ? 'active' : ''} aria-pressed={activeView === 'cpa'} onClick={() => setActiveView('cpa')}>
-            <PackageOpen size={16} />CPA 账号管理 <span className="tab-count">{snapshot.cpaCodexAccounts.length + snapshot.cpaGrokAccounts.length}</span>
+            <PackageOpen size={16} />CPA 账号管理 <span className="tab-count">{secondaryLibrariesHydrated ? snapshot.cpaCodexAccounts.length + snapshot.cpaGrokAccounts.length : '…'}</span>
           </button>
           <button className={activeView === 'automation' ? 'active' : ''} aria-pressed={activeView === 'automation'} onClick={() => setActiveView('automation')}>
             <TimerReset size={16} />定时切换

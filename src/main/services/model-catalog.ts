@@ -34,6 +34,7 @@ export interface ModelCatalogEntry {
   /** Required by current Codex desktop ModelInfo parser. */
   base_instructions: string
   include_skills_usage_instructions: boolean
+  support_verbosity: boolean
   supports_parallel_tool_calls: boolean
   supports_image_detail_original: boolean
   input_modalities: Array<'text' | 'image'>
@@ -111,6 +112,7 @@ export function buildModelCatalog(modelIds: readonly string[], preferredModel: s
       upgrade: null,
       base_instructions: DEFAULT_CUSTOM_MODEL_BASE_INSTRUCTIONS,
       include_skills_usage_instructions: false,
+      support_verbosity: false,
       supports_parallel_tool_calls: true,
       supports_image_detail_original: true,
       input_modalities: ['text', 'image'],
@@ -172,6 +174,10 @@ export async function fetchOpenAiCompatibleModelIds(input: {
         if (!id || seen.has(id)) continue
         seen.add(id)
         ids.push(id)
+      }
+      if (ids.length === 0) {
+        errors.push(`${url} → 模型列表为空`)
+        continue
       }
       const baseUrl = url.replace(/\/models\/?$/, '')
       return { models: ids, baseUrl, modelsUrl: url }

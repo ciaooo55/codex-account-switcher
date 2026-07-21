@@ -194,7 +194,7 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .account-metadata-chips { display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 5px; overflow: hidden; }
 .account-group-chip { flex: 0 1 auto; min-width: 0; max-width: 104px; overflow: hidden; padding: 1px 5px; border: 1px solid; border-radius: 4px; font-size: 9px; font-style: normal; font-weight: 650; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .account-group-chip { color: #9dd8f1; background: #142a35; border-color: #315c70; }
-.workspace-id, .muted { color: #7f8b97; font-size: 11px; margin-top: 5px; }
+.workspace-id, .muted { color: var(--ui-text-subtle, #7f8b97); font-size: 11px; margin-top: 4px; line-height: 1.35; }
 .compact-row-meta { display: none; margin-top: 5px; color: #73828c; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .active-badge, .format-label, .provider-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; font-size: 9px; line-height: 15px; font-weight: 750; white-space: nowrap; }
 .active-badge { flex: 0 0 auto; color: #c1f7f3; background: #173b3d; border: 1px solid #3b9ea0; box-shadow: 0 0 0 1px rgba(91, 218, 211, .08); }
@@ -218,7 +218,19 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .quota-meta strong { color: #d9e1e6; font-weight: 650; }
 .testing-inline { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; color: #9fddff; font-size: 11px; }
 .source-path { color: #c3cbd1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.empty-state { height: 160px; text-align: center; vertical-align: middle; color: #74808c; }
+.empty-state {
+  height: 220px;
+  padding: 28px 16px;
+  text-align: center;
+  vertical-align: middle;
+  color: var(--ui-text-subtle, #74808c);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.5;
+  background:
+    radial-gradient(ellipse 42% 55% at 50% 42%, color-mix(in srgb, var(--ui-accent, #5ecf8e) 7%, transparent), transparent 70%);
+}
 .account-context-menu { position: fixed; z-index: 40; width: 230px; padding: 5px; background: #1b1f21; border: 1px solid #454c50; border-radius: 6px; box-shadow: 0 16px 42px rgba(0,0,0,.52); transform-origin: top left; animation: popover-in .13s ease-out both; }
 .context-account { padding: 7px 9px 9px; color: #8e9aa7; border-bottom: 1px solid #303840; margin-bottom: 4px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .account-context-menu button { width: 100%; min-height: 32px; justify-content: flex-start; padding: 0 9px; color: #dce4ec; background: transparent; border: 0; }
@@ -344,7 +356,7 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 2px; }
 .section-heading strong, .section-heading span { display: block; }
 .section-heading strong { color: #eef2ef; font-size: 13px; font-weight: 650; letter-spacing: .01em; }
-.section-heading div > span { margin-top: 5px; color: #87928b; font-size: 10px; line-height: 1.45; max-width: 46ch; }
+.section-heading div > span { margin-top: 5px; color: var(--ui-text-subtle, #87928b); font-size: 11px; line-height: 1.5; max-width: 52ch; }
 .saved-secret { flex: 0 0 auto; padding: 4px 8px; color: #9aa59e; background: #1c2621; border: 1px solid #3a4a42; border-radius: 999px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .saved-secret.ready { color: #8fe3ad; background: #163325; border-color: #347a52; }
 .paste-dialog { align-self: center; margin: auto; width: min(680px, 94vw); max-height: 90vh; padding: 20px; background: #171b20; border: 1px solid #414b56; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,.48); animation: modal-surface-in .18s cubic-bezier(.2,.78,.24,1) both; }
@@ -1142,13 +1154,39 @@ input[type="checkbox"] { accent-color: var(--ui-accent-strong); }
 .table-wrap { scrollbar-color: var(--ui-border-strong) var(--ui-bg); }
 th { color: var(--ui-text-muted); background: var(--ui-surface-raised); border-color: var(--ui-border); }
 td { color: var(--ui-text-muted); border-color: var(--ui-border); }
-.account-row { --row-bg: var(--ui-surface); --row-hover: var(--ui-surface-hover); --row-accent: transparent; }
-.account-row td:first-child { border-left: 0; padding-left: 10px; }
-.account-row td { transition: background-color var(--motion-fast) ease; }
-.account-row:hover td { background: var(--row-hover); box-shadow: none; }
+.account-row { --row-bg: var(--ui-surface); --row-hover: var(--ui-surface-hover); }
+.account-row td:first-child {
+  border-left: 0;
+  padding-left: 10px;
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--row-accent, transparent) 78%, transparent);
+}
+.account-row td { transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease; }
+.account-row:hover td { background: var(--row-hover); }
+/* Re-assert status accents after the token bridge. */
+.status-row-valid { --row-accent: #4aba74; }
+.status-row-quota_exhausted, .status-row-quota_exhausted_5h, .status-row-quota_exhausted_weekly { --row-accent: #d0a043; }
+.status-row-needs_refresh { --row-accent: #d5a047; }
+.status-row-invalid, .status-row-no_permission, .status-row-workspace_deactivated, .status-row-file_error { --row-accent: #db6d69; }
+.status-row-network_error, .status-row-endpoint_incompatible { --row-accent: #599dc8; }
+.status-row-model_unavailable { --row-accent: #cfa345; }
+.status-row-untested { --row-accent: #7b8893; }
+.status-row-testing { --row-accent: #56add5; }
 .account-row:focus-visible td { box-shadow: inset 0 1px var(--ui-accent), inset 0 -1px var(--ui-accent); }
 .selected-row td,
 .selected-row:hover td { background: var(--ui-surface-selected); box-shadow: inset 0 1px var(--ui-accent-border), inset 0 -1px var(--ui-accent-border); }
+
+/* Keep status accent visible under selection/current chrome. */
+.selected-row td:first-child,
+.selected-row:hover td:first-child,
+.active-row td:first-child,
+.active-row.selected-row td:first-child,
+.active-row.selected-row:hover td:first-child {
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--row-accent, transparent) 88%, transparent),
+    inset 0 1px var(--ui-accent-border),
+    inset 0 -1px var(--ui-accent-border);
+}
+
 .active-row { --row-bg: var(--ui-surface-current); --row-hover: var(--ui-surface-selected); }
 .active-row td,
 .active-row.selected-row td,
@@ -1335,9 +1373,9 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
 }
 .custom-api-models-note {
   margin: 6px 0 0;
-  color: #8fb59a;
+  color: var(--ui-text-muted, #8fb59a);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 .custom-api-panel select {
   width: 100%;
@@ -1459,4 +1497,204 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
     border-color: #c07a7a;
   }
   .app-header { background: linear-gradient(180deg, #fafcfb 0%, #f4f7f5 100%); }
+}
+
+
+/* motion polish: account switcher / health / custom api */
+@keyframes status-soft-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(86, 173, 213, 0); }
+  50% { box-shadow: 0 0 0 3px rgba(86, 173, 213, .16); }
+}
+@keyframes active-badge-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(91, 218, 211, .08); }
+  50% { box-shadow: 0 0 0 3px rgba(91, 218, 211, .14); }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translate3d(8px, 10px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes list-row-enter {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes health-row-enter {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* toast: slightly richer enter from bottom-right */
+.message {
+  animation-name: toast-in;
+  animation-duration: var(--motion-standard);
+  animation-timing-function: var(--ease-out, ease-out);
+  animation-fill-mode: both;
+}
+
+/* health-check / testing status chips */
+.status-testing,
+.testing-inline {
+  animation: status-soft-pulse 1.6s var(--ease-soft, ease) infinite;
+}
+.testing-row td:first-child {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--row-accent) 85%, transparent);
+  transition: box-shadow var(--motion-fast) var(--ease-soft, ease), background-color var(--motion-fast) var(--ease-soft, ease);
+}
+
+/* account table: accent bar + hover feel without layout thrash */
+.account-row td:first-child {
+  transition:
+    background-color var(--motion-fast) var(--ease-soft, ease),
+    box-shadow var(--motion-fast) var(--ease-soft, ease),
+    color var(--motion-fast) ease;
+}
+.account-row:hover td:first-child {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--row-accent) 92%, transparent);
+}
+.account-row.selected-row td,
+.account-row.active-row td {
+  transition:
+    background-color var(--motion-standard) var(--ease-soft, ease),
+    box-shadow var(--motion-standard) var(--ease-soft, ease),
+    color var(--motion-fast) ease;
+}
+
+/* intentionally no enter animation on .account-row/.preview-row:
+   virtualized lists remount rows while scrolling; enter animation would re-fire and feel janky. */
+
+/* status filter chips: press + active micro-emphasis */
+.status-filter-strip button.active {
+  transform: translateY(0);
+}
+.status-filter-strip button:hover:not(:disabled):not(.active) {
+  transform: translateY(-1px);
+}
+.status-filter-strip button.active:hover:not(:disabled) {
+  transform: none;
+}
+
+/* health dialog issues */
+.health-issue {
+  transition:
+    background-color var(--motion-fast) var(--ease-soft, ease),
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) var(--ease-soft, ease);
+  animation: health-row-enter var(--motion-standard) var(--ease-out) both;
+}
+.health-issue:nth-child(1) { animation-delay: 0ms; }
+.health-issue:nth-child(2) { animation-delay: 20ms; }
+.health-issue:nth-child(3) { animation-delay: 40ms; }
+.health-issue:nth-child(4) { animation-delay: 60ms; }
+.health-issue:nth-child(5) { animation-delay: 80ms; }
+.health-issue:nth-child(6) { animation-delay: 100ms; }
+.health-issue:nth-child(n+7) { animation-delay: 110ms; }
+.health-issue:hover {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ui-accent, #58b882) 55%, transparent);
+}
+.health-issue:focus-visible {
+  outline: 2px solid rgba(92, 174, 218, .55);
+  outline-offset: -2px;
+}
+.health-summary > div strong {
+  transition: color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-soft, ease);
+}
+.health-summary > div:hover strong {
+  transform: translateY(-1px);
+}
+
+/* custom API + auto-switch panels */
+.custom-api-panel,
+.auto-switch-panel {
+  transition:
+    border-color var(--motion-standard) var(--ease-soft, ease),
+    box-shadow var(--motion-standard) var(--ease-soft, ease),
+    background-color var(--motion-standard) ease;
+}
+.custom-api-panel input,
+.custom-api-panel select,
+.auto-switch-panel input,
+.auto-switch-panel select {
+  transition:
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
+}
+.custom-api-actions .primary-button:hover:not(:disabled),
+.custom-api-panel .primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.custom-api-actions .primary-button:active:not(:disabled),
+.custom-api-panel .primary-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* primary actions used for switch / health repair */
+.primary-button {
+  transition:
+    color var(--motion-fast) var(--ease-soft, ease),
+    background-color var(--motion-fast) var(--ease-soft, ease),
+    border-color var(--motion-fast) var(--ease-soft, ease),
+    box-shadow var(--motion-fast) var(--ease-soft, ease),
+    transform var(--motion-fast) var(--ease-soft, ease);
+}
+.primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.primary-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* confirmation / compact dialogs already enter; soften interactive chrome */
+.confirmation-dialog .primary-button,
+.repair-dialog .primary-button,
+.compact-dialog .primary-button,
+.health-dialog .primary-button {
+  transition:
+    color var(--motion-fast) var(--ease-soft, ease),
+    background-color var(--motion-fast) var(--ease-soft, ease),
+    border-color var(--motion-fast) var(--ease-soft, ease),
+    box-shadow var(--motion-fast) var(--ease-soft, ease),
+    transform var(--motion-fast) var(--ease-soft, ease);
+}
+
+/* status chips: color/border settle after test updates */
+.status {
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+
+/* quota bar polish: soft track inset */
+.quota-track {
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12);
+}
+.quota-fill {
+  will-change: width;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message,
+  .active-badge,
+  .status-testing,
+  .testing-inline,
+  .account-row,
+  .preview-row,
+  .health-issue {
+    animation: none !important;
+  }
+  .status-filter-strip button:hover:not(:disabled):not(.active),
+  .primary-button:hover:not(:disabled),
+  .primary-button:active:not(:disabled),
+  .custom-api-actions .primary-button:hover:not(:disabled),
+  .custom-api-panel .primary-button:hover:not(:disabled),
+  .custom-api-actions .primary-button:active:not(:disabled),
+  .custom-api-panel .primary-button:active:not(:disabled),
+  .health-summary > div:hover strong,
+  .account-row:hover td:first-child {
+    transform: none !important;
+  }
+  .health-issue:hover {
+    box-shadow: none;
+  }
 }

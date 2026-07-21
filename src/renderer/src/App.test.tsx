@@ -539,6 +539,7 @@ describe('App', () => {
     window.codexSwitcher = bridge
     render(<App />)
     expect((await screen.findAllByText('person@example.com')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('accounts'))
     vi.mocked(bridge.getPageSnapshot).mockClear()
 
     fireEvent.click(screen.getByRole('button', { name: /^Grok 账号库/ }))
@@ -548,7 +549,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '定时切换' }))
     await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('automation'))
 
-    expect(bridge.getSnapshot).toHaveBeenCalledTimes(1)
+    expect(bridge.getSnapshot).not.toHaveBeenCalled()
   })
 
   it('toggles additive multi-select by clicking account rows', async () => {

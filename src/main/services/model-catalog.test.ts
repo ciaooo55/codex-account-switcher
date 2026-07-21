@@ -28,6 +28,9 @@ describe('model catalog helpers', () => {
     })
     expect(catalog.models[0].base_instructions.length).toBeGreaterThan(20)
     expect(catalog.models.every((model) => typeof model.base_instructions === 'string')).toBe(true)
+    expect(catalog.models.every((model) => model.include_skills_usage_instructions === false)).toBe(true)
+    expect(catalog.models.every((model) => model.support_verbosity === false)).toBe(true)
+    expect(catalog.models.every((model) => model.supports_parallel_tool_calls === true)).toBe(true)
     expect(catalog.models[0].supported_reasoning_levels.map((level) => level.effort)).toEqual([
       'low',
       'medium',

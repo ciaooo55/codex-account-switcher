@@ -201,8 +201,18 @@ function showMainWindow(): void {
 }
 
 async function main(): Promise<void> {
-  await cleanupLegacyUpdateCache(process.env.LOCALAPPDATA).catch(() => undefined)
-  const installerResult = await consumeInstallerResult().catch(() => null)
+  // Non-critical disk cleanup must not block first paint.
+  const deferredLegacyCleanup = cleanupLegacyUpdateCache(process.env.LOCALAPPDATA).catch(() => undefined)
+  const installerResultPromise = consumeInstallerResult().catch(() => null)
+  const userData = app.getPath('userData')
+  const homeDirectory = homedir()
+  const cipher = createCipher()
+  const settingsStore = new SettingsStore(join(userData, 'settings.json'), homeDirectory)
+  const [installerResult, initialSettingsLoaded] = await Promise.all([
+    installerResultPromise,
+    settingsStore.get()
+  ])
+  let initialSettings = initialSettingsLoaded
   if (installerResult) {
     updateState = {
       status: installerResult.status === 'succeeded' ? 'not_available' : 'error',
@@ -214,11 +224,6 @@ async function main(): Promise<void> {
         : `更新安装失败：${installerResult.message}`
     }
   }
-  const userData = app.getPath('userData')
-  const homeDirectory = homedir()
-  const cipher = createCipher()
-  const settingsStore = new SettingsStore(join(userData, 'settings.json'), homeDirectory)
-  let initialSettings = await settingsStore.get()
   if (e2eMode) {
     initialSettings = await settingsStore.update({
       grokDirectory: join(userData, 'grok-accounts')
@@ -264,7 +269,21 @@ async function main(): Promise<void> {
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-library-status.json'))
   const cpaGrokStatusStore = new GrokStatusStore(join(userData, 'grok-status.json'))
   const accountMetadataStore = new AccountMetadataStore(join(userData, 'account-metadata.json'))
-  await accountMetadataStore.getAll()
+  // Warm metadata cache in parallel with the rest of startup.
+  // Keep a retrying helper: a single failed warm must not leave aliases empty forever.
+  let metadataWarm = accountMetadataStore.getAll().then(() => undefined)
+  const metadataReady = async (): Promise<void> => {
+    try {
+      await metadataWarm
+    } catch {
+      metadataWarm = accountMetadataStore.getAll().then(() => undefined)
+      try {
+        await metadataWarm
+      } catch {
+        // Corrupt metadata must not block account lists; decorate falls back to empty fields.
+      }
+    }
+  }
   const deletedStore = new DeletedCredentialStore(join(userData, 'deleted-accounts.json'))
   const deletedCpaCodexStore = new DeletedCredentialStore(join(userData, 'deleted-cpa-codex-accounts.json'))
   const deletedGrokStore = new DeletedCredentialStore(join(userData, 'deleted-grok-library-accounts.json'))
@@ -795,7 +814,7 @@ async function main(): Promise<void> {
 
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
-  let availableUpdate: { version: string; expectedSha512: string } | null = null
+  let availableUpdate: { version: string; expectedSha512: string; url?: string } | null = null
   let downloadedInstallerPath: string | null = null
   autoUpdater.on('checking-for-update', () => {
     sendUpdateState({
@@ -809,7 +828,11 @@ async function main(): Promise<void> {
     const setupFile = info.files.find((file) => /setup.*\.exe$/i.test(String(file.url)))
       ?? info.files.find((file) => /\.exe$/i.test(String(file.url)))
     availableUpdate = setupFile
-      ? { version: info.version, expectedSha512: setupFile.sha512 }
+      ? {
+          version: info.version,
+          expectedSha512: setupFile.sha512,
+          url: typeof setupFile.url === 'string' ? setupFile.url : undefined
+        }
       : null
     downloadedInstallerPath = null
     sendUpdateState({
@@ -831,12 +854,18 @@ async function main(): Promise<void> {
       message: '当前已是最新版本'
     })
   })
-  autoUpdater.on('error', () => {
+  autoUpdater.on('error', (error) => {
+    const detail = error instanceof Error ? error.message.trim() : String(error ?? '')
+    const short =
+      /latest\.yml/i.test(detail) ? '更新元数据 latest.yml 缺失或不可访问'
+      : /404/.test(detail) ? '更新资源不存在（404）'
+      : /ENOTFOUND|ECONN|network|timed out/i.test(detail) ? '网络异常，无法检查更新'
+      : detail ? detail.slice(0, 160) : '请稍后重试'
     sendUpdateState({
       ...updateState,
       status: 'error',
       percent: null,
-      message: '更新检查或下载失败，请稍后重试'
+      message: `更新检查或下载失败：${short}`
     })
   })
 
@@ -864,7 +893,7 @@ async function main(): Promise<void> {
   }
 
   ipcMain.handle(ipcChannels.snapshot, async () => {
-    await Promise.all([initialScan, initialGrokScan, initialCpaCodexScan, initialCpaGrokScan])
+    await Promise.all([initialScan, initialGrokScan, initialCpaCodexScan, initialCpaGrokScan, metadataReady()])
     const settings = await settingsStore.get()
     const [accounts, grokAccounts, cpaCodexAccounts, cpaGrokAccounts, customApi] = await Promise.all([
       manager.listAccounts(),
@@ -1724,9 +1753,13 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(ipcChannels.snapshotPage, async (_event, input: unknown) => {
     const scope = z.enum(['accounts', 'grok', 'cpa', 'automation']).parse(input)
-    if (scope === 'accounts' || scope === 'automation') await initialScan
-    if (scope === 'grok') await initialGrokScan
-    if (scope === 'cpa') await Promise.all([initialCpaCodexScan, initialCpaGrokScan])
+    const scopeReady =
+      scope === 'accounts' || scope === 'automation'
+        ? initialScan
+        : scope === 'grok'
+          ? initialGrokScan
+          : Promise.all([initialCpaCodexScan, initialCpaGrokScan])
+    await Promise.all([scopeReady, metadataReady()])
 
     const settings = await settingsStore.get()
     const base = {
@@ -1900,7 +1933,10 @@ async function main(): Promise<void> {
     const version = availableUpdate.version.replace(/^v/i, '')
     const fileName = `Codex-Account-Switcher-Setup-${version}.exe`
     const targetPath = join(app.getPath('downloads'), fileName)
-    const url = `https://github.com/ciaooo55/codex-account-switcher/releases/download/v${version}/${fileName}`
+    const metadataUrl = availableUpdate.url?.trim()
+    const url = metadataUrl && /^https?:\/\//i.test(metadataUrl)
+      ? metadataUrl
+      : `https://github.com/ciaooo55/codex-account-switcher/releases/download/v${version}/${fileName}`
     downloadedInstallerPath = null
     updateDownloadPromise = downloadInstaller({
       url,
@@ -2034,9 +2070,13 @@ async function main(): Promise<void> {
 
   applicationInitialized = true
   showMainWindow()
-  await initialScan
-  await autoSwitchScheduler.start()
-  await rebuildTrayMenu()
+  // First paint no longer waits for library scans; scans continue in background.
+  void autoSwitchScheduler.start().catch(() => undefined)
+  void rebuildTrayMenu().catch(() => undefined)
+  void initialScan
+    .then(() => rebuildTrayMenu())
+    .catch(() => undefined)
+  void deferredLegacyCleanup
   if (installerResult) {
     showTrayMessage(
       installerResult.status === 'succeeded' ? '更新完成' : '更新失败',
