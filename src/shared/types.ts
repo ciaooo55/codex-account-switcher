@@ -49,10 +49,24 @@ export interface SwitchResult {
   ok: boolean
   message: string
   backupPath: string | null
+  /** Selected custom API model after auto-fetch (when applicable). */
+  selectedModel?: string
+  /** Resolved OpenAI-compatible base URL after multi-path discovery. */
+  discoveredBaseUrl?: string
+  /** Models returned by provider /models during custom API switch. */
+  remoteModels?: string[]
   restartResult?: {
     ok: boolean
     message: string
   }
+}
+
+export interface CustomApiListModelsResult {
+  ok: boolean
+  message: string
+  models: string[]
+  baseUrl: string
+  modelsUrl?: string
 }
 
 export type AccountStatus =

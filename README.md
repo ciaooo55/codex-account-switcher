@@ -26,7 +26,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 完整 OAuth 与只有 access token 的 CPA Team/K12 账号都写入标准 `auth_mode: "chatgpt"`。access-only 账号会保留 workspace ID、以 access JWT 填充 ID token，并写入空的 refresh token；切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
 - 顶部提供 Codex 账号库、Grok 账号库、CPA 账号管理、定时切换四个独立页面，并可在浅色和深色工作台主题之间切换；窄窗口下导航保持单行，选择保存在本机并在下次启动时恢复。页面切换和操作完成后只读取当前板块的数据，不再重复扫描其他账号库；账号超过 80 条时表格启用虚拟滚动，只渲染可视区域及少量缓冲行。
-- 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。切换时会请求代理 /v1/models，生成 Codex model_catalog_json 目录文件，使桌面版模型下拉显示第三方模型（需重启 Codex）；拉取失败时仍写入当前模型一项。
+- 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。保存自定义 API 时先用填写的模型做连通测试（多路径尝试 /v1、/api/v1、/openai/v1 的 responses 与 chat/completions），测试通过后再拉取模型列表并写入 config 与相对路径 model_catalog_json；列表拉取失败仍会保存当前模型一项。测试失败不会改写配置。
 - “账号库体检”会扫描 aa Codex、aa Grok、CPA 和本地状态/标签记录，报告重复身份、非标准文件、多账号文件、Codex/Grok 混合文件、损坏文件及孤立缓存；修复前二次确认，凭证先解析并写入正确分类目录，确认成功后才清理旧文件，损坏文件移入应用隔离目录。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 点击最小化会保留窗口并正常缩到任务栏；点击关闭才会释放主界面并转入系统托盘，只保留主进程定时任务。托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出；后台检测未发生切换时保持静默，只有账号实际更换才发送托盘通知。

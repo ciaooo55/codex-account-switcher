@@ -38,6 +38,17 @@ describe('managed Codex config patching', () => {
     expect(applied.snapshot.model_catalog_json).toBe('model_catalog_json = "C:\\\\old\\\\catalog.json"')
   })
 
+  it('accepts a relative model catalog path for config.toml', () => {
+    const applied = applyCustomApiConfig(customConfig, {
+      baseUrl: 'http://127.0.0.1:18317',
+      model: 'gpt-custom',
+      modelCatalogPath: 'model-catalogs/account-switcher.json'
+    })
+
+    expect(applied.text).toContain('model_catalog_json = "model-catalogs/account-switcher.json"')
+    expect(applied.text).toContain('openai_base_url = "http://127.0.0.1:18317/v1"')
+  })
+
   it('switches top-level auth/provider keys without touching custom provider sections', () => {
     const applied = applyChatGptConfig(customConfig)
 

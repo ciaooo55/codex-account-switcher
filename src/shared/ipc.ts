@@ -20,6 +20,7 @@ import type {
   DeleteAccountsResult,
   CustomApiProfileInput,
   CustomApiProfileSummary,
+  CustomApiListModelsResult,
   GrokAccountSummary,
   GrokBatchTestResult,
   GrokTestResult,
@@ -162,6 +163,7 @@ export interface CodexSwitcherApi {
   restoreApiMode(restart: boolean): Promise<SwitchResult>
   switchToCustomApi(profile: CustomApiProfileInput, restart: boolean): Promise<SwitchResult>
   getCustomApiProfile(): Promise<CustomApiProfileSummary>
+  listCustomApiModels(input: { baseUrl: string; apiKey?: string }): Promise<CustomApiListModelsResult>
   scanGrokDirectory(): Promise<GrokScanResult>
   importGrokFiles(): Promise<GrokScanResult | null>
   importGrokDirectory(): Promise<GrokScanResult | null>
@@ -250,6 +252,7 @@ export const ipcChannels = {
   restoreApiMode: 'accounts:restore-api-mode',
   customApiSwitch: 'custom-api:switch',
   customApiProfile: 'custom-api:profile',
+  customApiListModels: 'custom-api:list-models',
   grokScan: 'grok:scan',
   grokImport: 'grok:import',
   grokImportDirectory: 'grok:import-directory',

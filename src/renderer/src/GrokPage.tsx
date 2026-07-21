@@ -189,6 +189,17 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
     }
   }
 
+  async function runTest<T>(operation: () => Promise<T>, success: string | ((result: T) => void)): Promise<void> {
+    try {
+      const result = await operation()
+      onSnapshot(await window.codexSwitcher.getPageSnapshot('cpa'))
+      if (typeof success === 'string') notify('ok', success)
+      else success(result)
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '操作失败')
+    }
+  }
+
   const ids = (): string[] => [...selected]
   const setEnabled = (enabled: boolean, selectedIds = ids()): void => {
     void run(
@@ -229,7 +240,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
     if (action === 'select') {
       setSelected(new Set(categoryIds))
     } else if (action === 'test') {
-      void run(
+      void runTest(
         () => window.codexSwitcher.testCpaCodexAccounts(categoryIds, testMode),
         `CPA Codex ${category ? STATUS_LABELS[category] : '全部账号'}检测完成`
       )
@@ -249,7 +260,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
     if (action === 'select') {
       setSelected(new Set(groupIds))
     } else if (action === 'test') {
-      void run(
+      void runTest(
         () => window.codexSwitcher.testCpaCodexAccounts(groupIds, testMode),
         `CPA Codex 当前分组检测完成`
       )
@@ -269,17 +280,17 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
     <StatusFilterStrip value={status} counts={facets.statusCounts} total={snapshot.cpaCodexAccounts.length} onChange={setStatus} label="CPA Codex 账号状态" onAction={handleCategoryAction} managedFiles disabled={busy || snapshot.cpaCodexTesting.active} groups={availableFacets.groups} groupValue={facetFilters.group} onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))} onGroupAction={handleGroupAction} />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(() => window.codexSwitcher.scanCpaCodexDirectory(), 'CPA Codex 扫描完成')} disabled={busy}><RefreshCw size={16} />重新扫描</button><button onClick={() => syncToLibrary()} disabled={busy || snapshot.cpaCodexTesting.active}><FolderSync size={16} />同步全部到 aa</button></div>
-      <div className="toolbar-group"><CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.cpaCodexTesting.active} label="CPA Codex 检测模式" /><button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(accounts.map((account) => account.id), testMode), `CPA Codex 当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.cpaCodexTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
+      <div className="toolbar-group"><CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.cpaCodexTesting.active} label="CPA Codex 检测模式" /><button onClick={() => void runTest(() => window.codexSwitcher.testCpaCodexAccounts(accounts.map((account) => account.id), testMode), `CPA Codex 当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.cpaCodexTesting.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{snapshot.cpaCodexTesting.active && <button className="danger-button" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}><Square size={15} />取消</button>}</div>
     </div>
     {selected.size > 0 && <div className="selection-toolbar" aria-label="CPA Codex 选中账号操作">
       <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>批量管理 CPA 文件状态</span></div>
-      <button onClick={() => void run(() => window.codexSwitcher.testCpaCodexAccounts(ids(), testMode), `CPA Codex 选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.cpaCodexTesting.active}><Play size={16} />测试选中</button>
+      <button onClick={() => void runTest(() => window.codexSwitcher.testCpaCodexAccounts(ids(), testMode), `CPA Codex 选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.cpaCodexTesting.active}><Play size={16} />测试选中</button>
       <button onClick={() => setEnabled(true)} disabled={busy || snapshot.cpaCodexTesting.active}><Power size={16} />启用 .json</button>
       <button onClick={() => setEnabled(false)} disabled={busy || snapshot.cpaCodexTesting.active}><PowerOff size={16} />停用 .json.0</button>
       <button onClick={() => syncToLibrary(ids())} disabled={busy || snapshot.cpaCodexTesting.active}><FolderSync size={16} />同步选中到 aa</button>
       <button className="danger-button" onClick={() => remove()} disabled={busy || snapshot.cpaCodexTesting.active}><Trash2 size={16} />删除选中</button>
     </div>}
-    {snapshot.cpaCodexTesting.active && <div className="task-progress"><div style={{ width: `${snapshot.cpaCodexTesting.total ? snapshot.cpaCodexTesting.done / snapshot.cpaCodexTesting.total * 100 : 0}%` }} /><span>{snapshot.cpaCodexTesting.done} / {snapshot.cpaCodexTesting.total}</span></div>}
+    {/* progress shown globally in App header */}
     <div className="filter-row"><label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 CPA Codex 邮箱、等级或状态" /></label><AccountFacetFilters label="CPA Codex" facets={availableFacets} value={facetFilters} onChange={setFacetFilters} /><select aria-label="CPA Codex 排序" value={sort} onChange={(event) => setSort(event.target.value as AccountSortMode)}>{ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="selection-count">显示 {accounts.length} / {snapshot.cpaCodexAccounts.length} · 已选 {selected.size}</span></div>
     <div className="table-wrap" ref={virtualAccounts.scrollRef}><table><thead><tr><th className="select-column"><input type="checkbox" aria-label="选择全部 CPA Codex" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th><th>账号</th><th>状态</th><th>等级</th><th>额度与重置</th><th>文件状态</th><th>托管文件</th></tr></thead><tbody>{virtualAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingTop }} /></tr>}{virtualAccounts.rows.map(({ index, item: account }) => <CpaCodexRow key={account.id} account={account} running={runningIds.has(account.id)} selected={selected.has(account.id)} toggle={() => toggleSelection(setSelected, account.id)} now={now} testMode={testMode} virtualIndex={index} rowRef={virtualAccounts.enabled ? virtualAccounts.measureElement : undefined} openContextMenu={(event) => {
       event.preventDefault()
@@ -288,7 +299,7 @@ function CpaCodexPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBu
     }} />)}{virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}{!accounts.length && <tr><td colSpan={7} className="empty-state">没有匹配的 CPA Codex 账号</td></tr>}</tbody></table></div>
     {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="CPA Codex 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}>
       <div className="context-account">{contextMenu.account.alias ?? contextMenu.account.email ?? 'CPA Codex 账号'}</div>
-      <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => window.codexSwitcher.testCpaCodexAccounts([id], testMode), `CPA Codex ${CODEX_TEST_MODE_SUCCESS[testMode]}`) }}><TestTube2 size={15} />检测这个账号</button>
+      <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void runTest(() => window.codexSwitcher.testCpaCodexAccounts([id], testMode), `CPA Codex ${CODEX_TEST_MODE_SUCCESS[testMode]}`) }}><TestTube2 size={15} />检测这个账号</button>
       <button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource('cpa-codex', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>
       <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>
@@ -376,6 +387,18 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
     catch (error) { notify('error', error instanceof Error ? error.message : '操作失败') }
     finally { setBusy(false); onBusyChange?.(false) }
   }
+
+  async function runTest<T>(operation: () => Promise<T>, success: string | ((result: T) => void)): Promise<void> {
+    try {
+      const result = await operation()
+      onSnapshot(await window.codexSwitcher.getPageSnapshot(cpa ? 'cpa' : 'grok'))
+      if (typeof success === 'string') notify('ok', success)
+      else success(result)
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : '操作失败')
+    }
+  }
+
   const chosen = (): string[] => [...selected]
   const remove = async (ids = chosen()): Promise<void> => {
     if (!ids.length || !await requestConfirmation({
@@ -425,7 +448,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
     if (action === 'select') {
       setSelected(new Set(categoryIds))
     } else if (action === 'test') {
-      void run(
+      void runTest(
         () => testAccounts(categoryIds),
         `${cpa ? 'CPA ' : ''}Grok ${category ? STATUS_LABELS[category] : '全部账号'}检测完成`
       )
@@ -445,7 +468,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
     if (action === 'select') {
       setSelected(new Set(groupIds))
     } else if (action === 'test') {
-      void run(
+      void runTest(
         () => testAccounts(groupIds),
         `${cpa ? 'CPA ' : ''}Grok 当前分组检测完成`
       )
@@ -460,11 +483,11 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
     <StatusFilterStrip value={status} counts={facets.statusCounts} total={sourceAccounts.length} onChange={setStatus} label={`${cpa ? 'CPA ' : ''}Grok 账号状态`} onAction={handleCategoryAction} managedFiles={cpa} disabled={busy || testing.active} groups={availableFacets.groups} groupValue={facetFilters.group} onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))} onGroupAction={handleGroupAction} />
     <div className="toolbar">
       <div className="toolbar-group"><button onClick={() => void run(scan, `${cpa ? 'CPA ' : ''}Grok 扫描完成`)} disabled={busy || testing.active}><RefreshCw size={16} />重新扫描</button>{cpa && <button onClick={() => syncToLibrary()} disabled={busy || testing.active}><FolderSync size={16} />同步全部到 aa</button>}</div>
-      <div className="toolbar-group"><button onClick={() => void run(() => testAccounts(accounts.map((account) => account.id)), `Grok 当前筛选 ${accounts.length} 个账号检测完成`)} disabled={busy || testing.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{testing.active && <button className="danger-button" onClick={() => void cancelTests()}><Square size={15} />取消</button>}</div>
+      <div className="toolbar-group"><button onClick={() => void runTest(() => testAccounts(accounts.map((account) => account.id)), `Grok 当前筛选 ${accounts.length} 个账号检测完成`)} disabled={busy || testing.active || accounts.length === 0}><TestTube2 size={16} />测试当前页面全部</button>{testing.active && <button className="danger-button" onClick={() => void cancelTests()}><Square size={15} />取消</button>}</div>
     </div>
     {selected.size > 0 && <div className="selection-toolbar" aria-label="Grok 选中账号操作">
       <div className="selection-summary"><CheckCircle2 size={15} /><strong>已选择 {selected.size} 个账号</strong><span>批量测试、导出或调整文件状态</span></div>
-      <button onClick={() => void run(() => testAccounts(chosen()), 'Grok 选中检测完成')} disabled={busy || testing.active}><Play size={16} />测试选中</button>
+      <button onClick={() => void runTest(() => testAccounts(chosen()), 'Grok 选中检测完成')} disabled={busy || testing.active}><Play size={16} />测试选中</button>
       <button onClick={() => setEnabled(true)} disabled={busy || testing.active}><Power size={16} />启用 .json</button>
       <button onClick={() => setEnabled(false)} disabled={busy || testing.active}><PowerOff size={16} />停用 .json.0</button>
       {cpa && <button onClick={() => syncToLibrary(chosen())} disabled={busy || testing.active}><FolderSync size={16} />同步选中到 aa</button>}
@@ -473,7 +496,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
       {!cpa && <button onClick={() => void exportAccounts('bundle')} disabled={busy || testing.active}><FileArchive size={16} />合并导出</button>}
       <button className="danger-button" onClick={() => void remove()} disabled={busy || testing.active}><Trash2 size={16} />删除选中</button>
     </div>}
-    {testing.active && <div className="task-progress"><div style={{ width: `${testing.total ? testing.done / testing.total * 100 : 0}%` }} /><span>{testing.done} / {testing.total}</span></div>}
+    {/* progress shown globally in App header */}
     <div className="filter-row"><label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 Grok 邮箱、团队或等级" /></label><AccountFacetFilters label={`${cpa ? 'CPA ' : ''}Grok`} facets={availableFacets} value={facetFilters} onChange={setFacetFilters} /><select aria-label={`${cpa ? 'CPA ' : ''}Grok 账号排序`} value={sort} onChange={(event) => setSort(event.target.value as AccountSortMode)}>{ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="selection-count">显示 {accounts.length} / {sourceAccounts.length} · 已选 {selected.size}</span></div>
     <div className="table-wrap" ref={virtualAccounts.scrollRef}>
       <table>
@@ -507,7 +530,7 @@ function GrokPanel({ snapshot, onSnapshot, notify, requestConfirmation, onBusyCh
         </tbody>
       </table>
     </div>
-    {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="Grok 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}><div className="context-account">{contextMenu.account.alias ?? contextMenu.account.email ?? contextMenu.account.subject ?? 'Grok 账号'}</div><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(() => testAccounts([id]), 'Grok 账号检测完成') }}><TestTube2 size={15} />检测这个账号</button><button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource(cpa ? 'cpa-grok' : 'grok', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>{cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>}<button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button>{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportToCpa([id]) }}><Zap size={15} />导出到 CPA</button>}{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportAccounts('separate', [id]) }}><Download size={15} />导出这个账号</button>}<button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void remove([id]) }}><Trash2 size={15} />删除这个账号</button></div>}
+    {contextMenu && <div ref={contextMenuRef} className="account-context-menu" role="menu" aria-label="Grok 账号管理" style={{ left: contextMenu.x, top: contextMenu.y }}><div className="context-account">{contextMenu.account.alias ?? contextMenu.account.email ?? contextMenu.account.subject ?? 'Grok 账号'}</div><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void runTest(() => testAccounts([id]), 'Grok 账号检测完成') }}><TestTube2 size={15} />检测这个账号</button><button role="menuitem" onClick={() => { const account = contextMenu.account; setContextMenu(null); setEnabled(account.disabled, [account.id]) }}>{contextMenu.account.disabled ? <Power size={15} /> : <PowerOff size={15} />}{contextMenu.account.disabled ? '启用这个文件' : '停用这个文件'}</button><button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void run(async () => { const result = await window.codexSwitcher.revealManagedSource(cpa ? 'cpa-grok' : 'grok', id); if (!result.ok) throw new Error(result.message) }, '已打开账号文件位置', false) }}><FolderOpen size={15} />打开文件位置</button>{cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); syncToLibrary([id]) }}><FolderSync size={15} />同步这个账号到 aa</button>}<button role="menuitem" disabled={!contextMenu.account.email} onClick={() => { if (contextMenu.account.email) void navigator.clipboard.writeText(contextMenu.account.email); setContextMenu(null) }}><Copy size={15} />复制邮箱</button>{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportToCpa([id]) }}><Zap size={15} />导出到 CPA</button>}{!cpa && <button role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void exportAccounts('separate', [id]) }}><Download size={15} />导出这个账号</button>}<button className="context-danger" role="menuitem" onClick={() => { const id = contextMenu.account.id; setContextMenu(null); void remove([id]) }}><Trash2 size={15} />删除这个账号</button></div>}
   </div>
 }
 

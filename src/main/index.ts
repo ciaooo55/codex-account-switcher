@@ -55,9 +55,11 @@ import { SettingsStore } from './storage/settings'
 import { StatusStore } from './storage/status-store'
 import { DeletedCredentialStore } from './storage/deleted-credentials'
 import { CredentialVault } from './storage/vault'
+import { normalizeCustomApiBaseUrl } from '../shared/custom-api'
 import { CustomApiStore } from './storage/custom-api-store'
 import { AccountMetadataStore } from './storage/account-metadata'
 import { GrokStatusStore } from './storage/grok-status-store'
+import { fetchOpenAiCompatibleModelIds } from './services/model-catalog'
 import { CredentialSwitcher } from './switching/switcher'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -622,22 +624,31 @@ async function main(): Promise<void> {
     }
   }
 
-  const runningTask = (): string | null => {
+  /** Tasks that block almost everything, including account switching. */
+  const exclusiveTask = (): string | null => {
     if (updateInstallOperationActive) return '更新安装正在启动'
     if (conversationDeleteOperationActive) return '对话删除正在运行'
     if (sessionRepairOperationActive) return '历史会话修复正在运行'
     if (restartOperationActive) return 'Codex 重启正在运行'
-    if (testController) return 'Codex 账号检测正在运行'
-    if (grokTestController) return 'Grok 账号检测正在运行'
-    if (cpaGrokTestController) return 'CPA Grok 账号检测正在运行'
-    if (cpaCodexTestController) return 'CPA Codex 账号检测正在运行'
-    if (importPreviewTestController) return '导入凭证检测正在运行'
     if (switchOperationActive) return '账号切换或恢复正在运行'
     if (accountLibraryOperationActive) return 'Codex 账号库操作正在运行'
     if (auxiliaryLibraryOperationCount > 0) return '账号文件操作正在运行'
     if (autoSwitchOperationActive) return '自动检测或切换正在运行'
     return null
   }
+
+  /** Background account tests may continue while switching; they still block other tests/mutations. */
+  const runningTask = (): string | null => {
+    if (testController) return 'Codex 账号检测正在运行'
+    if (grokTestController) return 'Grok 账号检测正在运行'
+    if (cpaGrokTestController) return 'CPA Grok 账号检测正在运行'
+    if (cpaCodexTestController) return 'CPA Codex 账号检测正在运行'
+    if (importPreviewTestController) return '导入凭证检测正在运行'
+    return exclusiveTask()
+  }
+
+  /** Account switch / custom API / restore only wait for exclusive ops, not background tests. */
+  const switchBlockingTask = (): string | null => exclusiveTask()
 
   const assertNoRunningTask = (action: string): void => {
     const task = runningTask()
@@ -1290,7 +1301,7 @@ async function main(): Promise<void> {
     testController?.abort()
   })
   ipcMain.handle(ipcChannels.switchAccount, async (_event, input: unknown) => {
-    const task = runningTask()
+    const task = switchBlockingTask()
     if (task) return { ok: false, message: `${task}，暂时不能切换账号`, backupPath: null }
     const payload = z.object({ id: z.string().min(1), restart: z.boolean() }).parse(input)
     switchOperationActive = true
@@ -1312,7 +1323,7 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.restore, async (_event, input: unknown) => {
-    const task = runningTask()
+    const task = switchBlockingTask()
     if (task) return { ok: false, message: `${task}，暂时不能恢复配置`, backupPath: null }
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
@@ -1328,7 +1339,7 @@ async function main(): Promise<void> {
     }
   })
   ipcMain.handle(ipcChannels.restoreApiMode, async (_event, input: unknown) => {
-    const task = runningTask()
+    const task = switchBlockingTask()
     if (task) return { ok: false, message: `${task}，暂时不能恢复 API 模式`, backupPath: null }
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
@@ -1347,32 +1358,107 @@ async function main(): Promise<void> {
     const settings = await settingsStore.get()
     return customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
   })
+  ipcMain.handle(ipcChannels.customApiListModels, async (_event, input: unknown) => {
+    const payload = z
+      .object({
+        baseUrl: z.string().max(2048),
+        apiKey: z.string().max(8192).optional()
+      })
+      .parse(input ?? {})
+    let baseUrl: string
+    try {
+      baseUrl = normalizeCustomApiBaseUrl(payload.baseUrl)
+    } catch (error) {
+      return {
+        ok: false as const,
+        message: error instanceof Error ? error.message : '自定义 API 地址无效',
+        models: [] as string[],
+        baseUrl: ''
+      }
+    }
+    const providedKey = payload.apiKey?.trim() ?? ''
+    const apiKey = providedKey || (await customApiStore.getKey())
+    if (!apiKey) {
+      return { ok: false as const, message: '请填写 API Key 或先保存 Key', models: [] as string[], baseUrl }
+    }
+    try {
+      const settings = await settingsStore.get()
+      const listed = await fetchOpenAiCompatibleModelIds({
+        baseUrl: payload.baseUrl,
+        apiKey,
+        timeoutMs: settings.timeoutMs
+      })
+      return {
+        ok: true as const,
+        message:
+          listed.models.length > 0
+            ? `已从 ${listed.modelsUrl} 获取 ${listed.models.length} 个模型`
+            : `已尝试多路径，但 ${listed.baseUrl} 未返回模型`,
+        models: listed.models,
+        baseUrl: listed.baseUrl,
+        modelsUrl: listed.modelsUrl
+      }
+    } catch (error) {
+      return {
+        ok: false as const,
+        message: error instanceof Error ? error.message : '获取模型列表失败',
+        models: [] as string[],
+        baseUrl
+      }
+    }
+  })
   ipcMain.handle(ipcChannels.customApiSwitch, async (_event, input: unknown) => {
-    const task = runningTask()
+    const task = switchBlockingTask()
     if (task) return { ok: false, message: `${task}，暂时不能切换 API`, backupPath: null }
     const payload = z.object({
       profile: z.object({
-        baseUrl: z.string().url().max(2048),
+        baseUrl: z.string().min(1).max(2048),
         model: z.string().min(1).max(128),
         apiKey: z.string().max(16_384).optional()
       }),
       restart: z.boolean()
     }).parse(input)
-    const updated = await settingsStore.update({
-      customApiBaseUrl: payload.profile.baseUrl,
-      customApiModel: payload.profile.model
-    })
-    if (payload.profile.apiKey?.trim()) await customApiStore.saveKey(payload.profile.apiKey)
-    const apiKey = await customApiStore.getKey()
+
+    let baseUrl: string
+    const model = payload.profile.model.trim()
+    try {
+      baseUrl = normalizeCustomApiBaseUrl(payload.profile.baseUrl)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '自定义 API 地址无效',
+        backupPath: null
+      }
+    }
+    if (!model) {
+      return { ok: false, message: '请先填写要测试的模型名称；测试通过后再自动拉取模型列表', backupPath: null }
+    }
+    if (model.length > 128 || !/^[A-Za-z0-9._:\/-]+$/.test(model)) {
+      return { ok: false, message: '模型名称无效', backupPath: null }
+    }
+
+    const providedKey = payload.profile.apiKey?.trim() ?? ''
+    const apiKey = providedKey || (await customApiStore.getKey())
     if (!apiKey) return { ok: false, message: '请先填写自定义 API Key', backupPath: null }
+
     switchOperationActive = true
     try {
       const result = await switcher.switchToCustomApi({
-        baseUrl: updated.customApiBaseUrl,
-        model: updated.customApiModel,
+        baseUrl: payload.profile.baseUrl,
+        model,
         apiKey
       })
-      if (result.ok && payload.restart) {
+      if (!result.ok) return result
+
+      const savedModel = result.selectedModel?.trim() || model
+      const savedBase = result.discoveredBaseUrl?.trim() || baseUrl
+      await settingsStore.update({
+        customApiBaseUrl: savedBase,
+        customApiModel: savedModel
+      })
+      if (providedKey) await customApiStore.saveKey(providedKey)
+
+      if (payload.restart) {
         const restartResult = await processManager.restart()
         return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
       }

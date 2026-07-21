@@ -373,6 +373,7 @@ function api(): CodexSwitcherApi {
     restoreApiMode: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     switchToCustomApi: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     getCustomApiProfile: vi.fn().mockResolvedValue(snapshot.customApi),
+    listCustomApiModels: vi.fn().mockResolvedValue({ ok: true, message: 'ok', models: ['gpt-custom'], baseUrl: 'https://api.openai.com/v1' }),
     scanGrokDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
     importGrokFiles: vi.fn().mockResolvedValue(null),
     importGrokDirectory: vi.fn().mockResolvedValue(null),
@@ -1375,7 +1376,7 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('API Key'), {
       target: { value: 'temporary-custom-key' }
     })
-    fireEvent.click(screen.getByRole('button', { name: '保存并切换' }))
+    fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
 
     await waitFor(() => expect(bridge.switchToCustomApi).toHaveBeenCalledWith({
       baseUrl: 'http://127.0.0.1:18317',

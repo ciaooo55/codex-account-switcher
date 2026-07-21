@@ -52,6 +52,7 @@ const api: CodexSwitcherApi = {
   restoreApiMode: (restart) => ipcRenderer.invoke(ipcChannels.restoreApiMode, { restart }),
   switchToCustomApi: (profile, restart) => ipcRenderer.invoke(ipcChannels.customApiSwitch, { profile, restart }),
   getCustomApiProfile: () => ipcRenderer.invoke(ipcChannels.customApiProfile),
+  listCustomApiModels: (input) => ipcRenderer.invoke(ipcChannels.customApiListModels, input),
   scanGrokDirectory: () => ipcRenderer.invoke(ipcChannels.grokScan),
   importGrokFiles: () => ipcRenderer.invoke(ipcChannels.grokImport),
   importGrokDirectory: () => ipcRenderer.invoke(ipcChannels.grokImportDirectory),
