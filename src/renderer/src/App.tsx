@@ -1026,7 +1026,7 @@ export function App(): React.JSX.Element {
 
   return (
     <AppSessionProvider value={sessionValue}>
-    <div className="app-shell">
+    <div className="app-shell min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
       <AppHeader
         activeView={activeView}
         onViewChange={setActiveView}

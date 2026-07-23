@@ -1,0 +1,13 @@
+/* Tailwind v4 entry — coexists with legacy styles.css during migration */
+@import "tailwindcss";
+
+/*
+ * Design tokens live in tokens.css as CSS variables.
+ * Components use arbitrary values like bg-[var(--color-surface-1)].
+ */
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+}

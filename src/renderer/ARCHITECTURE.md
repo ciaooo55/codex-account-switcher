@@ -1,50 +1,37 @@
 # Renderer architecture
 
-React 19 + TypeScript + electron-vite layered frontend for **Electron + IPC snapshot**.
+Modern Electron renderer stack (2026):
+
+- **React 19** + TypeScript
+- **Vite 6** via electron-vite
+- **Tailwind CSS v4** (`@tailwindcss/vite`) for utility-first styling
+- **shadcn-style primitives**: `class-variance-authority` + `clsx` + `tailwind-merge` under `components/ui`
+- **lucide-react** icons
+- **@tanstack/react-virtual** for large account tables
+- Path alias: `@/*` → `src/renderer/src/*`
+
+Legacy `styles.css` remains during migration; new UI prefers Tailwind utilities + design tokens in `styles/tokens.css`.
 
 ## Structure
 
 ```
 src/renderer/src/
   main.tsx
-  App.tsx                         # composition root (IPC session + dialogs wiring)
-  context/AppSessionContext.tsx   # shared session chrome
+  App.tsx
+  components/ui/          # Button, Badge, …
+  components/layout/
   pages/
-    AccountsPage.tsx
-    AutomationPage.tsx
-    GrokPage.tsx                  # Grok + CPA
-  components/
-    layout/                       # header / toast / global progress
-    accounts/                     # Quota / chips
-    dialogs/                      # SettingsDialog (+ more extractions)
-    *.tsx                         # feature dialogs already modular
-  services/codexApi.ts
-  lib/                            # pure helpers
-  domain/                         # filters / sort / status boundary
   hooks/
+  lib/                    # cn, theme, navigation, snapshot
   styles/
-    tokens.css                    # design tokens
-    layout-polish.css             # visual hierarchy
-  styles.css                      # legacy component styles (stable class API)
+    tokens.css
+    tailwind.css
+    layout-polish.css
+  styles.css              # legacy (phasing out)
 ```
 
-## Data flow
+## Conventions
 
-Page → codexApi() → main IPC → AppSnapshot → App / AppSessionContext → pages/components
-
-## Stack
-
-| Layer | Choice |
-|------|--------|
-| Runtime | Electron + electron-vite |
-| UI | React 19 + TypeScript |
-| Session data | IPC snapshot (single source of truth) |
-| UI chrome | React Context |
-| Styling | CSS variables design system + polished workbench chrome |
-| Icons | lucide-react |
-
-## Invariants
-
-1. No user-facing regression; IPC contracts stable.
-2. Prefer extraction over rewrites of behavior.
-3. Gate every step with `npm run typecheck` and `npm test`.
+1. New components: Tailwind + `cn()` + CVA variants.
+2. Reuse CSS variables from `tokens.css` for light/dark.
+3. Keep IPC / snapshot state in `App.tsx` + page props for now.
