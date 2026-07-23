@@ -18,22 +18,26 @@ import { serializeCodexCredential } from '../accounts/credential-formats'
 import {
   applyChatGptConfig,
   applyCustomApiConfig,
+  OWNED_PROVIDER_ID,
   restoreManagedConfig,
   type ManagedConfigSnapshot
 } from './config'
 import {
   buildModelCatalog,
   fetchOpenAiCompatibleModelIds,
-  modelCatalogConfigPath,
+  MODEL_CATALOG_RELATIVE_PATH,
   modelCatalogPath,
   probeCustomApiModel,
   writeModelCatalogFile
 } from '../services/model-catalog'
+import { allocateModelGatewaySlots, type ModelGatewaySlot } from '../services/custom-api-gateway'
 
 interface BackupPayload {
   createdAt: string
   authText: string | null
   configSnapshot: ManagedConfigSnapshot
+  /** Missing in legacy backups; null means the managed catalog did not exist. */
+  managedCatalogText?: string | null
 }
 
 interface BackupEnvelope {
@@ -55,7 +59,13 @@ interface SwitcherOptions {
     endpoint: 'responses' | 'chat_completions'
     baseUrl?: string
     probeUrl?: string
+    output: string
   }>
+  configureGateway?: (input: {
+    upstreamBaseUrl: string
+    upstreamApiKey: string
+    slots: ModelGatewaySlot[]
+  }) => Promise<{ baseUrl: string; token: string }>
 }
 
 async function readOptional(path: string): Promise<string | null> {
@@ -170,15 +180,19 @@ export class CredentialSwitcher {
     }
     let previousAuth: string | null = null
     let previousConfig = ''
+    const catalogPath = modelCatalogPath(dirname(this.options.configPath))
+    let previousCatalog: string | null = null
     let backupPath: string | null = null
     try {
       previousAuth = await readOptional(this.options.authPath)
       previousConfig = (await readOptional(this.options.configPath)) ?? ''
+      previousCatalog = await readOptional(catalogPath)
       const appliedConfig = applyChatGptConfig(previousConfig)
       backupPath = await this.writeBackup({
         createdAt: new Date().toISOString(),
         authText: previousAuth,
-        configSnapshot: appliedConfig.snapshot
+        configSnapshot: appliedConfig.snapshot,
+        managedCatalogText: previousCatalog
       })
 
       await writeAtomic(this.options.authPath, nextAuth.text)
@@ -188,6 +202,7 @@ export class CredentialSwitcher {
         configPath: this.options.configPath
       })
       if (!valid) throw new Error('Codex 登录配置校验失败')
+      await rm(catalogPath, { force: true })
 
       await this.pruneBackups()
       return {
@@ -203,6 +218,8 @@ export class CredentialSwitcher {
       try {
         if (previousAuth === null) await rm(this.options.authPath, { force: true })
         else await writeAtomic(this.options.authPath, previousAuth)
+        if (previousCatalog === null) await rm(catalogPath, { force: true })
+        else await writeAtomic(catalogPath, previousCatalog)
         await writeAtomic(this.options.configPath, previousConfig)
       } catch {
         return {
@@ -219,22 +236,43 @@ export class CredentialSwitcher {
     }
   }
 
-  async switchToCustomApi(input: { baseUrl: string; model: string; apiKey: string }): Promise<SwitchResult> {
+  async switchToCustomApi(input: {
+    baseUrl: string
+    model: string
+    apiKey: string
+    models?: string[]
+    syncModelCatalog?: boolean
+    verifiedProbe?: {
+      endpoint: 'responses'
+      baseUrl: string
+      probeUrl: string
+      output: string
+    }
+    forceProbeFailure?: string
+  }): Promise<SwitchResult> {
     const previousAuth = await readOptional(this.options.authPath)
     const previousConfig = (await readOptional(this.options.configPath)) ?? ''
+    const catalogPath = modelCatalogPath(dirname(this.options.configPath))
+    const previousCatalog = await readOptional(catalogPath)
     let backupPath: string | null = null
-    let wroteConfig = false
+    let wroteFiles = false
     try {
       if (!input.apiKey.trim()) throw new Error('请填写自定义 API Key')
+      const model = input.model.trim()
+      if (!model) throw new Error('请先选择要进行真实测试的模型')
 
-      // 1) Require the filled model and test connectivity first (multi-path probe).
-      let model = input.model.trim()
-      if (!model) {
-        throw new Error('请先填写要测试的模型名称；测试通过后再自动拉取模型列表')
-      }
-
+      // A successful HTTP status is not enough. The selected model must answer `hi`
+      // with a real, non-empty Responses payload before any local file is changed.
       let discoveredBaseUrl = input.baseUrl
-      const probe = this.options.probeModel
+      const forcedWarning = input.forceProbeFailure?.trim() ?? ''
+      const probe = input.verifiedProbe ?? (forcedWarning
+        ? {
+            endpoint: 'responses' as const,
+            baseUrl: input.baseUrl,
+            probeUrl: '/responses（测试失败后强制）',
+            output: ''
+          }
+        : (this.options.probeModel
         ? await this.options.probeModel({
             baseUrl: discoveredBaseUrl,
             apiKey: input.apiKey,
@@ -245,12 +283,13 @@ export class CredentialSwitcher {
             apiKey: input.apiKey,
             model,
             timeoutMs: this.options.catalogTimeoutMs
-          })
-      if ('baseUrl' in probe && typeof probe.baseUrl === 'string' && probe.baseUrl.trim()) {
+          })))
+      if (typeof probe.baseUrl === 'string' && probe.baseUrl.trim()) {
         discoveredBaseUrl = probe.baseUrl
       }
+      const probeOutput = probe.output.trim()
+      if (!probeOutput && !forcedWarning) throw new Error('真实 hi 测试没有返回可读内容')
 
-      // 2) Only after the filled model passes, pull the provider model list (multi-path /models).
       let remoteModels: string[] = []
       try {
         if (this.options.fetchModels) {
@@ -268,49 +307,63 @@ export class CredentialSwitcher {
           if (listed.baseUrl.trim()) discoveredBaseUrl = listed.baseUrl
         }
       } catch {
-        // Probe already passed; missing /models must not block save.
         remoteModels = []
       }
 
-      const codexHome = dirname(this.options.configPath)
-      const catalogFile = modelCatalogPath(codexHome)
-      const catalogConfigValue = modelCatalogConfigPath()
-      const catalog = buildModelCatalog(remoteModels, model)
-      await writeModelCatalogFile(catalogFile, catalog)
-      // Re-verify absolute path before referencing it in config — config must never point at a missing file.
-      try {
-        const verify = await readFile(catalogFile, 'utf8')
-        if (!verify.includes('"models"')) throw new Error('模型目录内容无效')
-      } catch (error) {
-        throw new Error(
-          `模型目录文件未生成，已中止写入 config：${catalogFile}${
-            error instanceof Error ? `（${error.message}）` : ''
-          }`
+      // Explicit models are the edited list from the UI. Do not add back models the
+      // user removed; buildModelCatalog only guarantees the selected model remains.
+      const syncModelCatalog = input.syncModelCatalog !== false
+      const sourceCatalog = buildModelCatalog(
+        input.models === undefined ? remoteModels : input.models,
+        model
+      )
+      const sourceModels = sourceCatalog.models.map((entry) => entry.slug)
+      let configBaseUrl = discoveredBaseUrl
+      let configApiKey = input.apiKey
+      let configuredModel = model
+      let catalog = syncModelCatalog ? sourceCatalog : null
+      let writtenCatalogModels = catalog?.models.map((entry) => entry.slug) ?? []
+      if (syncModelCatalog && this.options.configureGateway) {
+        const slots = allocateModelGatewaySlots(sourceModels)
+        const selectedSlot = slots.find((slot) => slot.upstreamModel.toLowerCase() === model.toLowerCase())
+        if (!selectedSlot) throw new Error('无法为选中模型分配 Codex 模型壳')
+        const gateway = await this.options.configureGateway({
+          upstreamBaseUrl: discoveredBaseUrl,
+          upstreamApiKey: input.apiKey,
+          slots
+        })
+        configBaseUrl = gateway.baseUrl
+        configApiKey = gateway.token
+        configuredModel = selectedSlot.clientModel
+        catalog = buildModelCatalog(
+          slots.map((slot) => slot.clientModel),
+          configuredModel,
+          new Map(slots.map((slot) => [slot.clientModel.toLowerCase(), slot.upstreamModel]))
         )
+        writtenCatalogModels = catalog.models.map((entry) => entry.slug)
       }
-
       const appliedConfig = applyCustomApiConfig(previousConfig, {
-        baseUrl: discoveredBaseUrl,
-        model,
-        // Always relative under CODEX_HOME so Codex and Explorer resolve the same file.
-        modelCatalogPath: catalogConfigValue
+        baseUrl: configBaseUrl,
+        model: configuredModel,
+        apiKey: configApiKey,
+        syncModelCatalog
       })
-      if (!appliedConfig.text.includes(`model_catalog_json = ${JSON.stringify(catalogConfigValue)}`)) {
-        throw new Error('生成 config 时未包含 model_catalog_json')
-      }
-      // Reject legacy absolute Windows paths slipping into the patch.
-      if (/model_catalog_json\s*=\s*"[A-Za-z]:\\/.test(appliedConfig.text)) {
-        throw new Error('model_catalog_json 不得写入绝对 Windows 路径')
-      }
       backupPath = await this.writeBackup({
         createdAt: new Date().toISOString(),
         authText: previousAuth,
-        configSnapshot: appliedConfig.snapshot
+        configSnapshot: appliedConfig.snapshot,
+        managedCatalogText: previousCatalog
       })
+
+      // Catalog first, config reference last. Codex never sees a reference to an
+      // absent or partially written JSON file.
+      if (catalog) await writeModelCatalogFile(catalogPath, catalog)
+      else await rm(catalogPath, { force: true })
+      wroteFiles = true
       const authText = `${JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: input.apiKey }, null, 2)}\n`
       await writeAtomic(this.options.authPath, authText)
       await writeAtomic(this.options.configPath, appliedConfig.text)
-      wroteConfig = true
+
       const written = JSON.parse(await readFile(this.options.authPath, 'utf8')) as {
         OPENAI_API_KEY?: unknown
       }
@@ -318,61 +371,87 @@ export class CredentialSwitcher {
         throw new Error('API Key 配置校验失败')
       }
       const writtenConfig = await readFile(this.options.configPath, 'utf8')
-      if (
-        !/^\s*model_catalog_json\s*=/m.test(writtenConfig) ||
-        !writtenConfig.includes(catalogConfigValue)
-      ) {
-        throw new Error('config.toml 写入后缺少 model_catalog_json 引用')
+      const requiredProviderLines = [
+        `model_provider = ${JSON.stringify(OWNED_PROVIDER_ID)}`,
+        `[model_providers.${OWNED_PROVIDER_ID}]`,
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        `experimental_bearer_token = ${JSON.stringify(configApiKey)}`,
+        'supports_websockets = false'
+      ]
+      if (syncModelCatalog) {
+        requiredProviderLines.push(
+          `model_catalog_json = ${JSON.stringify(MODEL_CATALOG_RELATIVE_PATH)}`
+        )
       }
-      try {
-        await readFile(catalogFile, 'utf8')
-      } catch {
-        throw new Error(`config 已引用模型目录，但文件不存在：${catalogFile}`)
+      if (requiredProviderLines.some((line) => !writtenConfig.includes(line))) {
+        throw new Error('第三方 API provider 或模型目录配置校验失败')
       }
+      if (/^\s*openai_base_url\s*=/m.test(writtenConfig)) {
+        throw new Error('第三方 API 不得与 openai_base_url 混用')
+      }
+      if (syncModelCatalog) {
+        const writtenCatalog = JSON.parse(await readFile(catalogPath, 'utf8')) as {
+          models?: Array<{ slug?: unknown; base_instructions?: unknown }>
+        }
+        const writtenModels = Array.isArray(writtenCatalog.models) ? writtenCatalog.models : []
+        if (
+        writtenModels.length !== writtenCatalogModels.length ||
+        writtenModels.some((entry, index) =>
+            entry.slug !== writtenCatalogModels[index] ||
+            typeof entry.base_instructions !== 'string' ||
+            !entry.base_instructions.trim()
+          )
+        ) {
+          throw new Error('Codex 模型目录内容复检失败')
+        }
+      }
+
       await this.pruneBackups()
-      const probePath =
-        'probeUrl' in probe && typeof probe.probeUrl === 'string'
-          ? probe.probeUrl
-          : probe.endpoint === 'responses'
-            ? '/responses'
-            : '/chat/completions'
-      const probeNote = `，已先用填写模型测试通过（${probePath}）`
-      const catalogNote =
-        remoteModels.length > 0
-          ? `，再拉取并同步 ${remoteModels.length} 个模型到目录（${discoveredBaseUrl}）`
-          : `，再拉取模型列表为空，目录仅含填写模型（${discoveredBaseUrl}）`
+      const probePath = typeof probe.probeUrl === 'string'
+        ? probe.probeUrl
+        : probe.endpoint === 'responses' ? '/responses' : '/chat/completions'
+      const outputPreview = probeOutput.replace(/\s+/g, ' ').slice(0, 160)
+      const modelNote = remoteModels.length > 0
+        ? `；上游发现 ${remoteModels.length} 个模型`
+        : '；上游模型列表为空'
       return {
         ok: true,
-        message: `已保存自定义 API（模型 ${model}）${probeNote}${catalogNote}`,
+        message: forcedWarning
+          ? `警告：API 真实 hi 测试未通过，已按用户确认强制切换；${syncModelCatalog ? `已同步 ${sourceModels.length} 个模型到 Codex` : '未导入模型目录'}${modelNote}`
+          : `已向 ${probePath} 发送 hi，模型返回“${outputPreview}”；${syncModelCatalog ? `已同步 ${sourceModels.length} 个模型到 Codex` : '未导入模型目录'}${modelNote}`,
         backupPath,
         selectedModel: model,
         discoveredBaseUrl,
-        remoteModels
+        remoteModels,
+        catalogModels: syncModelCatalog ? sourceModels : [],
+        ...(probeOutput ? { probeOutput } : {}),
+        ...(forcedWarning ? { warning: forcedWarning } : {})
       }
     } catch (error) {
-      if (!wroteConfig) {
+      if (!wroteFiles) {
         return {
           ok: false,
-          message:
-            error instanceof Error
-              ? `自定义 API 测试未通过，未保存配置：${error.message}`
-              : '自定义 API 测试未通过，未保存配置',
+          message: error instanceof Error
+            ? `自定义 API 测试未通过，未保存配置：${error.message}`
+            : '自定义 API 测试未通过，未保存配置',
           backupPath
         }
       }
       try {
         if (previousAuth === null) await rm(this.options.authPath, { force: true })
         else await writeAtomic(this.options.authPath, previousAuth)
+        if (previousCatalog === null) await rm(catalogPath, { force: true })
+        else await writeAtomic(catalogPath, previousCatalog)
         await writeAtomic(this.options.configPath, previousConfig)
       } catch {
         return { ok: false, message: '自定义 API 切换失败，且自动回滚未完整完成', backupPath }
       }
       return {
         ok: false,
-        message:
-          error instanceof Error
-            ? `自定义 API 切换失败，已回滚：${error.message}`
-            : '自定义 API 切换失败，已回滚',
+        message: error instanceof Error
+          ? `自定义 API 切换失败，已回滚：${error.message}`
+          : '自定义 API 切换失败，已回滚',
         backupPath
       }
     }
@@ -418,16 +497,24 @@ export class CredentialSwitcher {
   ): Promise<SwitchResult> {
     const currentAuth = await readOptional(this.options.authPath)
     const currentConfig = (await readOptional(this.options.configPath)) ?? ''
+    const catalogPath = modelCatalogPath(dirname(this.options.configPath))
+    const currentCatalog = await readOptional(catalogPath)
     const restoredConfig = restoreManagedConfig(currentConfig, payload.configSnapshot)
     try {
       if (payload.authText === null) await rm(this.options.authPath, { force: true })
       else await writeAtomic(this.options.authPath, payload.authText)
+      if (payload.managedCatalogText !== undefined) {
+        if (payload.managedCatalogText === null) await rm(catalogPath, { force: true })
+        else await writeAtomic(catalogPath, payload.managedCatalogText)
+      }
       await writeAtomic(this.options.configPath, restoredConfig)
       return { ok: true, message, backupPath }
     } catch (error) {
       try {
         if (currentAuth === null) await rm(this.options.authPath, { force: true })
         else await writeAtomic(this.options.authPath, currentAuth)
+        if (currentCatalog === null) await rm(catalogPath, { force: true })
+        else await writeAtomic(catalogPath, currentCatalog)
         await writeAtomic(this.options.configPath, currentConfig)
       } catch {
         return {

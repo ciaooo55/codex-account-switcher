@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CodexProcessManager, officialCodexRestartScript } from './codex-process'
+import {
+  CodexProcessManager,
+  officialCodexRestartScript,
+  officialCodexStartScript,
+  officialCodexStopScript
+} from './codex-process'
 
 describe('CodexProcessManager', () => {
   it('targets only official OpenAI Codex package processes and starts the AppID', async () => {
@@ -22,6 +27,40 @@ describe('CodexProcessManager', () => {
       ok: false,
       message: 'Codex 自动重启失败：denied'
     })
+  })
+
+  it('can close the official Codex process before a manual session repair', async () => {
+    const runner = vi.fn().mockResolvedValue(undefined)
+    const manager = new CodexProcessManager(runner)
+
+    await expect(manager.stop()).resolves.toEqual({ ok: true, message: 'Codex 已关闭' })
+    expect(runner).toHaveBeenCalledWith(officialCodexStopScript)
+  })
+
+  it('stops Codex, prepares session state, and only then starts it', async () => {
+    const order: string[] = []
+    const runner = vi.fn(async (script: string) => {
+      order.push(script === officialCodexStopScript ? 'stop' : script === officialCodexStartScript ? 'start' : 'other')
+    })
+    const manager = new CodexProcessManager(runner)
+
+    await expect(manager.restart(async () => { order.push('prepare') })).resolves.toEqual({
+      ok: true,
+      message: 'Codex 已重启'
+    })
+    expect(order).toEqual(['stop', 'prepare', 'start'])
+  })
+
+  it('still starts Codex when pre-launch session preparation fails', async () => {
+    const runner = vi.fn().mockResolvedValue(undefined)
+    const manager = new CodexProcessManager(runner)
+
+    await expect(manager.restart(async () => { throw new Error('repair failed') })).resolves.toEqual({
+      ok: false,
+      message: 'Codex 自动重启失败：repair failed'
+    })
+    expect(runner).toHaveBeenNthCalledWith(1, officialCodexStopScript)
+    expect(runner).toHaveBeenNthCalledWith(2, officialCodexStartScript)
   })
 
   it('shares one restart operation when the action is triggered twice', async () => {

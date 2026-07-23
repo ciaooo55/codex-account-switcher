@@ -29,7 +29,26 @@ describe('CustomApiStore', () => {
     await expect(store.summary({ baseUrl: 'https://proxy.example.com/v1', model: 'gpt-custom' })).resolves.toEqual({
       baseUrl: 'https://proxy.example.com/v1',
       model: 'gpt-custom',
-      hasApiKey: true
+      hasApiKey: true,
+      models: []
     })
+  })
+
+  it('persists an editable normalized model catalog without exposing the key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'custom-api-store-'))
+    roots.push(root)
+    const path = join(root, 'custom-api.json')
+    const store = new CustomApiStore(path, cipher)
+
+    await store.saveKey('live-custom-secret')
+    await store.saveModels([' model-a ', 'model-b', 'model-a', 'bad model'])
+
+    await expect(store.summary({ baseUrl: 'https://proxy.example.com/v1', model: 'model-a' })).resolves.toEqual({
+      baseUrl: 'https://proxy.example.com/v1',
+      model: 'model-a',
+      hasApiKey: true,
+      models: ['model-a', 'model-b']
+    })
+    expect(await readFile(path, 'utf8')).not.toContain('live-custom-secret')
   })
 })

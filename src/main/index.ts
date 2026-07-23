@@ -1,4 +1,4 @@
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,7 @@ import {
   type CpaCodexTestProgress,
   type GrokTestProgress,
   type ImportPreviewTestProgress,
+  type SessionRepairProgress,
   type TestProgress,
   type UpdateState
 } from '../shared/ipc'
@@ -59,8 +60,11 @@ import { normalizeCustomApiBaseUrl } from '../shared/custom-api'
 import { CustomApiStore } from './storage/custom-api-store'
 import { AccountMetadataStore } from './storage/account-metadata'
 import { GrokStatusStore } from './storage/grok-status-store'
-import { fetchOpenAiCompatibleModelIds } from './services/model-catalog'
+import { fetchOpenAiCompatibleModelIds, MODEL_CATALOG_RELATIVE_PATH, probeCustomApiModel } from './services/model-catalog'
+import { allocateModelGatewaySlots, CustomApiGateway } from './services/custom-api-gateway'
+import { atomicWriteFile } from './storage/atomic-file'
 import { CredentialSwitcher } from './switching/switcher'
+import { OWNED_PROVIDER_ID, replaceOwnedProviderBaseUrl } from './switching/config'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const { autoUpdater } = electronUpdater
@@ -121,6 +125,12 @@ let updateState: UpdateState = {
   availableVersion: null,
   percent: null,
   message: '尚未检查更新'
+}
+let sessionRepairProgress: SessionRepairProgress = {
+  active: false,
+  done: 0,
+  total: 0,
+  message: ''
 }
 
 const INSTALL_QUIT_ARGUMENT = '--quit-for-install'
@@ -264,6 +274,7 @@ async function main(): Promise<void> {
   }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const customApiStore = new CustomApiStore(join(userData, 'custom-api.json'), cipher)
+  const customApiGateway = new CustomApiGateway()
   const statusStore = new StatusStore(join(userData, 'status.json'))
   const cpaCodexStatusStore = new StatusStore(join(userData, 'cpa-codex-status.json'))
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-library-status.json'))
@@ -327,7 +338,9 @@ async function main(): Promise<void> {
         join(app.getPath('appData'), 'Codex Account Switcher', 'aa')
       ]
       : [])]
-  const processManager = new CodexProcessManager()
+  const processManager = e2eMode
+    ? new CodexProcessManager(async () => '0')
+    : new CodexProcessManager()
   let testApiBase: string | null = null
   if (e2eMode && process.env.CODEX_SWITCHER_TEST_API_BASE_URL) {
     const parsed = new URL(process.env.CODEX_SWITCHER_TEST_API_BASE_URL)
@@ -387,17 +400,103 @@ async function main(): Promise<void> {
         cipher
       }).restoreApiMode()
     },
-    switchToCustomApi: async (input: { baseUrl: string; model: string; apiKey: string }) => {
+    switchToCustomApi: async (input: {
+      baseUrl: string
+      model: string
+      apiKey: string
+      models?: string[]
+      syncModelCatalog?: boolean
+      verifiedProbe?: {
+        endpoint: 'responses'
+        baseUrl: string
+        probeUrl: string
+        output: string
+      }
+      forceProbeFailure?: string
+    }) => {
       const settings = await settingsStore.get()
       return new CredentialSwitcher({
         authPath: settings.authPath,
         configPath: settings.configPath,
         backupDir: join(userData, 'backups'),
         backupRetention: settings.backupRetention,
-        cipher
+        cipher,
+        configureGateway: async ({ upstreamBaseUrl, upstreamApiKey, slots }) => {
+          const token = await customApiStore.getOrCreateGatewayToken(upstreamApiKey)
+          return customApiGateway.configure({
+            upstreamBaseUrl,
+            upstreamApiKey,
+            token,
+            slots
+          })
+        }
       }).switchToCustomApi(input)
     }
   }
+  // The gateway uses a new loopback port each time this desktop app launches.
+  // Recreate its exact Coc-style shell map before Codex reads the saved provider,
+  // then atomically refresh only the managed provider's base_url.
+  const restoreCustomApiGateway = async (): Promise<void> => {
+    const settings = await settingsStore.get()
+    const configText = await readFile(settings.configPath, 'utf8').catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
+      throw error
+    })
+    const managedCatalogPattern = MODEL_CATALOG_RELATIVE_PATH.replace(/\./g, '\\.')
+    const ownsActiveCatalog = new RegExp(
+      `^\\s*model_provider\\s*=\\s*["']${OWNED_PROVIDER_ID}["']\\s*$`,
+      'm'
+    ).test(configText) && new RegExp(
+      `^\\s*model_catalog_json\\s*=\\s*["'][^"']*${managedCatalogPattern}["']\\s*$`,
+      'm'
+    ).test(configText)
+    if (!ownsActiveCatalog) return
+    const apiKey = await customApiStore.getKey()
+    if (!apiKey) return
+    const profile = await customApiStore.summary({
+      baseUrl: settings.customApiBaseUrl,
+      model: settings.customApiModel
+    })
+    const validModelId = (value: unknown): value is string =>
+      typeof value === 'string' && value.length <= 128 && /^[A-Za-z0-9._:/-]+$/.test(value)
+    let slots = [] as ReturnType<typeof allocateModelGatewaySlots>
+    try {
+      const catalogText = await readFile(join(dirname(settings.configPath), MODEL_CATALOG_RELATIVE_PATH), 'utf8')
+      const catalog = JSON.parse(catalogText) as { models?: unknown }
+      if (Array.isArray(catalog.models)) {
+        const seen = new Set<string>()
+        slots = catalog.models.flatMap((entry) => {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+          const record = entry as { slug?: unknown; display_name?: unknown }
+          if (!validModelId(record.slug) || !validModelId(record.display_name)) return []
+          const key = record.slug.toLowerCase()
+          if (seen.has(key)) return []
+          seen.add(key)
+          return [{ clientModel: record.slug, upstreamModel: record.display_name }]
+        })
+      }
+    } catch {
+      // The store below can reconstruct a fresh catalog map if a legacy file was removed.
+    }
+    if (slots.length === 0) {
+      slots = allocateModelGatewaySlots([...profile.models, settings.customApiModel])
+    }
+    if (slots.length === 0) return
+    const token = await customApiStore.getOrCreateGatewayToken(apiKey)
+    const gateway = await customApiGateway.configure({
+      upstreamBaseUrl: settings.customApiBaseUrl,
+      upstreamApiKey: apiKey,
+      token,
+      slots
+    })
+    const refreshedConfig = replaceOwnedProviderBaseUrl(configText, gateway.baseUrl)
+    if (refreshedConfig && refreshedConfig !== configText) {
+      await atomicWriteFile(settings.configPath, refreshedConfig)
+    }
+  }
+  await restoreCustomApiGateway().catch((error: unknown) => {
+    console.error('Failed to restore custom API model gateway', error)
+  })
   let reconcileCodexStatusStores = async (): Promise<void> => undefined
   let reconcileGrokStatusStores = async (): Promise<void> => undefined
   const manager = new AccountManager({
@@ -711,14 +810,37 @@ async function main(): Promise<void> {
     return result
   }).catch(() => null)
 
+  let cachedConversationManager: { codexHome: string; manager: ConversationManager } | null = null
+  const sendSessionRepairProgress = (next: SessionRepairProgress): void => {
+    sessionRepairProgress = next
+    mainWindow?.webContents.send(ipcChannels.sessionRepairProgress, sessionRepairProgress)
+  }
   const sessionRepairService = async (): Promise<SessionRepairService> => {
     const settings = await settingsStore.get()
     return new SessionRepairService({
       codexHome: dirname(settings.configPath),
-      backupRetention: settings.backupRetention
+      backupRetention: settings.backupRetention,
+      onProgress: (progress) => sendSessionRepairProgress({ active: true, ...progress })
     })
   }
-  let cachedConversationManager: { codexHome: string; manager: ConversationManager } | null = null
+  const restartCodexAfterSessionSync = async (
+    beforeRepair?: () => Promise<void>
+  ): Promise<{ ok: boolean; message: string }> =>
+    processManager.restart(async () => {
+      sessionRepairOperationActive = true
+      sendSessionRepairProgress({ active: true, done: 0, total: 6, message: 'Codex 已关闭，正在准备修复对话' })
+      try {
+        await beforeRepair?.()
+        const service = await sessionRepairService()
+        const preview = await service.preview()
+        const repaired = await service.apply(preview.snapshotId, preview.targetProvider)
+        if (!repaired.ok) throw new Error(repaired.message)
+        cachedConversationManager?.manager.invalidate()
+      } finally {
+        sessionRepairOperationActive = false
+        sendSessionRepairProgress({ ...sessionRepairProgress, active: false })
+      }
+    })
   const conversationManager = async (): Promise<ConversationManager> => {
     const settings = await settingsStore.get()
     const codexHome = resolve(dirname(settings.configPath))
@@ -789,7 +911,7 @@ async function main(): Promise<void> {
           sendProgress({ active: true, done, total, runningIds, updatedAccount: updatedAccount ?? null })
         })
         if (result.switched && settings.autoSwitchRestartCodex) {
-          const restarted = await processManager.restart()
+          const restarted = await restartCodexAfterSessionSync()
           return {
             ...result,
             ok: result.ok && restarted.ok,
@@ -1335,18 +1457,22 @@ async function main(): Promise<void> {
     const payload = z.object({ id: z.string().min(1), restart: z.boolean() }).parse(input)
     switchOperationActive = true
     try {
-      const result = await manager.switchAccount(payload.id)
-      if (result.ok && payload.restart) {
-        const restartResult = await processManager.restart()
-        return {
-          ...result,
-          message: restartResult.ok
-            ? `${result.message}；${restartResult.message}`
-            : `${result.message}，但${restartResult.message}。账号已完成切换，可手动重启 Codex`,
-          restartResult
-        }
+      const operation: { result?: Awaited<ReturnType<typeof manager.switchAccount>> } = {}
+      const restartResult = await restartCodexAfterSessionSync(async () => {
+        operation.result = await manager.switchAccount(payload.id)
+        if (!operation.result.ok) throw new Error(operation.result.message)
+      })
+      const result = operation.result
+      if (!result) {
+        return { ok: false, message: restartResult.message, backupPath: null, restartResult }
       }
-      return result
+      return {
+        ...result,
+        message: result.ok && restartResult.ok
+          ? `${result.message}；${restartResult.message}`
+          : `${result.message}；${restartResult.message}`,
+        restartResult
+      }
     } finally {
       switchOperationActive = false
     }
@@ -1357,12 +1483,16 @@ async function main(): Promise<void> {
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
     try {
-      const result = await manager.restoreLatest()
-      if (result.ok && payload.restart) {
-        const restartResult = await processManager.restart()
-        return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
+      const operation: { result?: Awaited<ReturnType<typeof manager.restoreLatest>> } = {}
+      const restartResult = await restartCodexAfterSessionSync(async () => {
+        operation.result = await manager.restoreLatest()
+        if (!operation.result.ok) throw new Error(operation.result.message)
+      })
+      const result = operation.result
+      if (!result) {
+        return { ok: false, message: restartResult.message, backupPath: null, restartResult }
       }
-      return result
+      return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
     } finally {
       switchOperationActive = false
     }
@@ -1373,12 +1503,16 @@ async function main(): Promise<void> {
     const payload = z.object({ restart: z.boolean() }).parse(input)
     switchOperationActive = true
     try {
-      const result = await manager.restoreApiMode()
-      if (result.ok && payload.restart) {
-        const restartResult = await processManager.restart()
-        return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
+      const operation: { result?: Awaited<ReturnType<typeof manager.restoreApiMode>> } = {}
+      const restartResult = await restartCodexAfterSessionSync(async () => {
+        operation.result = await manager.restoreApiMode()
+        if (!operation.result.ok) throw new Error(operation.result.message)
+      })
+      const result = operation.result
+      if (!result) {
+        return { ok: false, message: restartResult.message, backupPath: null, restartResult }
       }
-      return result
+      return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
     } finally {
       switchOperationActive = false
     }
@@ -1413,10 +1547,20 @@ async function main(): Promise<void> {
     try {
       const settings = await settingsStore.get()
       const listed = await fetchOpenAiCompatibleModelIds({
-        baseUrl: payload.baseUrl,
+        baseUrl,
         apiKey,
         timeoutMs: settings.timeoutMs
       })
+      if (listed.models.length === 0) {
+        const detail = listed.errors.slice(0, 4).join('；')
+        return {
+          ok: false as const,
+          message: `未能从 ${listed.modelsUrl} 获取模型列表。请检查 API 地址、Key 权限，以及服务是否实现 GET /v1/models${detail ? `：${detail}` : ''}`,
+          models: [] as string[],
+          baseUrl: listed.baseUrl,
+          modelsUrl: listed.modelsUrl
+        }
+      }
       return {
         ok: true as const,
         message:
@@ -1443,7 +1587,10 @@ async function main(): Promise<void> {
       profile: z.object({
         baseUrl: z.string().min(1).max(2048),
         model: z.string().min(1).max(128),
-        apiKey: z.string().max(16_384).optional()
+        apiKey: z.string().max(16_384).optional(),
+        models: z.array(z.string().max(128)).max(500).optional(),
+        syncModelCatalog: z.boolean().optional(),
+        force: z.boolean().optional()
       }),
       restart: z.boolean()
     }).parse(input)
@@ -1472,10 +1619,32 @@ async function main(): Promise<void> {
 
     switchOperationActive = true
     try {
+      let verifiedProbe: Awaited<ReturnType<typeof probeCustomApiModel>> | undefined
+      let forceProbeFailure = ''
+      try {
+        verifiedProbe = await probeCustomApiModel({
+          baseUrl: payload.profile.baseUrl,
+          model,
+          apiKey
+        })
+      } catch (error) {
+        forceProbeFailure = error instanceof Error ? error.message : '上游请求失败'
+        if (!payload.profile.force) {
+          return {
+            ok: false,
+            canForce: true,
+            message: `自定义 API 真实 hi 测试未通过，未关闭 Codex，也未修改配置：${forceProbeFailure}。可以在确认风险后强制切换`,
+            backupPath: null
+          }
+        }
+      }
       const result = await switcher.switchToCustomApi({
         baseUrl: payload.profile.baseUrl,
         model,
-        apiKey
+        apiKey,
+        ...(verifiedProbe ? { verifiedProbe } : { forceProbeFailure }),
+        ...(payload.profile.models ? { models: payload.profile.models } : {}),
+        syncModelCatalog: payload.profile.syncModelCatalog !== false
       })
       if (!result.ok) return result
 
@@ -1486,11 +1655,9 @@ async function main(): Promise<void> {
         customApiModel: savedModel
       })
       if (providedKey) await customApiStore.saveKey(providedKey)
-
-      if (payload.restart) {
-        const restartResult = await processManager.restart()
-        return { ...result, restartResult, message: `${result.message}；${restartResult.message}` }
-      }
+      await customApiStore.saveModels(payload.profile.syncModelCatalog === false
+        ? (payload.profile.models ?? [])
+        : (result.catalogModels ?? [savedModel]))
       return result
     } finally {
       switchOperationActive = false
@@ -1675,7 +1842,7 @@ async function main(): Promise<void> {
     if (task) return { ok: false, message: `${task}，暂时不能重启 Codex` }
     restartOperationActive = true
     try {
-      return await processManager.restart()
+      return await restartCodexAfterSessionSync()
     } finally {
       restartOperationActive = false
     }
@@ -1911,16 +2078,38 @@ async function main(): Promise<void> {
       }
     }
     sessionRepairOperationActive = true
+    let closedCodex = false
+    sendSessionRepairProgress({ active: true, done: 0, total: 6, message: '正在检测 Codex 运行状态' })
     try {
+      if (await processManager.isOfficialRunning()) {
+        sendSessionRepairProgress({ active: true, done: 1, total: 6, message: 'Codex 正在运行，正在自动关闭' })
+        const stopped = await processManager.stop()
+        if (!stopped.ok) {
+          return {
+            ok: false,
+            message: `${stopped.message}；未开始写入会话数据`,
+            targetProvider: payload.targetProvider,
+            changedSessionFiles: 0,
+            sqliteRowsUpdated: 0,
+            globalStateKeysUpdated: 0,
+            backupPath: null
+          }
+        }
+        closedCodex = true
+      }
+      sendSessionRepairProgress({ active: true, done: 1, total: 6, message: 'Codex 已关闭，正在开始会话修复' })
       const result = await (await sessionRepairService()).apply(
         payload.snapshotId,
         payload.targetProvider,
         payload.threadIds
       )
       cachedConversationManager?.manager.invalidate()
-      return result
+      return closedCodex && result.ok
+        ? { ...result, message: `${result.message}；Codex 已自动关闭，请手动启动` }
+        : result
     } finally {
       sessionRepairOperationActive = false
+      sendSessionRepairProgress({ ...sessionRepairProgress, active: false })
     }
   })
   ipcMain.handle(ipcChannels.updateGetState, () => updateState)
@@ -1990,11 +2179,13 @@ async function main(): Promise<void> {
   const trayIconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
     : join(currentDirectory, '../../build/icon.png')
-  const trayIcon = nativeImage.createFromPath(trayIconPath)
-  if (trayIcon.isEmpty()) throw new Error(`无法加载托盘图标：${trayIconPath}`)
-  tray = new Tray(trayIcon.resize({ width: 16, height: 16 }))
-  tray.setToolTip('Codex Account Switcher')
-  tray.on('click', showMainWindow)
+  if (!e2eMode) {
+    const trayIcon = nativeImage.createFromPath(trayIconPath)
+    if (trayIcon.isEmpty()) throw new Error(`无法加载托盘图标：${trayIconPath}`)
+    tray = new Tray(trayIcon.resize({ width: 16, height: 16 }))
+    tray.setToolTip('Codex Account Switcher')
+    tray.on('click', showMainWindow)
+  }
 
   const formatNextCheck = (value: string | null): string => {
     if (!value) return '下次检查：未计划'
@@ -2091,6 +2282,7 @@ async function main(): Promise<void> {
     cpaCodexTestController?.abort()
     importPreviewTestController?.abort()
     autoSwitchScheduler.stop()
+    void customApiGateway.close().catch(() => undefined)
     tray?.destroy()
     tray = null
   })

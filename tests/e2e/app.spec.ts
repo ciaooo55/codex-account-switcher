@@ -447,8 +447,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(teamRow).toContainText('外部凭据，需重启')
     const beforeAccountSwitches = requests.length
     await teamRow.click({ button: 'right' })
-    await page.getByRole('menuitem', { name: '切换到此账号' }).click()
-    await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
+    await page.getByRole('menuitem', { name: '切换并重启' }).click()
+    await page.getByRole('alertdialog', { name: '切换账号并重启' }).getByRole('button', { name: '继续切换并重启' }).click()
+    await expect(page.getByText('切换成功，当前会话已同步，Codex 已重启')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
       auth_mode: 'chatgpt',
       tokens: {
@@ -458,8 +459,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     })
 
     await accountRow.click({ button: 'right' })
-    await page.getByRole('menuitem', { name: '切换到此账号' }).click()
-    await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
+    await page.getByRole('menuitem', { name: '切换并重启' }).click()
+    await page.getByRole('alertdialog', { name: '切换账号并重启' }).getByRole('button', { name: '继续切换并重启' }).click()
+    await expect(page.getByText('切换成功，当前会话已同步，Codex 已重启')).toBeVisible()
     await expect(accountRow).toHaveAttribute('aria-current', 'true')
     await expect(accountRow.getByText('正在使用')).toBeVisible()
     await page.getByLabel('Codex 账号状态').getByRole('button', { name: /有效/ }).click({ button: 'right' })
@@ -513,8 +515,9 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('导入完成：新增 1，更新 0，跳过 0')).toBeVisible()
     await expect(page.getByText('pasted-e2e@example.com').first()).toBeVisible()
 
-    await page.getByRole('button', { name: '切换账号' }).click()
-    await expect(page.getByText('切换成功，请重启 Codex 使所有会话生效')).toBeVisible()
+    await page.getByRole('button', { name: '切换并重启' }).click()
+    await page.getByRole('alertdialog', { name: '切换账号并重启' }).getByRole('button', { name: '继续切换并重启' }).click()
+    await expect(page.getByText('切换成功，当前会话已同步，Codex 已重启')).toBeVisible()
     expect(JSON.parse(await readFile(join(codexHome, 'auth.json'), 'utf8'))).toMatchObject({
       auth_mode: 'chatgpt',
       tokens: {
@@ -575,7 +578,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await conversationDialog.getByLabel('选择 unchanged').click()
     await conversationDialog.getByRole('button', { name: '同步选中' }).click()
     const selectedRepairDialog = page.getByRole('dialog', { name: '修复历史会话' })
-    await expect(selectedRepairDialog).toContainText('将同步选中的 1 个对话')
+    await expect(selectedRepairDialog).toContainText('将深度同步选中的 1 个对话')
     await page.waitForTimeout(220)
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'repair-dialog-ui.png'), fullPage: true })
     await selectedRepairDialog.getByRole('button', { name: '取消' }).click()
@@ -583,7 +586,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '修复历史会话' }).click()
     await expect(page.getByRole('dialog', { name: '修复历史会话' })).toBeVisible()
     await page.getByRole('button', { name: '确认修复' }).click()
-    await expect(page.getByText('历史会话修复完成')).toBeVisible()
+    await expect(page.getByText(/历史会话(修复完成|已经与当前供应商一致)/)).toBeVisible()
     const rollout = await readFile(
       join(codexHome, 'sessions', '2026', 'rollout-e2e.jsonl'),
       'utf8'

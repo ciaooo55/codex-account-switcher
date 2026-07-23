@@ -55,6 +55,14 @@ export interface SwitchResult {
   discoveredBaseUrl?: string
   /** Models returned by provider /models during custom API switch. */
   remoteModels?: string[]
+  /** User-edited models written into the Codex model catalog. */
+  catalogModels?: string[]
+  /** Non-empty text returned by the real `hi` probe. */
+  probeOutput?: string
+  /** A failed preflight can be retried only after explicit user confirmation. */
+  canForce?: boolean
+  /** Warning retained when the user forced a switch after a failed probe. */
+  warning?: string
   restartResult?: {
     ok: boolean
     message: string
@@ -313,12 +321,17 @@ export interface CustomApiProfileInput {
   baseUrl: string
   model: string
   apiKey?: string
+  /** Editable model catalog. The selected model is always added if omitted. */
+  models?: string[]
+  /** Explicit confirmation to continue after a failed real probe. */
+  force?: boolean
 }
 
 export interface CustomApiProfileSummary {
   baseUrl: string
   model: string
   hasApiKey: boolean
+  models: string[]
 }
 
 export interface AutoSwitchState {

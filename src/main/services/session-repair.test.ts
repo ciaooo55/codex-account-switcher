@@ -1,5 +1,5 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { mkdtemp } from 'node:fs/promises'
@@ -45,16 +45,19 @@ async function writeRollout(
   return path
 }
 
-function createStateDb(home: string, provider = 'openai'): string {
+function createStateDb(home: string, provider = 'openai', rolloutPath?: string): string {
   const path = join(home, 'state_5.sqlite')
   const db = new DatabaseSync(path)
   db.exec(
-    'CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, has_user_event INTEGER, cwd TEXT)'
+    'CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, model_provider TEXT, has_user_event INTEGER, first_user_message TEXT, thread_source TEXT, cwd TEXT)'
   )
-  db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)').run(
     'thread-1',
+    rolloutPath ? relative(home, rolloutPath).replaceAll('\\', '/') : null,
     provider,
     0,
+    'keep this exact content',
+    '',
     'C:/old'
   )
   db.close()
@@ -71,7 +74,7 @@ describe('SessionRepairService', () => {
     const home = await createHome('custom')
     const rollout = await writeRollout(home, 'rollout-one.jsonl', 'openai')
     const originalMtime = (await stat(rollout)).mtimeMs
-    const dbPath = createStateDb(home)
+    const dbPath = createStateDb(home, 'openai', rollout)
     await writeFile(
       join(home, '.codex-global-state.json'),
       JSON.stringify({
@@ -106,9 +109,10 @@ describe('SessionRepairService', () => {
     expect((await stat(rollout)).mtimeMs).toBeCloseTo(originalMtime, -2)
 
     const db = new DatabaseSync(dbPath)
-    expect(db.prepare('SELECT model_provider, has_user_event, cwd FROM threads').get()).toEqual({
+    expect(db.prepare('SELECT model_provider, has_user_event, thread_source, cwd FROM threads').get()).toEqual({
       model_provider: 'custom',
       has_user_event: 1,
+      thread_source: 'user',
       cwd: 'C:/workspace'
     })
     db.close()
@@ -132,6 +136,23 @@ describe('SessionRepairService', () => {
     expect(preview.changedSessionFiles).toBe(1)
     expect(preview.encryptedContentFiles).toBe(1)
     expect(preview.encryptedContentProviders).toEqual(['openai'])
+  })
+
+  it('reports each visible repair stage so the UI can show real progress', async () => {
+    const home = await createHome('custom')
+    const rollout = await writeRollout(home, 'rollout-progress.jsonl', 'openai')
+    createStateDb(home, 'openai', rollout)
+    const progress: Array<{ done: number; total: number; message: string }> = []
+    const service = new SessionRepairService({
+      codexHome: home,
+      onProgress: (event) => progress.push(event)
+    })
+    const preview = await service.preview('custom')
+
+    await expect(service.apply(preview.snapshotId, 'custom')).resolves.toMatchObject({ ok: true })
+    expect(progress.map((event) => event.done)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(progress.every((event) => event.total === 6)).toBe(true)
+    expect(progress.at(-1)?.message).toContain('复检通过')
   })
 
   it('does not warn when encrypted content already belongs to the target provider', async () => {
@@ -176,15 +197,67 @@ describe('SessionRepairService', () => {
     })
   })
 
+  it('clears a stale repair lock left by an interrupted repair', async () => {
+    const home = await createHome('custom')
+    await writeRollout(home, 'rollout-stale-lock.jsonl', 'openai')
+    const lockPath = join(home, 'tmp', 'account-switcher-provider-sync.lock')
+    await mkdir(lockPath, { recursive: true })
+    const stale = new Date(Date.now() - 31 * 60 * 1000)
+    await utimes(lockPath, stale, stale)
+    const service = new SessionRepairService({ codexHome: home })
+    const preview = await service.preview('custom')
+
+    await expect(service.apply(preview.snapshotId, 'custom')).resolves.toMatchObject({ ok: true })
+  })
+
+  it('rewrites every session_meta record in a selected current conversation', async () => {
+    const home = await createHome('custom')
+    const rollout = join(home, 'sessions', '2026', 'rollout-repeated-meta.jsonl')
+    await writeFile(
+      rollout,
+      [
+        JSON.stringify({ type: 'session_meta', payload: { id: 'thread-repeated', model_provider: 'openai' } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'keep' } }),
+        JSON.stringify({ type: 'session_meta', payload: { id: 'thread-repeated', model_provider: 'stale' } })
+      ].join('\n') + '\n',
+      'utf8'
+    )
+    const service = new SessionRepairService({ codexHome: home })
+
+    const preview = await service.preview('custom', ['thread-repeated'])
+    const result = await service.apply(preview.snapshotId, 'custom', ['thread-repeated'])
+    const providers = (await readFile(rollout, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((line) => line.type === 'session_meta')
+      .map((line) => line.payload.model_provider)
+
+    expect(result.ok).toBe(true)
+    expect(providers).toEqual(['custom', 'custom'])
+  })
+
   it('synchronizes only selected conversations and leaves other SQLite rows unchanged', async () => {
     const home = await createHome('custom')
     const first = await writeRollout(home, 'rollout-first.jsonl', 'custom', 'thread-first')
     const second = await writeRollout(home, 'rollout-second.jsonl', 'custom', 'thread-second')
     const dbPath = join(home, 'state_5.sqlite')
     const db = new DatabaseSync(dbPath)
-    db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, has_user_event INTEGER, cwd TEXT)')
-    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run('thread-first', 'custom', 0, 'C:/old')
-    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?)').run('thread-second', 'custom', 0, 'C:/old')
+    db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, model_provider TEXT, has_user_event INTEGER, cwd TEXT)')
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?)').run(
+      'thread-first',
+      relative(home, first).replaceAll('\\', '/'),
+      'custom',
+      0,
+      'C:/old'
+    )
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?)').run(
+      'thread-second',
+      relative(home, second).replaceAll('\\', '/'),
+      'custom',
+      0,
+      'C:/old'
+    )
     db.close()
     const service = new SessionRepairService({ codexHome: home })
 
@@ -223,7 +296,7 @@ describe('SessionRepairService', () => {
     const home = await createHome('custom')
     const rollout = await writeRollout(home, 'rollout-rollback.jsonl', 'openai')
     const original = await readFile(rollout, 'utf8')
-    const dbPath = createStateDb(home, 'openai')
+    const dbPath = createStateDb(home, 'openai', rollout)
     const service = new SessionRepairService({
       codexHome: home,
       faultInjector: (stage) => {

@@ -11,8 +11,8 @@ import { customApiChatCompletionsUrl, customApiResponsesUrl } from '../../shared
 
 describe('model catalog helpers', () => {
   it('exposes a stable relative config path for model_catalog_json', () => {
-    expect(modelCatalogConfigPath()).toBe('model-catalogs/account-switcher.json')
-    expect(MODEL_CATALOG_RELATIVE_PATH).toBe('model-catalogs/account-switcher.json')
+    expect(modelCatalogConfigPath()).toBe('account-switcher-model-catalog.json')
+    expect(MODEL_CATALOG_RELATIVE_PATH).toBe('account-switcher-model-catalog.json')
   })
 
   it('builds a preferred-first catalog with list visibility', () => {
@@ -28,8 +28,14 @@ describe('model catalog helpers', () => {
     })
     expect(catalog.models[0].base_instructions.length).toBeGreaterThan(20)
     expect(catalog.models.every((model) => typeof model.base_instructions === 'string')).toBe(true)
-    expect(catalog.models.every((model) => model.include_skills_usage_instructions === false)).toBe(true)
-    expect(catalog.models.every((model) => model.support_verbosity === false)).toBe(true)
+    expect(catalog.models[0].prefer_websockets).toBe(false)
+    expect(catalog.models[0].supports_reasoning_summaries).toBe(true)
+    expect(catalog.models[0].effective_context_window_percent).toBe(100)
+    expect(catalog.models[0].multi_agent_version).toBe('v2')
+    expect(Boolean(catalog.models[0].model_messages)).toBe(true)
+    expect(catalog.models.every((model) => model.include_skills_usage_instructions === true)).toBe(true)
+    expect(catalog.models.every((model) => model.use_responses_lite === false)).toBe(true)
+    expect(catalog.models.every((model) => model.support_verbosity === true)).toBe(true)
     expect(catalog.models.every((model) => model.supports_parallel_tool_calls === true)).toBe(true)
     expect(catalog.models[0].supported_reasoning_levels.map((level) => level.effort)).toEqual([
       'low',
@@ -112,7 +118,7 @@ describe('model catalog helpers', () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ id: 'resp_1', status: 'completed' })
+      text: async () => JSON.stringify({ id: 'resp_1', status: 'completed', output_text: 'hello back' })
     })
 
     const result = await probeCustomApiModel({
@@ -125,18 +131,19 @@ describe('model catalog helpers', () => {
     expect(result).toMatchObject({
       endpoint: 'responses',
       baseUrl: 'http://127.0.0.1:18317/v1',
-      probeUrl: 'http://127.0.0.1:18317/v1/responses'
+      probeUrl: 'http://127.0.0.1:18317/v1/responses',
+      output: 'hello back'
     })
     expect(fetchImpl).toHaveBeenCalledWith(
       'http://127.0.0.1:18317/v1/responses',
       expect.objectContaining({
         method: 'POST',
-        body: expect.stringContaining('"model":"grok-4.5"')
+        body: expect.stringContaining('"input":"hi"')
       })
     )
   })
 
-  it('falls back across suffixes and uses /openai/v1/chat/completions when needed', async () => {
+  it('rejects a chat-completions-only provider for direct Codex configuration', async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: string) => {
       if (url === 'http://127.0.0.1:18317/openai/v1/chat/completions') {
         return {
@@ -148,25 +155,28 @@ describe('model catalog helpers', () => {
       return { ok: false, status: 404, text: async () => 'not found' }
     })
 
-    const result = await probeCustomApiModel({
+    await expect(probeCustomApiModel({
       baseUrl: 'http://127.0.0.1:18317',
       apiKey: 'sk-test',
       model: 'gpt-custom',
       fetchImpl: fetchImpl as unknown as typeof fetch
-    })
-
-    expect(result).toEqual({
-      endpoint: 'chat_completions',
-      baseUrl: 'http://127.0.0.1:18317/openai/v1',
-      probeUrl: 'http://127.0.0.1:18317/openai/v1/chat/completions'
-    })
+    })).rejects.toThrow('需要有效的 Responses 响应')
+    expect(fetchImpl).not.toHaveBeenCalledWith(
+      'http://127.0.0.1:18317/openai/v1/chat/completions',
+      expect.anything()
+    )
   })
 
   it('accepts pasted full chat completions URLs and still probes', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ id: 'resp_1' })
+      text: async () => JSON.stringify({
+        id: 'resp_1',
+        object: 'response',
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'hi!' }] }]
+      })
     })
 
     const result = await probeCustomApiModel({

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { applyChatGptConfig, applyCustomApiConfig, restoreManagedConfig } from './config'
+import {
+  applyChatGptConfig,
+  applyCustomApiConfig,
+  replaceOwnedProviderBaseUrl,
+  restoreManagedConfig
+} from './config'
 
 const customConfig = `model_provider = "custom"
 notify = ["tool.exe"]
@@ -19,34 +24,76 @@ goals = true
 `
 
 describe('managed Codex config patching', () => {
-  it('uses the openai provider identity and normalizes a custom Responses base URL', () => {
+  it('uses a dedicated Responses provider and installs the managed Cockpit-style catalog', () => {
     const applied = applyCustomApiConfig(customConfig, {
       baseUrl: 'http://127.0.0.1:18317',
       model: 'gpt-custom',
-      modelCatalogPath: 'C:\\Users\\lee\\.codex\\model-catalogs\\account-switcher.json'
+      apiKey: 'sk-custom'
     })
 
-    expect(applied.text).toContain('model_provider = "openai"')
+    expect(applied.text).toContain('model_provider = "codex_account_switcher"')
     expect(applied.text).toContain('model = "gpt-custom"')
-    expect(applied.text).toContain('openai_base_url = "http://127.0.0.1:18317/v1"')
-    expect(applied.text).toContain(
-      'model_catalog_json = "C:\\\\Users\\\\lee\\\\.codex\\\\model-catalogs\\\\account-switcher.json"'
-    )
-    expect(applied.text).not.toContain('[model_providers.codex_account_switcher]')
+    expect(applied.text).not.toMatch(/^openai_base_url\s*=/m)
+    expect(applied.text).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(applied.text).toContain('[model_providers.codex_account_switcher]')
+    expect(applied.text).toContain('base_url = "http://127.0.0.1:18317/v1"')
+    expect(applied.text).toContain('wire_api = "responses"')
+    expect(applied.text).toContain('requires_openai_auth = true')
+    expect(applied.text).toContain('experimental_bearer_token = "sk-custom"')
+    expect(applied.text).toContain('supports_websockets = false')
     expect(applied.text).toContain('[model_providers.custom]')
     expect(applied.snapshot.model_provider).toBe('model_provider = "custom"')
     expect(applied.snapshot.model_catalog_json).toBe('model_catalog_json = "C:\\\\old\\\\catalog.json"')
   })
 
-  it('accepts a relative model catalog path for config.toml', () => {
+  it('installs a root-relative managed catalog for direct third-party APIs', () => {
     const applied = applyCustomApiConfig(customConfig, {
       baseUrl: 'http://127.0.0.1:18317',
       model: 'gpt-custom',
-      modelCatalogPath: 'model-catalogs/account-switcher.json'
+      apiKey: 'sk-custom'
     })
 
-    expect(applied.text).toContain('model_catalog_json = "model-catalogs/account-switcher.json"')
-    expect(applied.text).toContain('openai_base_url = "http://127.0.0.1:18317/v1"')
+    expect(applied.text).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(applied.text).toContain('base_url = "http://127.0.0.1:18317/v1"')
+  })
+
+  it('can leave the Codex model catalog unchanged when import is not selected', () => {
+    const applied = applyCustomApiConfig(customConfig, {
+      baseUrl: 'http://127.0.0.1:18317',
+      model: 'gpt-custom',
+      apiKey: 'sk-custom',
+      syncModelCatalog: false
+    })
+
+    expect(applied.text).not.toMatch(/^model_catalog_json\s*=/m)
+    expect(applied.text).toContain('model_provider = "codex_account_switcher"')
+  })
+
+  it('refreshes only the managed provider base URL when the local gateway restarts', () => {
+    const applied = applyCustomApiConfig(customConfig, {
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'gpt-5.6-sol',
+      apiKey: 'local-token'
+    })
+    const refreshed = replaceOwnedProviderBaseUrl(applied.text, 'http://127.0.0.1:43210/v1')
+
+    expect(refreshed).toContain('base_url = "http://127.0.0.1:43210/v1"')
+    expect(refreshed).toContain('experimental_bearer_token = "local-token"')
+    expect(refreshed).toContain('[model_providers.custom]')
+    expect(replaceOwnedProviderBaseUrl(customConfig, 'http://127.0.0.1:43210/v1')).toBeNull()
+  })
+
+  it('migrates the legacy account-switcher catalog without putting it into restore snapshots', () => {
+    const legacy = `model_provider = "openai"\nmodel_catalog_json = "model-catalogs/account-switcher.json"\n`
+    const applied = applyCustomApiConfig(legacy, {
+      baseUrl: 'https://relay.example.com/v1',
+      model: 'relay-model',
+      apiKey: 'sk-relay'
+    })
+
+    expect(applied.text).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(applied.snapshot.model_catalog_json).toBeNull()
+    expect(restoreManagedConfig(applied.text, applied.snapshot)).not.toMatch(/^model_catalog_json\s*=/m)
   })
 
   it('switches top-level auth/provider keys without touching custom provider sections', () => {
@@ -98,13 +145,14 @@ requires_openai_auth = true
     const applied = applyCustomApiConfig(original, {
       baseUrl: 'http://127.0.0.1:18317/v1',
       model: 'gpt-custom',
-      modelCatalogPath: 'C:\\catalog.json'
+      apiKey: 'sk-new'
     })
     const restored = restoreManagedConfig(applied.text, applied.snapshot)
 
-    expect(applied.text).not.toContain('[model_providers.codex_account_switcher]')
+    expect(applied.text.match(/\[model_providers\.codex_account_switcher\]/g)).toHaveLength(1)
+    expect(applied.text).toContain('experimental_bearer_token = "sk-new"')
     expect(applied.text).toContain('[model_providers.custom]')
-    expect(applied.text).toContain('model_catalog_json = "C:\\\\catalog.json"')
+    expect(applied.text).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
     expect(restored).toContain('[model_providers.codex_account_switcher]')
     expect(restored).toContain('base_url = "http://127.0.0.1:18317"')
   })

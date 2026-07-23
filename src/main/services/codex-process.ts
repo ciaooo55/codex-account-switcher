@@ -1,6 +1,53 @@
 import { execFile } from 'node:child_process'
 
 type ScriptRunner = (script: string) => Promise<string | void>
+type RestartPreparation = () => Promise<void>
+
+export const officialCodexStopScript = `
+$ErrorActionPreference = 'Stop'
+$names = @('ChatGPT.exe', 'codex.exe', 'codex-code-mode-host.exe')
+$package = @(Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending)[0]
+if ($null -eq $package) { throw '未找到官方 Codex Windows 应用' }
+$installRoot = [IO.Path]::GetFullPath($package.InstallLocation)
+$targets = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+  $path = $_.ExecutablePath
+  $_.Name -in $names -and $path -and
+    $path.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)
+})
+$targets | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+$deadline = [DateTime]::UtcNow.AddSeconds(12)
+do {
+  $remaining = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    $path = $_.ExecutablePath
+    $_.Name -in $names -and $path -and
+      $path.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($remaining.Count -eq 0) { 'stopped'; exit 0 }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+throw '官方 Codex 进程未能完全退出'
+`.trim()
+
+export const officialCodexStartScript = `
+$ErrorActionPreference = 'Stop'
+$names = @('ChatGPT.exe', 'codex.exe', 'codex-code-mode-host.exe')
+$package = @(Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending)[0]
+if ($null -eq $package) { throw '未找到官方 Codex Windows 应用' }
+$installRoot = [IO.Path]::GetFullPath($package.InstallLocation)
+$appId = "$($package.PackageFamilyName)!App"
+Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\\$appId"
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+do {
+  $started = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    $path = $_.ExecutablePath
+    $_.Name -eq 'ChatGPT.exe' -and $path -and
+      $path.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($started.Count -gt 0) { 'started'; exit 0 }
+  Start-Sleep -Milliseconds 300
+} while ([DateTime]::UtcNow -lt $deadline)
+throw '已发出启动命令，但 20 秒内未检测到官方 Codex 窗口'
+`.trim()
 
 export const officialCodexRestartScript = `
 $ErrorActionPreference = 'Stop'
@@ -74,20 +121,59 @@ export class CodexProcessManager {
 
   constructor(private readonly runner: ScriptRunner = defaultRunner) {}
 
-  restart(): Promise<{ ok: boolean; message: string }> {
+  restart(prepareBeforeStart?: RestartPreparation): Promise<{ ok: boolean; message: string }> {
     if (process.platform !== 'win32') {
       return Promise.resolve({ ok: false, message: '自动重启目前仅支持 Windows' })
     }
     if (this.restartInFlight) return this.restartInFlight
-    this.restartInFlight = this.performRestart().finally(() => {
+    this.restartInFlight = this.performRestart(prepareBeforeStart).finally(() => {
       this.restartInFlight = null
     })
     return this.restartInFlight
   }
 
-  private async performRestart(): Promise<{ ok: boolean; message: string }> {
+  async stop(): Promise<{ ok: boolean; message: string }> {
+    if (process.platform !== 'win32') {
+      return { ok: false, message: '自动关闭目前仅支持 Windows' }
+    }
     try {
-      await this.runner(officialCodexRestartScript)
+      await this.runner(officialCodexStopScript)
+      return { ok: true, message: 'Codex 已关闭' }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message.trim() : ''
+      return {
+        ok: false,
+        message: detail ? `Codex 自动关闭失败：${detail}` : 'Codex 自动关闭失败'
+      }
+    }
+  }
+
+  private async performRestart(
+    prepareBeforeStart?: RestartPreparation
+  ): Promise<{ ok: boolean; message: string }> {
+    try {
+      if (!prepareBeforeStart) {
+        await this.runner(officialCodexRestartScript)
+      } else {
+        await this.runner(officialCodexStopScript)
+        let preparationError: unknown = null
+        try {
+          await prepareBeforeStart()
+        } catch (error) {
+          preparationError = error
+        }
+        try {
+          await this.runner(officialCodexStartScript)
+        } catch (startError) {
+          if (preparationError) {
+            const prepareMessage = preparationError instanceof Error ? preparationError.message : String(preparationError)
+            const startMessage = startError instanceof Error ? startError.message : String(startError)
+            throw new Error(`启动前会话同步失败：${prepareMessage}；重新启动也失败：${startMessage}`)
+          }
+          throw startError
+        }
+        if (preparationError) throw preparationError
+      }
       return { ok: true, message: 'Codex 已重启' }
     } catch (error) {
       const detail = error instanceof Error ? error.message.trim() : ''

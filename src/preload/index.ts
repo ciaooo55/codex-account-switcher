@@ -5,6 +5,7 @@ import type {
   CpaCodexTestProgress,
   GrokTestProgress,
   ImportPreviewTestProgress,
+  SessionRepairProgress,
   TestProgress,
   UpdateState
 } from '../shared/ipc'
@@ -126,6 +127,11 @@ const api: CodexSwitcherApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: ImportPreviewTestProgress): void => listener(progress)
     ipcRenderer.on(ipcChannels.importPreviewTestProgress, wrapped)
     return () => ipcRenderer.removeListener(ipcChannels.importPreviewTestProgress, wrapped)
+  },
+  onSessionRepairProgress: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: SessionRepairProgress): void => listener(progress)
+    ipcRenderer.on(ipcChannels.sessionRepairProgress, wrapped)
+    return () => ipcRenderer.removeListener(ipcChannels.sessionRepairProgress, wrapped)
   },
   onUpdateState: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, state: UpdateState): void => listener(state)

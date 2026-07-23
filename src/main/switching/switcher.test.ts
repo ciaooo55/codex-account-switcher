@@ -60,7 +60,7 @@ describe('CredentialSwitcher', () => {
       cipher,
       backupRetention: 20,
       fetchModels: async () => ['grok-4.5', 'gpt-custom', 'mimo-v2.5-pro'],
-      probeModel: async () => ({ endpoint: 'responses' as const })
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'hi there' })
     })
     const historyPath = join(paths.dir, 'sessions', 'rollout-history.jsonl')
     const history = '{"type":"session_meta","payload":{"model_provider":"openai"}}\n'
@@ -74,28 +74,30 @@ describe('CredentialSwitcher', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(result.message).toContain('再拉取并同步 3 个模型')
-    expect(result.message).toContain('已先用填写模型测试通过')
+    expect(result.message).toContain('发送 hi')
+    expect(result.message).toContain('模型返回“hi there”')
+    expect(result.catalogModels).toEqual(['gpt-custom', 'grok-4.5', 'mimo-v2.5-pro'])
     expect(JSON.parse(await readFile(paths.authPath, 'utf8'))).toEqual({
       auth_mode: 'apikey',
       OPENAI_API_KEY: 'custom-secret-key'
     })
     const config = await readFile(paths.configPath, 'utf8')
-    expect(config).toContain('model_provider = "openai"')
-    expect(config).toContain('openai_base_url = "http://127.0.0.1:18317/v1"')
-    expect(config).toContain('model_catalog_json = "model-catalogs/account-switcher.json"')
-    expect(config).toContain('model-catalogs/account-switcher.json')
-    expect(config).not.toContain('[model_providers.codex_account_switcher]')
+    expect(config).toContain('model_provider = "codex_account_switcher"')
+    expect(config).not.toMatch(/^openai_base_url\s*=/m)
+    expect(config).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(config).toContain('[model_providers.codex_account_switcher]')
+    expect(config).toContain('base_url = "http://127.0.0.1:18317/v1"')
+    expect(config).toContain('wire_api = "responses"')
+    expect(config).toContain('experimental_bearer_token = "custom-secret-key"')
+    expect(config).toContain('supports_websockets = false')
     expect(config).toContain('[model_providers.custom]')
-    const catalog = JSON.parse(
-      await readFile(join(paths.dir, 'model-catalogs', 'account-switcher.json'), 'utf8')
-    ) as { models: Array<{ slug: string; visibility: string }> }
-    expect(catalog.models.map((model) => model.slug)).toEqual([
+    const catalog = JSON.parse(await readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
+    expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual([
       'gpt-custom',
       'grok-4.5',
       'mimo-v2.5-pro'
     ])
-    expect(catalog.models.every((model) => model.visibility === 'list')).toBe(true)
+    expect(catalog.models.every((entry: { base_instructions?: string }) => Boolean(entry.base_instructions))).toBe(true)
     expect(await readFile(historyPath, 'utf8')).toBe(history)
     expect(await readFile(result.backupPath!, 'utf8')).not.toContain('api-secret')
   })
@@ -109,7 +111,7 @@ describe('CredentialSwitcher', () => {
       backupRetention: 20,
       probeModel: async () => {
         order.push('probe')
-        return { endpoint: 'responses' as const, baseUrl: 'http://127.0.0.1:18317/v1', probeUrl: 'http://127.0.0.1:18317/v1/responses' }
+        return { endpoint: 'responses' as const, baseUrl: 'http://127.0.0.1:18317/v1', probeUrl: 'http://127.0.0.1:18317/v1/responses', output: 'hello' }
       },
       fetchModels: async () => {
         order.push('fetch')
@@ -127,14 +129,109 @@ describe('CredentialSwitcher', () => {
     expect(order).toEqual(['probe', 'fetch'])
     expect(result.selectedModel).toBe('filled-model')
     expect(result.remoteModels).toEqual(['listed-a', 'listed-b', 'filled-model'])
-    expect(result.message).toContain('已先用填写模型测试通过')
-    expect(result.message).toContain('再拉取并同步 3 个模型')
+    expect(result.message).toContain('发送 hi')
+    expect(result.message).toContain('模型返回“hello”')
     const config = await readFile(paths.configPath, 'utf8')
     expect(config).toContain('model = "filled-model"')
-    const catalog = JSON.parse(
-      await readFile(join(paths.dir, 'model-catalogs', 'account-switcher.json'), 'utf8')
-    ) as { models: Array<{ slug: string }> }
-    expect(catalog.models.map((item) => item.slug)).toEqual(['filled-model', 'listed-a', 'listed-b'])
+    expect(config).toContain('model_provider = "codex_account_switcher"')
+  })
+
+  it('writes the user-edited model list without re-adding removed upstream models', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'hello edited list' }),
+      fetchModels: async () => ['remote-a', 'remote-b', 'remote-c']
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'remote-b',
+      apiKey: 'custom-secret-key',
+      models: ['remote-b', 'manual-model']
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      catalogModels: ['remote-b', 'manual-model'],
+      remoteModels: ['remote-a', 'remote-b', 'remote-c']
+    })
+    const catalog = JSON.parse(await readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
+    expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual(['remote-b', 'manual-model'])
+  })
+
+  it('writes Coc-style model shells to Codex and keeps upstream names for the local gateway', async () => {
+    const paths = await fixture()
+    const configureGateway = vi.fn().mockResolvedValue({
+      baseUrl: 'http://127.0.0.1:45678/v1',
+      token: 'local-gateway-token'
+    })
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'gateway test passed' }),
+      fetchModels: async () => ['deepseek-v4-pro', 'qwen3-coder'],
+      configureGateway
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'https://provider.example/v1',
+      model: 'deepseek-v4-pro',
+      apiKey: 'upstream-secret'
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      selectedModel: 'deepseek-v4-pro',
+      catalogModels: ['deepseek-v4-pro', 'qwen3-coder']
+    })
+    expect(configureGateway).toHaveBeenCalledWith({
+      upstreamBaseUrl: 'https://provider.example/v1',
+      upstreamApiKey: 'upstream-secret',
+      slots: [
+        { clientModel: 'gpt-5.6-sol', upstreamModel: 'deepseek-v4-pro' },
+        { clientModel: 'gpt-5.6-terra', upstreamModel: 'qwen3-coder' }
+      ]
+    })
+    const config = await readFile(paths.configPath, 'utf8')
+    expect(config).toContain('model = "gpt-5.6-sol"')
+    expect(config).toContain('base_url = "http://127.0.0.1:45678/v1"')
+    expect(config).toContain('experimental_bearer_token = "local-gateway-token"')
+    const catalog = JSON.parse(await readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
+    expect(catalog.models.map((entry: { slug: string; display_name: string }) => ({
+      slug: entry.slug,
+      display_name: entry.display_name
+    }))).toEqual([
+      { slug: 'gpt-5.6-sol', display_name: 'deepseek-v4-pro' },
+      { slug: 'gpt-5.6-terra', display_name: 'qwen3-coder' }
+    ])
+  })
+
+  it('does not write a model catalog when the user only switches the provider', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'hello' }),
+      fetchModels: async () => ['remote-a']
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'remote-a',
+      apiKey: 'custom-secret-key',
+      syncModelCatalog: false
+    })
+
+    expect(result).toMatchObject({ ok: true, catalogModels: [] })
+    expect(result.message).toContain('未导入模型目录')
+    expect(await readFile(paths.configPath, 'utf8')).not.toMatch(/^model_catalog_json\s*=/m)
+    await expect(readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('rejects empty model before probing or fetching', async () => {
@@ -158,7 +255,7 @@ describe('CredentialSwitcher', () => {
     })
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('请先填写要测试的模型名称')
+    expect(result.message).toContain('请先选择要进行真实测试的模型')
   })
 
   it('still saves after probe when model list fetch fails', async () => {
@@ -173,7 +270,8 @@ describe('CredentialSwitcher', () => {
       probeModel: async () => ({
         endpoint: 'responses' as const,
         baseUrl: 'http://127.0.0.1:18317/v1',
-        probeUrl: 'http://127.0.0.1:18317/v1/responses'
+        probeUrl: 'http://127.0.0.1:18317/v1/responses',
+        output: 'hello from model'
       })
     })
 
@@ -184,15 +282,12 @@ describe('CredentialSwitcher', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(result.message).toContain('已先用填写模型测试通过')
-    expect(result.message).toContain('再拉取模型列表为空')
+    expect(result.message).toContain('发送 hi')
+    expect(result.message).toContain('上游模型列表为空')
     const config = await readFile(paths.configPath, 'utf8')
     expect(config).toContain('model = "grok-4.5"')
-    expect(config).toContain('model_catalog_json = "model-catalogs/account-switcher.json"')
-    const catalog = JSON.parse(
-      await readFile(join(paths.dir, 'model-catalogs', 'account-switcher.json'), 'utf8')
-    ) as { models: Array<{ slug: string }> }
-    expect(catalog.models.map((item) => item.slug)).toEqual(['grok-4.5'])
+    expect(config).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(config).toContain('[model_providers.codex_account_switcher]')
   })
 
   it('does not save config when model probe fails', async () => {
@@ -222,7 +317,35 @@ describe('CredentialSwitcher', () => {
     expect(await readFile(paths.configPath, 'utf8')).toBe(previousConfig)
   })
 
-    it('atomically writes ChatGPT auth, patches config and keeps encrypted backups', async () => {
+  it('allows an explicitly confirmed forced switch and keeps the failed-probe warning', async () => {
+    const paths = await fixture()
+    const probeModel = vi.fn()
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      probeModel,
+      fetchModels: async () => []
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'manual-model',
+      models: ['manual-model'],
+      apiKey: 'custom-secret-key',
+      forceProbeFailure: 'HTTP 503 upstream unavailable'
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      warning: 'HTTP 503 upstream unavailable',
+      catalogModels: ['manual-model']
+    })
+    expect(result.message).toContain('已按用户确认强制切换')
+    expect(probeModel).not.toHaveBeenCalled()
+  })
+
+  it('atomically writes ChatGPT auth, patches config and keeps encrypted backups', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({ ...paths, cipher, backupRetention: 20 })
 
@@ -243,6 +366,36 @@ describe('CredentialSwitcher', () => {
     expect(await readFile(paths.configPath, 'utf8')).toContain('model_provider = "openai"')
     const backupRaw = await readFile(result.backupPath!, 'utf8')
     expect(backupRaw).not.toContain('api-secret')
+  })
+
+  it('removes the managed catalog for ChatGPT and restores it with the API backup', async () => {
+    const paths = await fixture()
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'hello' }),
+      fetchModels: async () => ['model-a', 'model-b']
+    })
+    const catalogPath = join(paths.dir, 'account-switcher-model-catalog.json')
+
+    expect((await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'model-a',
+      models: ['model-a', 'model-b'],
+      apiKey: 'custom-secret-key'
+    })).ok).toBe(true)
+    const apiCatalog = await readFile(catalogPath, 'utf8')
+
+    expect((await switcher.switchTo(credential())).ok).toBe(true)
+    await expect(readFile(catalogPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(paths.configPath, 'utf8')).not.toMatch(/^model_catalog_json\s*=/m)
+
+    expect((await switcher.restoreLatest()).ok).toBe(true)
+    expect(await readFile(catalogPath, 'utf8')).toBe(apiCatalog)
+    expect(await readFile(paths.configPath, 'utf8')).toContain(
+      'model_catalog_json = "account-switcher-model-catalog.json"'
+    )
   })
 
   it('creates auth.json when the discovered .codex directory does not have one yet', async () => {

@@ -119,6 +119,13 @@ export interface ImportPreviewTestProgress {
   updatedItem: ImportPreviewItem | null
 }
 
+export interface SessionRepairProgress {
+  active: boolean
+  done: number
+  total: number
+  message: string
+}
+
 export type AppSnapshotScope = 'accounts' | 'grok' | 'cpa' | 'automation'
 export type AppSnapshotPatch = Partial<AppSnapshot>
 
@@ -211,6 +218,7 @@ export interface CodexSwitcherApi {
   onCpaCodexTestProgress(listener: (progress: CpaCodexTestProgress) => void): () => void
   onAccountStatusSync(listener: (patch: AccountStatusSyncPatch) => void): () => void
   onImportPreviewTestProgress(listener: (progress: ImportPreviewTestProgress) => void): () => void
+  onSessionRepairProgress(listener: (progress: SessionRepairProgress) => void): () => void
   onUpdateState(listener: (state: UpdateState) => void): () => void
   onAutoSwitchState(listener: (state: AutoSwitchState) => void): () => void
 }
@@ -293,6 +301,7 @@ export const ipcChannels = {
   conversationCleanup: 'sessions:cleanup',
   sessionRepairPreview: 'sessions:repair-preview',
   sessionRepairApply: 'sessions:repair-apply',
+  sessionRepairProgress: 'sessions:repair-progress',
   testProgress: 'accounts:test-progress',
   updateState: 'updates:state',
   updateGetState: 'updates:get-state',

@@ -1,8 +1,8 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.13.12",
+  "version": "0.13.13",
   "private": true,
-  "description": "Windows desktop account switcher for Codex file-based credentials",
+  "description": "Windows desktop account switcher for Codex and CPA credentials",
   "author": "ciaooo55",
   "repository": {
     "type": "git",

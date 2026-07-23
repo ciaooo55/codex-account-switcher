@@ -11,6 +11,9 @@ const TERMINAL_ENDPOINT_SUFFIXES = [
 /** Common OpenAI-compatible base path suffixes to try when probing. */
 const COMMON_BASE_PATHS = ['/v1', '/api/v1', '/openai/v1', '/v1/openai', ''] as const
 
+/** Root-relative catalog name used by Cockpit-style Codex provider projection. */
+export const MANAGED_CUSTOM_API_MODEL_CATALOG = 'account-switcher-model-catalog.json'
+
 function parseCustomApiUrl(value: string): URL {
   let parsed: URL
   try {

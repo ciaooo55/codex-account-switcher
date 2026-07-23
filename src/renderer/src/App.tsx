@@ -38,6 +38,7 @@ import type {
   AppSnapshotPatch,
   AppSnapshotScope,
   ImportPreviewTestProgress,
+  SessionRepairProgress,
   UpdateState
 } from '../../shared/ipc'
 import type {
@@ -309,11 +310,14 @@ export function App(): React.JSX.Element {
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null)
   const [customApiKey, setCustomApiKey] = useState('')
   const [customApiModels, setCustomApiModels] = useState<string[]>([])
+  const [customApiModelsText, setCustomApiModelsText] = useState('')
+  const [customApiSyncCatalog, setCustomApiSyncCatalog] = useState(true)
   const [customApiModelsNote, setCustomApiModelsNote] = useState('')
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [repairPreview, setRepairPreview] = useState<SessionRepairPreview | null>(null)
   const [repairThreadIds, setRepairThreadIds] = useState<string[] | undefined>(undefined)
+  const [repairProgress, setRepairProgress] = useState<SessionRepairProgress | null>(null)
   const [conversationOpen, setConversationOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreviewResult | null>(null)
@@ -364,6 +368,14 @@ export function App(): React.JSX.Element {
     if (busy && !force) return
     setSettingsOpen(false)
     setCustomApiKey('')
+  }
+  const openSettingsDialog = (): void => {
+    const models = snapshot?.customApi.models ?? []
+    setCustomApiModels(models)
+    setCustomApiModelsText(models.join('\n'))
+    setCustomApiSyncCatalog(true)
+    setCustomApiModelsNote(models.length > 0 ? `已保存 ${models.length} 个 Codex 模型` : '')
+    setSettingsOpen(true)
   }
   const importDialogRef = useDialogFocus<HTMLElement>(importOpen && !importPreview, closeImportDialog)
   const exportDialogRef = useDialogFocus<HTMLElement>(Boolean(exportDialog), closeExportDialog)
@@ -478,6 +490,7 @@ export function App(): React.JSX.Element {
           }
         : current)
     })
+    const stopSessionRepairProgress = window.codexSwitcher.onSessionRepairProgress(setRepairProgress)
     const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
       if (!autoSwitch.running) {
@@ -493,6 +506,7 @@ export function App(): React.JSX.Element {
       stopAccountStatusSync()
       stopCpaGrokTesting()
       stopImportPreviewTesting()
+      stopSessionRepairProgress()
       stopAutoSwitch()
     }
   }, [])
@@ -998,27 +1012,25 @@ export function App(): React.JSX.Element {
 
   const selectAccountRow = (id: string): void => toggle(id)
 
-  const switchAccount = async (id: string, restart: boolean): Promise<void> => {
-    if (restart && !await requestConfirmation({
+  const switchAccount = async (id: string): Promise<void> => {
+    if (!await requestConfirmation({
       title: '切换账号并重启',
       message: '重启会中断 Codex 当前正在运行的任务。',
-      detail: '凭据写入成功后只会关闭官方 Codex 进程，然后重新启动应用。',
+      detail: '凭据写入后会关闭官方 Codex，在重新启动前同步当前会话的 provider 与可见性状态。',
       confirmLabel: '继续切换并重启',
       tone: 'warning'
     })) return
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.switchAccount(id, restart)
+      const result = await window.codexSwitcher.switchAccount(id, true)
       if (!result.ok) throw new Error(result.message)
       await reload()
       setMessage({
         kind: result.restartResult && !result.restartResult.ok ? 'warn' : 'ok',
         text: result.restartResult && !result.restartResult.ok
           ? result.message
-          : restart
-            ? '切换成功，Codex 已重启'
-            : '切换成功，请重启 Codex 使所有会话生效'
+          : '切换成功，当前会话已同步，Codex 已重启'
       })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
@@ -1027,13 +1039,13 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const switchSelected = async (restart: boolean): Promise<void> => {
+  const switchSelected = async (): Promise<void> => {
     const id = [...selected][0]
     if (!id || selected.size !== 1) {
       setMessage({ kind: 'error', text: '请选择一个账号进行切换' })
       return
     }
-    await switchAccount(id, restart)
+    await switchAccount(id)
   }
 
   const deleteAccounts = async (ids?: string[]): Promise<void> => {
@@ -1143,6 +1155,7 @@ export function App(): React.JSX.Element {
     try {
       const selectedThreadIds = threadIds ?? repairThreadIds
       setRepairThreadIds(selectedThreadIds)
+      setRepairProgress(null)
       setRepairPreview(selectedThreadIds?.length
         ? await window.codexSwitcher.previewSessionRepair(targetProvider, selectedThreadIds)
         : await window.codexSwitcher.previewSessionRepair(targetProvider))
@@ -1195,16 +1208,19 @@ export function App(): React.JSX.Element {
     if (mode === 'personal_access_token') return '可切换 · Personal Access Token，需重启'
     return '可切换 · 外部凭据，需重启'
   }
-  const requiresRestartAuth = (account: AccountSummary): boolean =>
-    ['external', 'personal_access_token'].includes(
-      account.switchMode ?? (account.canRefresh ? 'oauth' : 'external')
-    )
-
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="app-identity">
-          <div className="identity-title"><span className="product-mark"><Code2 size={17} /></span><h1>Codex Account Switcher</h1></div>
+          <div className="identity-title">
+            <span className="product-mark"><Code2 size={17} /></span>
+            <div className="identity-copy">
+              <h1>Codex Account Switcher</h1>
+              <span className="app-version" title={updateState?.currentVersion ? `当前版本 v${updateState.currentVersion}` : '正在读取版本'}>
+                {updateState?.currentVersion ? `v${updateState.currentVersion}` : 'v…'}
+              </span>
+            </div>
+          </div>
         </div>
         <nav className="view-tabs" aria-label="主页面">
           <button className={activeView === 'accounts' ? 'active' : ''} aria-pressed={activeView === 'accounts'} onClick={() => setActiveView('accounts')}>
@@ -1231,7 +1247,7 @@ export function App(): React.JSX.Element {
         >
           {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
         </button>
-        <button className="icon-button" title="设置" aria-label="设置" onClick={() => setSettingsOpen(true)} disabled={busy}>
+        <button className="icon-button" title="设置" aria-label="设置" onClick={openSettingsDialog} disabled={busy}>
           <Settings size={19} />
         </button>
       </header>
@@ -1343,18 +1359,18 @@ export function App(): React.JSX.Element {
           <summary><MoreHorizontal size={17} />更多</summary>
           <div className="action-menu-popover">
             <button onClick={() => void run(async () => {
-              const result = await window.codexSwitcher.restoreLatest(false)
+              const result = await window.codexSwitcher.restoreLatest(true)
               if (!result.ok) throw new Error(result.message)
             }, '已恢复上一个配置')} disabled={busy}>
               <RotateCcw size={16} />恢复上一个
             </button>
             <button onClick={() => void run(async () => {
-              const result = await window.codexSwitcher.restoreApiMode(false)
+              const result = await window.codexSwitcher.restoreApiMode(true)
               if (!result.ok) throw new Error(result.message)
             }, '已恢复原 API/代理模式')} disabled={busy}>
               <RotateCcw size={16} />恢复备份 API
             </button>
-            <button onClick={() => setSettingsOpen(true)} disabled={busy}>
+            <button onClick={openSettingsDialog} disabled={busy}>
               <KeyRound size={16} />自定义 API
             </button>
             <button onClick={() => void inspectLibraries()} disabled={busy}>
@@ -1374,10 +1390,7 @@ export function App(): React.JSX.Element {
         () => window.codexSwitcher.testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Play size={16} />测试选中
         </button>
-        <button className="primary-button" onClick={() => void switchSelected(false)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '该认证模式写入后必须重启 Codex' : undefined}>
-          <CheckCircle2 size={16} />切换账号
-        </button>
-        <button onClick={() => void switchSelected(true)} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : selectedAccount && requiresRestartAuth(selectedAccount) ? '按对应认证模式写入并重启 Codex' : undefined}>
+        <button className="primary-button" onClick={() => void switchSelected()} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : '切换后会同步当前会话并重启 Codex'}>
           <RotateCcw size={16} />切换并重启
         </button>
         <button onClick={() => void openSessionRepair()} disabled={busy}>
@@ -1748,10 +1761,7 @@ export function App(): React.JSX.Element {
           <button role="menuitem" onClick={() => contextAction(() => runTest(() => window.codexSwitcher.testAccounts([contextMenu.account.id], testMode), CODEX_TEST_MODE_SUCCESS[testMode]))}>
             <TestTube2 size={15} />检测此账号
           </button>
-          <button role="menuitem" disabled={busy || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : requiresRestartAuth(contextMenu.account) ? '该认证模式切换后需重启 Codex' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, false))}>
-            <CheckCircle2 size={15} />切换到此账号
-          </button>
-          <button role="menuitem" disabled={busy || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : requiresRestartAuth(contextMenu.account) ? '按对应认证模式写入并重启 Codex' : undefined} onClick={() => contextAction(() => switchAccount(contextMenu.account.id, true))}>
+          <button role="menuitem" disabled={busy || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : '切换后会同步当前会话并重启 Codex'} onClick={() => contextAction(() => switchAccount(contextMenu.account.id))}>
             <RotateCcw size={15} />切换并重启
           </button>
           <button role="menuitem" onClick={() => contextAction(() => openExport([contextMenu.account.id]))}>
@@ -1850,9 +1860,17 @@ export function App(): React.JSX.Element {
             )}
             <div className="repair-note">
               {repairThreadIds?.length
-                ? `将同步选中的 ${repairThreadIds.length} 个对话。`
-                : '将同步全部历史对话。'}写入前会校验快照并创建备份，写入后会再次扫描确认结果。正文采用流式处理，不会一次载入全部会话。
+                ? `将深度同步选中的 ${repairThreadIds.length} 个对话，覆盖其中全部会话元数据。`
+                : '将快速同步官方状态库引用的历史对话，仅检查每个对话的首条元数据。'}应用会自动关闭正在运行的 Codex；写入前会校验快照并创建备份，写入后会再次扫描确认结果。
             </div>
+            {repairProgress && (
+              <div className="repair-progress" aria-live="polite">
+                <div className="task-progress">
+                  <div style={{ width: `${Math.round((repairProgress.done / Math.max(1, repairProgress.total)) * 100)}%` }} />
+                  <span>{repairProgress.message}（{repairProgress.done}/{repairProgress.total}）</span>
+                </div>
+              </div>
+            )}
             <div className="panel-actions">
               <button className="secondary-button" onClick={closeRepairDialog} disabled={busy}><X size={16} />取消</button>
               <button
@@ -1885,12 +1903,13 @@ export function App(): React.JSX.Element {
             </div>
             <section className="custom-api-panel" aria-label="自定义 API">
               <div className="section-heading">
-                <div><strong>自定义 API</strong><span>保存时：先用填写的模型做连通测试，通过后再自动拉取模型列表并写入 config / model_catalog_json。会多路径尝试 /v1、/api/v1、/openai/v1 等。Key 使用 Windows DPAPI 加密且不回显</span></div>
+                <div><strong>自定义 API</strong><span>可从上游获取模型后逐行增删，并选择是否导入 Codex。保存前会真实发送 hi，成功后由你决定是否修复会话并重启。应用保存的 Key 副本使用 DPAPI 加密，但 Codex 运行配置会按兼容格式写入明文 Key</span></div>
                 <span className={`saved-secret ${snapshot.customApi.hasApiKey ? 'ready' : ''}`}>{snapshot.customApi.hasApiKey ? 'Key 已保存' : '未保存 Key'}</span>
               </div>
               <label>API 地址<input value={settingsDraft.customApiBaseUrl} onChange={(event) => {
                 setSettingsDraft({ ...settingsDraft, customApiBaseUrl: event.target.value })
                 setCustomApiModels([])
+                setCustomApiModelsText('')
                 setCustomApiModelsNote('')
               }} placeholder="https://api.example.com/v1 或完整 .../v1/chat/completions" /></label>
               <div className="settings-grid">
@@ -1899,7 +1918,7 @@ export function App(): React.JSX.Element {
                     list="custom-api-model-options"
                     value={settingsDraft.customApiModel}
                     onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiModel: event.target.value })}
-                    placeholder={customApiModels.length > 0 ? '可从列表选择，也可手动填写' : '必填：先用此模型测试，通过后再拉列表'}
+                    placeholder={customApiModels.length > 0 ? '从编辑后的目录选择，也可手动填写' : '必填：用于真实 hi 测试'}
                   />
                   <datalist id="custom-api-model-options">
                     {customApiModels.map((modelId) => (
@@ -1909,9 +1928,30 @@ export function App(): React.JSX.Element {
                 </label>
                 <label>API Key<input type="password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} placeholder={snapshot.customApi.hasApiKey ? '留空继续使用已保存 Key' : '输入 API Key'} autoComplete="new-password" /></label>
               </div>
+              <label className="check-option"><input type="checkbox" checked={customApiSyncCatalog} onChange={(event) => setCustomApiSyncCatalog(event.target.checked)} />将下面的模型目录导入 Codex</label>
+              <label>同步到 Codex 的模型目录（每行一个，可自由增删）
+                <textarea
+                  aria-label="同步到 Codex 的模型目录"
+                  rows={6}
+                  value={customApiModelsText}
+                  onChange={(event) => {
+                    const text = event.target.value
+                    const seen = new Set<string>()
+                    const models = text.split(/\r?\n/).map((item) => item.trim()).filter((item) => {
+                      if (!item || seen.has(item)) return false
+                      seen.add(item)
+                      return true
+                    })
+                    setCustomApiModelsText(text)
+                    setCustomApiModels(models)
+                    setCustomApiModelsNote(`将同步 ${models.length + (models.includes(settingsDraft.customApiModel.trim()) ? 0 : 1)} 个模型（当前模型会自动保留）`)
+                  }}
+                  placeholder={'model-a\nmodel-b\n也可以手动增加上游未列出的模型'}
+                />
+              </label>
               {customApiModelsNote ? <p className="custom-api-models-note">{customApiModelsNote}</p> : null}
               {customApiModels.length > 0 ? (
-                <label>从接口返回的模型中选择
+                <label>从编辑后的模型目录中选择
                   <select
                     value={customApiModels.includes(settingsDraft.customApiModel) ? settingsDraft.customApiModel : ''}
                     onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiModel: event.target.value })}
@@ -1930,6 +1970,7 @@ export function App(): React.JSX.Element {
                     ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
                   })
                   setCustomApiModels(listed.models)
+                  setCustomApiModelsText(listed.models.join('\n'))
                   setCustomApiModelsNote(listed.message)
                   if (!listed.ok) throw new Error(listed.message)
                   if (listed.models.length > 0) {
@@ -1943,40 +1984,73 @@ export function App(): React.JSX.Element {
                 }, '已获取自定义 API 模型列表', false)}>
                   获取模型列表
                 </button>
-                <button className="primary-button" onClick={() => void run(async () => {
-                  const result = await window.codexSwitcher.switchToCustomApi({
-                    baseUrl: settingsDraft.customApiBaseUrl,
-                    model: settingsDraft.customApiModel,
-                    ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
-                  }, false)
-                  if (!result.ok) throw new Error(result.message)
-                  if (result.remoteModels?.length) {
-                    setCustomApiModels(result.remoteModels)
-                    setCustomApiModelsNote(`切换时已同步 ${result.remoteModels.length} 个模型到目录`)
-                  }
-                  if (result.selectedModel || result.discoveredBaseUrl) {
-                    setSettingsDraft({
-                      ...settingsDraft,
-                      customApiModel: result.selectedModel || settingsDraft.customApiModel,
-                      customApiBaseUrl: result.discoveredBaseUrl || settingsDraft.customApiBaseUrl
-                    })
-                  }
-                  setCustomApiKey('')
-                  await reload()
-                  if (await requestConfirmation({
-                    title: '重启 Codex 使 API 生效',
-                    message: '已先用填写模型测试通过，再自动拉取模型列表并保存。立即重启后，新请求与模型下拉会使用刚写入的目录。',
-                    detail: '历史对话仍保留在原来的 openai 分组，不会被移除或改写。',
-                    confirmLabel: '立即重启',
-                    cancelLabel: '稍后重启',
+                <button className="primary-button" onClick={() => void (async () => {
+                  if (!await requestConfirmation({
+                    title: '测试并切换第三方 API',
+                    message: '先真实测试 API；通过后保存 provider 配置，再由你选择是否修复会话并重启 Codex。',
+                    detail: '测试失败不会修改配置。强制保存需要第二次确认，且不会自动重启。',
+                    confirmLabel: '测试并保存',
                     tone: 'warning'
-                  })) {
-                    const restartResult = await window.codexSwitcher.restartCodex()
-                    if (!restartResult.ok) {
-                      throw new Error(`自定义 API 已保存，但 Codex 重启失败：${restartResult.message}`)
+                  })) return
+                  await run(async () => {
+                    const profile = {
+                      baseUrl: settingsDraft.customApiBaseUrl,
+                      model: settingsDraft.customApiModel,
+                      models: customApiModels,
+                      syncModelCatalog: customApiSyncCatalog,
+                      ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
                     }
-                  }
-                }, '自定义 API：模型测试通过并已拉取模型列表', false)} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
+                    let result = await window.codexSwitcher.switchToCustomApi(profile, true)
+                    if (!result.ok && result.canForce) {
+                      const force = await requestConfirmation({
+                        title: 'API 测试失败',
+                        message: result.message,
+                        detail: '强制切换后 Codex 可能无法发送消息或启动异常。配置仍会备份，可使用“恢复备份 API”撤销。',
+                        confirmLabel: '仍然强制切换',
+                        tone: 'danger'
+                      })
+                      if (!force) throw new Error('API 测试未通过，已取消强制切换；本地配置未修改')
+                      result = await window.codexSwitcher.switchToCustomApi({ ...profile, force: true }, true)
+                    }
+                    if (!result.ok) throw new Error(result.message)
+                    if (result.restartResult && !result.restartResult.ok) {
+                      throw new Error(`自定义 API 已保存，但 Codex 重启失败：${result.restartResult.message}`)
+                    }
+                    if (result.catalogModels?.length) {
+                      setCustomApiModels(result.catalogModels)
+                      setCustomApiModelsText(result.catalogModels.join('\n'))
+                    }
+                    setCustomApiModelsNote(result.message)
+                    if (result.selectedModel || result.discoveredBaseUrl) {
+                      setSettingsDraft({
+                        ...settingsDraft,
+                        customApiModel: result.selectedModel || settingsDraft.customApiModel,
+                        customApiBaseUrl: result.discoveredBaseUrl || settingsDraft.customApiBaseUrl
+                      })
+                    }
+                    setCustomApiKey('')
+                    await reload()
+                    if (result.warning) {
+                      setMessage({ kind: 'warn', text: `${result.message}；未自动重启 Codex` })
+                      return
+                    }
+                    const restart = await requestConfirmation({
+                      title: '第三方 API 已切换',
+                      message: result.message,
+                      detail: '重启会先自动修复对话，再启动官方 Codex。选择暂不重启会保留已保存的配置。',
+                      confirmLabel: '修复并重启',
+                      cancelLabel: '暂不重启',
+                      tone: 'warning'
+                    })
+                    if (!restart) {
+                      setMessage({ kind: 'ok', text: `${result.message}；已切换，暂未重启` })
+                      return
+                    }
+                    const restarted = await window.codexSwitcher.restartCodex()
+                    if (!restarted.ok) throw new Error(`API 已切换，但自动修复/重启失败：${restarted.message}`)
+                    setMessage({ kind: 'ok', text: `${result.message}；已自动修复对话并重启 Codex` })
+                  }, undefined, false)
+                })()} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
                   <KeyRound size={16} />测试并切换
                 </button>
               </div>

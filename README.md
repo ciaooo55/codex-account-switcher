@@ -26,11 +26,11 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 完整 OAuth 与只有 access token 的 CPA Team/K12 账号都写入标准 `auth_mode: "chatgpt"`。access-only 账号会保留 workspace ID、以 access JWT 填充 ID token，并写入空的 refresh token；切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
 - 顶部提供 Codex 账号库、Grok 账号库、CPA 账号管理、定时切换四个独立页面，并可在浅色和深色工作台主题之间切换；窄窗口下导航保持单行，选择保存在本机并在下次启动时恢复。页面切换和操作完成后只读取当前板块的数据，不再重复扫描其他账号库；账号超过 80 条时表格启用虚拟滚动，只渲染可视区域及少量缓冲行。
-- 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址与模型会记忆，Key 使用 Windows DPAPI 加密且不会回显到 renderer。保存自定义 API 时先用填写的模型做连通测试（多路径尝试 /v1、/api/v1、/openai/v1 的 responses 与 chat/completions），测试通过后再拉取模型列表并写入 config 与相对路径 model_catalog_json；列表拉取失败仍会保存当前模型一项。测试失败不会改写配置。
+- 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址、当前模型和用户编辑后的模型目录会记忆，应用自己的 Key 副本使用 Windows DPAPI 加密且不会回显到 renderer；Codex 运行所需的 `auth.json` 与 provider `experimental_bearer_token` 按 Cockpit 兼容格式写入明文，请按凭据文件保护 `.codex`。可从上游 `/models` 获取目录后逐行删除或增加模型，并单独选择是否导入 Codex。切换前会向选中模型真实发送 `hi`，要求 HTTP 200 与非空回复；失败会显示错误信息，可在第二次风险确认后强制保存，强制保存不重启。成功保存后会询问是否“修复并重启”；仅在确认重启时自动修复对话。旧的 `model-catalogs/account-switcher.json` 简化目录引用会自动迁移且不会进入恢复快照。
 - “账号库体检”会扫描 aa Codex、aa Grok、CPA 和本地状态/标签记录，报告重复身份、非标准文件、多账号文件、Codex/Grok 混合文件、损坏文件及孤立缓存；修复前二次确认，凭证先解析并写入正确分类目录，确认成功后才清理旧文件，损坏文件移入应用隔离目录。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。
 - 点击最小化会保留窗口并正常缩到任务栏；点击关闭才会释放主界面并转入系统托盘，只保留主进程定时任务。托盘可重新打开界面、立即检查账号、开关定时自动切换或彻底退出；后台检测未发生切换时保持静默，只有账号实际更换才发送托盘通知。
-- 按 Codex++ 行为同步历史 rollout、SQLite 可见性与工作区路径，写入前预览、加锁、备份并支持失败回滚；允许 Codex 运行时修复，锁定文件会跳过并提示，完成后自动复检。对话管理支持资料或正文搜索、来源和父子任务筛选、代理状态、父任务跳转、多选同步与保守清理；索引采用增量缓存，正文读取保持有界流式处理。
+- 切换账号、恢复配置或在第三方 API 保存后选择“修复并重启”时，按 Codex++ 的重启策略关闭官方 Codex，再按 Cockpit 的启动前快速修复方式同步官方 `state_5.sqlite` 引用的 rollout、provider、`has_user_event`、`thread_source` 与工作区路径，最后启动 Codex；不会在仍有当前对话写入时热改文件。手动修复也要求先关闭 Codex，并提供预览、加锁、备份、失败回滚和写后复检。对话管理支持资料或正文搜索、来源和父子任务筛选、代理状态、父任务跳转、多选同步与保守清理；索引采用增量缓存，正文读取保持有界流式处理。
 - 内部凭据库与切换备份使用 Electron `safeStorage` / Windows DPAPI 加密，renderer 与日志不接收 token。按你的本地管理要求，安装目录 `aa` 中的一账号一文件是可移植的明文凭据 JSON，请像保护原始账号文件一样限制该目录访问。
 - 打包版可直接检查 GitHub Release；安装包下载到当前 Windows 用户实际的“下载”文件夹，经 SHA-512 校验后覆盖安装，并在安装结束后自动删除、重启应用并显示安装结果。安装失败时会重新打开原版本，并在 `%TEMP%\CodexAccountSwitcher-update.log` 保留诊断信息。
 - 安装或升级时只按安装目录精确查找并关闭旧程序，不会把下载目录中的安装器自身当成应用进程。应用内更新会按已安装 EXE 的完整路径等待所有旧进程，超时后只结束该路径对应的进程再继续覆盖安装。
@@ -64,6 +64,27 @@ Sub2API 导出保留 `accounts[].credentials` 嵌套结构；CPA 导出转为一
 
 Sub2API 仅作为离线导入/导出格式兼容；应用不连接 Sub2API 服务、不读取其数据库，也没有 Sub2API 管理页面。
 
+## 第三方 API 配置格式
+
+切换成功后，应用写入的核心 `config.toml` 结构如下（其他用户配置和非本应用 provider 会保留）：
+
+```toml
+model_provider = "codex_account_switcher"
+model = "your-model-id"
+model_catalog_json = "account-switcher-model-catalog.json"
+cli_auth_credentials_store = "file"
+
+[model_providers.codex_account_switcher]
+name = "Codex Account Switcher"
+base_url = "https://api.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "your-api-key"
+supports_websockets = false
+```
+
+同时写入标准 API Key 认证文件 `{ "auth_mode": "apikey", "OPENAI_API_KEY": "..." }`。配置不包含顶层 `openai_base_url`。`account-switcher-model-catalog.json` 位于 `config.toml` 同一目录，采用 Cockpit 相同的 `{ "models": [...] }` 根结构；每个模型都写入 Codex 解析所需的完整元数据和非空 `base_instructions`，文件写完并通过 JSON/模型复检后才更新 `model_catalog_json` 引用，避免旧简化目录或半写文件导致启动卡住。
+
 ## 开发与验证
 
 ```powershell
@@ -96,7 +117,7 @@ npm run package:win
 
 ## 历史会话修复
 
-修复操作只修改 `session_meta.payload.model_provider`、Codex SQLite `threads` 索引和相关工作区路径，不修改消息正文。Codex 运行时也可执行；被占用的文件会跳过并列出数量。应用在 `.codex\backups_state\account-switcher-provider-sync` 创建可审计备份，并在写入后重新扫描验证结果。
+修复操作只修改 `session_meta.payload.model_provider`、Codex 官方 `state_5.sqlite` 的 `threads` 索引（包括 `model_provider`、`has_user_event`、`thread_source`）和相关工作区路径，不修改消息正文。账号切换会自动关闭 Codex、修复并重启；第三方 API 保存后由用户选择是否执行同一流程。手动修复检测到 Codex 正在运行时会拒绝写入，避免当前对话继续追加时产生卡住或状态覆盖。应用在 `.codex\backups_state\account-switcher-provider-sync` 创建可审计备份，并在写入后重新扫描验证结果。
 
 包含其他供应商 `encrypted_content` 的会话会显示警告；这类内容可能无法在不同供应商或账号间继续或压缩。
 

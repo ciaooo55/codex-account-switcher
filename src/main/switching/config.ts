@@ -1,4 +1,5 @@
 import { normalizeCustomApiBaseUrl } from '../../shared/custom-api'
+import { MANAGED_CUSTOM_API_MODEL_CATALOG } from '../../shared/custom-api'
 
 export type ManagedConfigKey =
   | 'model_provider'
@@ -21,7 +22,7 @@ const MANAGED_KEYS: ManagedConfigKey[] = [
   'cli_auth_credentials_store'
 ]
 
-const OWNED_PROVIDER_ID = 'codex_account_switcher'
+export const OWNED_PROVIDER_ID = 'codex_account_switcher'
 
 function assignmentPattern(key: ManagedConfigKey): RegExp {
   return new RegExp(`^\\s*${key}\\s*=`)
@@ -54,10 +55,14 @@ function providerSection(text: string, providerId: string): string | null {
 }
 
 function snapshotManagedConfig(text: string): ManagedConfigSnapshot {
-  return {
+  const snapshot = {
     ...snapshotManagedLines(text.split(/\r?\n/)),
     ownedProviderSection: providerSection(text, OWNED_PROVIDER_ID)
   }
+  if (/model-catalogs[\\/]account-switcher\.json["']?\s*$/i.test(snapshot.model_catalog_json ?? '')) {
+    snapshot.model_catalog_json = null
+  }
+  return snapshot
 }
 
 function replaceManagedLines(text: string, replacements: Partial<ManagedConfigSnapshot>): string {
@@ -136,20 +141,53 @@ function removeProviderSection(text: string, providerId: string): string {
   return lines.join(text.includes('\r\n') ? '\r\n' : '\n').replace(/\n{3,}/g, '\n\n')
 }
 
+/**
+ * Keeps the managed TOML section intact while refreshing the ephemeral loopback
+ * gateway address after this app has restarted.
+ */
+export function replaceOwnedProviderBaseUrl(text: string, baseUrl: string): string | null {
+  const lines = text.split(/\r?\n/)
+  const header = `[model_providers.${OWNED_PROVIDER_ID}]`
+  const start = lines.findIndex((line) => line.trim() === header)
+  if (start === -1) return null
+  let baseUrlLine = -1
+  for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
+    if (/^\s*base_url\s*=/.test(lines[index])) {
+      baseUrlLine = index
+      break
+    }
+  }
+  if (baseUrlLine === -1) return null
+  lines[baseUrlLine] = `base_url = ${tomlString(normalizeCustomApiBaseUrl(baseUrl))}`
+  return lines.join(text.includes('\r\n') ? '\r\n' : '\n')
+}
+
 export function applyCustomApiConfig(
   text: string,
-  input: { baseUrl: string; model: string; modelCatalogPath: string }
+  input: { baseUrl: string; model: string; apiKey: string; syncModelCatalog?: boolean }
 ): { text: string; snapshot: ManagedConfigSnapshot } {
   const snapshot = snapshotManagedConfig(text)
   const withoutPrevious = removeProviderSection(text, OWNED_PROVIDER_ID).trimEnd()
   const baseUrl = normalizeCustomApiBaseUrl(input.baseUrl)
+  const newline = text.includes('\r\n') ? '\r\n' : '\n'
   const managed = replaceManagedLines(withoutPrevious, {
-    model_provider: 'model_provider = "openai"',
-    openai_base_url: `openai_base_url = ${tomlString(baseUrl)}`,
+    model_provider: `model_provider = ${tomlString(OWNED_PROVIDER_ID)}`,
+    openai_base_url: null,
     model: `model = ${tomlString(input.model)}`,
     model_reasoning_effort: null,
-    model_catalog_json: `model_catalog_json = ${tomlString(input.modelCatalogPath)}`,
+    model_catalog_json: input.syncModelCatalog === false
+      ? null
+      : `model_catalog_json = ${tomlString(MANAGED_CUSTOM_API_MODEL_CATALOG)}`,
     cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
   }).trimEnd()
-  return { snapshot, text: `${managed}\n` }
+  const provider = [
+    `[model_providers.${OWNED_PROVIDER_ID}]`,
+    'name = "Codex Account Switcher"',
+    `base_url = ${tomlString(baseUrl)}`,
+    'wire_api = "responses"',
+    'requires_openai_auth = true',
+    `experimental_bearer_token = ${tomlString(input.apiKey)}`,
+    'supports_websockets = false'
+  ].join(newline)
+  return { snapshot, text: `${managed}${newline}${newline}${provider}${newline}` }
 }

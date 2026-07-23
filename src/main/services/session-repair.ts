@@ -13,13 +13,14 @@ import {
 } from 'node:fs/promises'
 import { once } from 'node:events'
 import { finished } from 'node:stream/promises'
-import { basename, dirname, extname, join, relative } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { SessionRepairPreview, SessionRepairResult } from '../../shared/types'
 
 const DEFAULT_PROVIDER = 'openai'
 const SESSION_DIRECTORIES = ['sessions', 'archived_sessions'] as const
 const MANAGED_BY = 'Codex Account Switcher provider sync'
+const REPAIR_LOCK_STALE_MS = 30 * 60 * 1000
 
 type FaultStage = 'after-rollouts' | 'after-sqlite' | 'after-global-state'
 
@@ -28,12 +29,12 @@ interface SessionRepairOptions {
   backupRetention?: number
   now?: () => Date
   faultInjector?: (stage: FaultStage) => void
+  onProgress?: (progress: { done: number; total: number; message: string }) => void
 }
 
 interface RolloutChange {
   path: string
   originalSessionMetaLines: string[]
-  nextSessionMetaLine: string
   contentHash: string
   originalAtime: Date
   originalMtime: Date
@@ -181,8 +182,18 @@ function changedGlobalKeys(
 }
 
 function isLockedError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException)?.code
-  return code === 'EACCES' || code === 'EPERM' || code === 'EBUSY'
+  const err = error as NodeJS.ErrnoException & { message?: string }
+  const code = err?.code
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' || code === 'EAGAIN') return true
+  const message = String(err?.message ?? error ?? '').toLowerCase()
+  return (
+    message.includes('resource busy') ||
+    message.includes('locked') ||
+    message.includes('sharing violation') ||
+    message.includes('being used by another process') ||
+    message.includes('sqlite_busy') ||
+    message.includes('database is locked')
+  )
 }
 
 function sqliteNumber(value: unknown): number {
@@ -210,34 +221,68 @@ function inspectDatabase(
   const db = new DatabaseSync(path, { readOnly: true })
   try {
     const columns = tableColumns(db, 'threads')
-    if (!columns.has('model_provider')) {
-      return { counts: { provider: 0, userEvent: 0, cwd: 0 }, providers: [] }
-    }
     let provider = 0
-    if (selectedThreadIds) {
-      const query = db.prepare(
-        "SELECT COUNT(*) AS count FROM threads WHERE id = ? AND COALESCE(model_provider, '') <> ?"
-      )
-      for (const id of selectedThreadIds) {
-        provider += sqliteNumber((query.get(id, targetProvider) as Record<string, unknown> | undefined)?.count)
+    let providers: string[] = []
+    if (columns.has('model_provider')) {
+      if (selectedThreadIds) {
+        const query = db.prepare(
+          "SELECT COUNT(*) AS count FROM threads WHERE id = ? AND COALESCE(model_provider, '') <> ?"
+        )
+        for (const id of selectedThreadIds) {
+          provider += sqliteNumber((query.get(id, targetProvider) as Record<string, unknown> | undefined)?.count)
+        }
+      } else {
+        const providerRow = db
+          .prepare("SELECT COUNT(*) AS count FROM threads WHERE COALESCE(model_provider, '') <> ?")
+          .get(targetProvider) as Record<string, unknown> | undefined
+        provider = sqliteNumber(providerRow?.count)
       }
-    } else {
-      const providerRow = db
-        .prepare("SELECT COUNT(*) AS count FROM threads WHERE COALESCE(model_provider, '') <> ?")
-        .get(targetProvider) as Record<string, unknown> | undefined
-      provider = sqliteNumber(providerRow?.count)
+      providers = db
+        .prepare(
+          "SELECT DISTINCT COALESCE(model_provider, '') AS provider FROM threads WHERE COALESCE(model_provider, '') <> ''"
+        )
+        .all()
+        .map((row) => String((row as Record<string, unknown>).provider ?? ''))
+        .filter(Boolean)
     }
-    const providers = db
-      .prepare(
-        "SELECT DISTINCT COALESCE(model_provider, '') AS provider FROM threads WHERE COALESCE(model_provider, '') <> ''"
-      )
-      .all()
-      .map((row) => String((row as Record<string, unknown>).provider ?? ''))
-      .filter(Boolean)
     let userEvent = 0
+    const visibilityPredicates: string[] = []
+    if (columns.has('has_user_event') && columns.has('first_user_message')) {
+      visibilityPredicates.push("COALESCE(first_user_message, '') <> '' AND COALESCE(has_user_event, 0) <> 1")
+    }
+    if (columns.has('thread_source') && columns.has('first_user_message')) {
+      visibilityPredicates.push("COALESCE(first_user_message, '') <> '' AND COALESCE(thread_source, '') = ''")
+    }
+    if (visibilityPredicates.length > 0) {
+      const predicate = visibilityPredicates.map((item) => `(${item})`).join(' OR ')
+      if (selectedThreadIds) {
+        const query = db.prepare(`SELECT COUNT(*) AS count FROM threads WHERE id = ? AND (${predicate})`)
+        for (const id of selectedThreadIds) {
+          userEvent += sqliteNumber((query.get(id) as Record<string, unknown> | undefined)?.count)
+        }
+      } else {
+        userEvent += sqliteNumber(
+          (db.prepare(`SELECT COUNT(*) AS count FROM threads WHERE ${predicate}`).get() as Record<string, unknown> | undefined)?.count
+        )
+      }
+    }
     if (columns.has('has_user_event')) {
+      const withoutVisibleMessage = columns.has('first_user_message')
+        ? " AND COALESCE(first_user_message, '') = ''"
+        : ''
       const query = db.prepare(
-        'SELECT COUNT(*) AS count FROM threads WHERE id = ? AND COALESCE(has_user_event, 0) <> 1'
+        `SELECT COUNT(*) AS count FROM threads WHERE id = ? AND COALESCE(has_user_event, 0) <> 1${withoutVisibleMessage}`
+      )
+      for (const id of userEventThreadIds) {
+        userEvent += sqliteNumber((query.get(id) as Record<string, unknown> | undefined)?.count)
+      }
+    }
+    if (columns.has('thread_source')) {
+      const withoutVisibleMessage = columns.has('first_user_message')
+        ? " AND COALESCE(first_user_message, '') = ''"
+        : ''
+      const query = db.prepare(
+        `SELECT COUNT(*) AS count FROM threads WHERE id = ? AND COALESCE(thread_source, '') = ''${withoutVisibleMessage}`
       )
       for (const id of userEventThreadIds) {
         userEvent += sqliteNumber((query.get(id) as Record<string, unknown> | undefined)?.count)
@@ -278,28 +323,58 @@ function updateDatabase(
   try {
     db.exec('PRAGMA busy_timeout = 5000')
     const columns = tableColumns(db, 'threads')
-    if (!columns.has('model_provider')) return { provider: 0, userEvent: 0, cwd: 0 }
     db.exec('BEGIN IMMEDIATE')
     try {
       let provider = 0
-      if (selectedThreadIds) {
-        const update = db.prepare(
-          "UPDATE threads SET model_provider = ? WHERE id = ? AND COALESCE(model_provider, '') <> ?"
-        )
-        for (const id of selectedThreadIds) {
-          provider += Number(update.run(targetProvider, id, targetProvider).changes)
+      if (columns.has('model_provider')) {
+        if (selectedThreadIds) {
+          const update = db.prepare(
+            "UPDATE threads SET model_provider = ? WHERE id = ? AND COALESCE(model_provider, '') <> ?"
+          )
+          for (const id of selectedThreadIds) {
+            provider += Number(update.run(targetProvider, id, targetProvider).changes)
+          }
+        } else {
+          provider = Number(
+            db
+              .prepare("UPDATE threads SET model_provider = ? WHERE COALESCE(model_provider, '') <> ?")
+              .run(targetProvider, targetProvider).changes
+          )
         }
-      } else {
-        provider = Number(
-          db
-            .prepare("UPDATE threads SET model_provider = ? WHERE COALESCE(model_provider, '') <> ?")
-            .run(targetProvider, targetProvider).changes
-        )
       }
       let userEvent = 0
+      const visibilityAssignments: string[] = []
+      const visibilityPredicates: string[] = []
+      if (columns.has('has_user_event') && columns.has('first_user_message')) {
+        visibilityAssignments.push("has_user_event = CASE WHEN COALESCE(first_user_message, '') <> '' THEN 1 ELSE has_user_event END")
+        visibilityPredicates.push("COALESCE(first_user_message, '') <> '' AND COALESCE(has_user_event, 0) <> 1")
+      }
+      if (columns.has('thread_source') && columns.has('first_user_message')) {
+        visibilityAssignments.push("thread_source = CASE WHEN COALESCE(first_user_message, '') <> '' AND COALESCE(thread_source, '') = '' THEN 'user' ELSE thread_source END")
+        visibilityPredicates.push("COALESCE(first_user_message, '') <> '' AND COALESCE(thread_source, '') = ''")
+      }
+      if (visibilityAssignments.length > 0) {
+        const predicate = visibilityPredicates.map((item) => `(${item})`).join(' OR ')
+        if (selectedThreadIds) {
+          const update = db.prepare(
+            `UPDATE threads SET ${visibilityAssignments.join(', ')} WHERE id = ? AND (${predicate})`
+          )
+          for (const id of selectedThreadIds) userEvent += Number(update.run(id).changes)
+        } else {
+          userEvent += Number(
+            db.prepare(`UPDATE threads SET ${visibilityAssignments.join(', ')} WHERE ${predicate}`).run().changes
+          )
+        }
+      }
       if (columns.has('has_user_event')) {
         const update = db.prepare(
           'UPDATE threads SET has_user_event = 1 WHERE id = ? AND COALESCE(has_user_event, 0) <> 1'
+        )
+        for (const id of userEventThreadIds) userEvent += Number(update.run(id).changes)
+      }
+      if (columns.has('thread_source')) {
+        const update = db.prepare(
+          "UPDATE threads SET thread_source = 'user' WHERE id = ? AND COALESCE(thread_source, '') = ''"
         )
         for (const id of userEventThreadIds) userEvent += Number(update.run(id).changes)
       }
@@ -386,8 +461,8 @@ async function rolloutChange(
   const metadata = await stat(path)
   const hash = createHash('sha256')
   let pending = Buffer.alloc(0)
-  let originalSessionMetaLine: string | null = null
-  let nextSessionMetaLine = ''
+  const originalSessionMetaLines: string[] = []
+  const rewriteAllSessionMeta = Boolean(selectedThreadIds)
   const providers: string[] = []
   let rewriteNeeded = false
   let threadId: string | null = null
@@ -396,21 +471,32 @@ async function rolloutChange(
   let hasEncryptedContent = false
   let searchTail = ''
 
+  const change = (contentHash: string): RolloutChange => ({
+    path,
+    originalSessionMetaLines,
+    contentHash,
+    originalAtime: metadata.atime,
+    originalMtime: metadata.mtime,
+    rewriteNeeded,
+    threadId,
+    cwd,
+    hasUserEvent,
+    providers,
+    hasEncryptedContent
+  })
+
   const inspectLine = (line: string): void => {
-    if (originalSessionMetaLine !== null || !line.trim()) return
+    if (!rewriteAllSessionMeta && originalSessionMetaLines.length > 0) return
+    if (!line.trim()) return
     const parsed = sessionMeta(line)
     if (!parsed) return
-    originalSessionMetaLine = line
-    const { root, payload } = parsed
-    if (typeof payload.id === 'string') threadId = payload.id
-    if (typeof payload.cwd === 'string') cwd = normalizeWorkspacePath(payload.cwd)
+    originalSessionMetaLines.push(line)
+    const { payload } = parsed
+    if (!threadId && typeof payload.id === 'string') threadId = payload.id
+    if (!cwd && typeof payload.cwd === 'string') cwd = normalizeWorkspacePath(payload.cwd)
     const provider = typeof payload.model_provider === 'string' ? payload.model_provider : '(missing)'
     providers.push(provider)
-    if (provider !== targetProvider) {
-      payload.model_provider = targetProvider
-      rewriteNeeded = true
-    }
-    nextSessionMetaLine = JSON.stringify(root)
+    if (provider !== targetProvider) rewriteNeeded = true
   }
 
   for await (const rawChunk of createReadStream(path)) {
@@ -421,45 +507,31 @@ async function rolloutChange(
     hasEncryptedContent ||= searchable.includes('encrypted_content')
     searchTail = searchable.slice(-64)
 
-    if (originalSessionMetaLine === null) {
-      pending = Buffer.concat([pending, chunk])
-      let newline = pending.indexOf(0x0a)
-      while (newline >= 0 && originalSessionMetaLine === null) {
-        const segment = pending.subarray(0, newline + 1).toString('utf8')
-        pending = pending.subarray(newline + 1)
-        inspectLine(splitLineEnding(segment)[0])
-        newline = pending.indexOf(0x0a)
+    pending = Buffer.concat([pending, chunk])
+    let newline = pending.indexOf(0x0a)
+    while (newline >= 0) {
+      const segment = pending.subarray(0, newline + 1).toString('utf8')
+      pending = pending.subarray(newline + 1)
+      inspectLine(splitLineEnding(segment)[0])
+      if (!rewriteAllSessionMeta && originalSessionMetaLines.length > 0) {
+        const fingerprint = createHash('sha256')
+          .update(path)
+          .update(String(metadata.size))
+          .update(String(metadata.mtimeMs))
+          .update(originalSessionMetaLines[0])
+          .digest('hex')
+        return change(fingerprint)
       }
-      if (
-        originalSessionMetaLine !== null &&
-        selectedThreadIds &&
-        (!threadId || !selectedThreadIds.has(threadId))
-      ) {
-        return null
-      }
-      if (originalSessionMetaLine === null && pending.byteLength > 16 * 1024 * 1024) {
-        throw new Error('会话元数据行超过安全限制')
-      }
+      newline = pending.indexOf(0x0a)
+    }
+    if (pending.byteLength > 16 * 1024 * 1024) {
+      throw new Error('会话元数据行超过安全限制')
     }
   }
-  if (originalSessionMetaLine === null && pending.byteLength > 0) {
-    inspectLine(pending.toString('utf8'))
-  }
-  if (originalSessionMetaLine === null) return null
-  return {
-    path,
-    originalSessionMetaLines: [originalSessionMetaLine],
-    nextSessionMetaLine,
-    contentHash: hash.digest('hex'),
-    originalAtime: metadata.atime,
-    originalMtime: metadata.mtime,
-    rewriteNeeded,
-    threadId,
-    cwd,
-    hasUserEvent,
-    providers,
-    hasEncryptedContent
-  }
+  if (pending.byteLength > 0) inspectLine(pending.toString('utf8'))
+  if (originalSessionMetaLines.length === 0) return null
+  if (selectedThreadIds && (!threadId || !selectedThreadIds.has(threadId))) return null
+  return change(hash.digest('hex'))
 }
 
 async function writeChunk(stream: ReturnType<typeof createWriteStream>, chunk: Buffer): Promise<void> {
@@ -467,50 +539,132 @@ async function writeChunk(stream: ReturnType<typeof createWriteStream>, chunk: B
   await once(stream, 'drain')
 }
 
-async function replaceSessionMeta(path: string, replacementLine: string): Promise<void> {
+async function replaceSessionMeta(
+  path: string,
+  targetProvider: string,
+  rewriteAllSessionMeta: boolean
+): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`
   const previous = `${path}.${randomUUID()}.previous`
   const output = createWriteStream(temporary)
   const outputFinished = finished(output)
   let pending = Buffer.alloc(0)
-  let replaced = false
+  let rewritten = false
+  const writeLine = async (segment: Buffer, includeEnding = true): Promise<void> => {
+    if (!rewriteAllSessionMeta && rewritten) {
+      await writeChunk(output, segment)
+      return
+    }
+    const text = segment.toString('utf8')
+    const [line, ending] = includeEnding ? splitLineEnding(text) : [text, '']
+    const parsed = sessionMeta(line)
+    if (!parsed) {
+      await writeChunk(output, segment)
+      return
+    }
+    const currentProvider = typeof parsed.payload.model_provider === 'string'
+      ? parsed.payload.model_provider
+      : '(missing)'
+    if (currentProvider === targetProvider) {
+      await writeChunk(output, segment)
+      return
+    }
+    parsed.payload.model_provider = targetProvider
+    await writeChunk(output, Buffer.from(JSON.stringify(parsed.root) + ending, 'utf8'))
+    rewritten = true
+  }
   try {
     for await (const rawChunk of createReadStream(path)) {
       const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk)
-      if (replaced) {
-        await writeChunk(output, chunk)
-        continue
-      }
       pending = Buffer.concat([pending, chunk])
       let newline = pending.indexOf(0x0a)
-      while (newline >= 0 && !replaced) {
+      while (newline >= 0) {
         const segment = pending.subarray(0, newline + 1)
         pending = pending.subarray(newline + 1)
-        const text = segment.toString('utf8')
-        const [line, ending] = splitLineEnding(text)
-        if (sessionMeta(line)) {
-          await writeChunk(output, Buffer.from(replacementLine + ending, 'utf8'))
-          replaced = true
-        } else {
-          await writeChunk(output, segment)
-        }
+        await writeLine(segment)
         newline = pending.indexOf(0x0a)
       }
-      if (replaced && pending.byteLength > 0) {
-        await writeChunk(output, pending)
-        pending = Buffer.alloc(0)
+    }
+    if (pending.byteLength > 0) await writeLine(pending, false)
+    if (!rewritten) throw new Error('会话元数据已发生变化')
+    output.end()
+    await outputFinished
+    await rename(path, previous)
+    try {
+      await rename(temporary, path)
+      await rm(previous, { force: true })
+    } catch (error) {
+      await rm(path, { force: true })
+      await rename(previous, path)
+      throw error
+    }
+  } catch (error) {
+    output.destroy()
+    await outputFinished.catch(() => undefined)
+    await rm(temporary, { force: true })
+    throw error
+  }
+}
+
+async function acquireRepairLock(path: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(path)
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      let ageMs = 0
+      try {
+        ageMs = Date.now() - (await stat(path)).mtimeMs
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw statError
+      }
+      if (ageMs < REPAIR_LOCK_STALE_MS) return false
+      await rm(path, { recursive: true, force: true })
+    }
+  }
+  return false
+}
+
+async function restoreSessionMeta(path: string, originalLines: readonly string[]): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`
+  const previous = `${path}.${randomUUID()}.previous`
+  const output = createWriteStream(temporary)
+  const outputFinished = finished(output)
+  let pending = Buffer.alloc(0)
+  let restored = 0
+  const rewriteAllSessionMeta = originalLines.length > 1
+  const writeLine = async (segment: Buffer, includeEnding = true): Promise<void> => {
+    if (!rewriteAllSessionMeta && restored > 0) {
+      await writeChunk(output, segment)
+      return
+    }
+    const text = segment.toString('utf8')
+    const [line, ending] = includeEnding ? splitLineEnding(text) : [text, '']
+    if (!sessionMeta(line)) {
+      await writeChunk(output, segment)
+      return
+    }
+    const original = originalLines[restored]
+    if (original === undefined) throw new Error('会话元数据已发生变化')
+    restored += 1
+    await writeChunk(output, Buffer.from(original + ending, 'utf8'))
+  }
+  try {
+    for await (const rawChunk of createReadStream(path)) {
+      const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk)
+      pending = Buffer.concat([pending, chunk])
+      let newline = pending.indexOf(0x0a)
+      while (newline >= 0) {
+        const segment = pending.subarray(0, newline + 1)
+        pending = pending.subarray(newline + 1)
+        await writeLine(segment)
+        newline = pending.indexOf(0x0a)
       }
     }
-    if (!replaced && pending.byteLength > 0) {
-      const line = pending.toString('utf8')
-      if (sessionMeta(line)) {
-        await writeChunk(output, Buffer.from(replacementLine, 'utf8'))
-        replaced = true
-      } else {
-        await writeChunk(output, pending)
-      }
-    }
-    if (!replaced) throw new Error('会话元数据已发生变化')
+    if (pending.byteLength > 0) await writeLine(pending, false)
+    if (restored !== originalLines.length) throw new Error('会话元数据已发生变化')
     output.end()
     await outputFinished
     await rename(path, previous)
@@ -548,23 +702,66 @@ async function atomicReplace(path: string, text: string): Promise<void> {
 
 async function existingDatabasePaths(home: string): Promise<string[]> {
   const result: string[] = []
-  const legacy = join(home, 'state_5.sqlite')
-  try {
-    if ((await stat(legacy)).isFile()) result.push(legacy)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  const sqliteDirectory = join(home, 'sqlite')
-  try {
-    for (const entry of await readdir(sqliteDirectory, { withFileTypes: true })) {
-      if (entry.isFile() && ['.db', '.sqlite'].includes(extname(entry.name).toLowerCase())) {
-        result.push(join(sqliteDirectory, entry.name))
-      }
+  for (const path of [join(home, 'sqlite', 'state_5.sqlite'), join(home, 'state_5.sqlite')]) {
+    try {
+      if ((await stat(path)).isFile()) result.push(path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  return result.sort()
+  return [...new Set(result)].sort()
+}
+
+function isUnusableSqliteError(error: unknown): boolean {
+  const message = String((error as Error)?.message ?? error ?? '').toLowerCase()
+  return (
+    message.includes('file is not a database') ||
+    message.includes('database disk image is malformed') ||
+    message.includes('malformed database schema') ||
+    message.includes('no such table: threads')
+  )
+}
+
+async function repairRolloutPaths(
+  home: string,
+  databasePaths: readonly string[],
+  selectedThreadIds: ReadonlySet<string> | null
+): Promise<string[]> {
+  const referenced = new Set<string>()
+  let foundRolloutIndex = false
+  for (const databasePath of databasePaths) {
+    let db: DatabaseSync | null = null
+    try {
+      db = new DatabaseSync(databasePath, { readOnly: true })
+      const columns = tableColumns(db, 'threads')
+      if (!columns.has('id') || !columns.has('rollout_path')) continue
+      foundRolloutIndex = true
+      const rows = db
+        .prepare("SELECT id, rollout_path FROM threads WHERE rollout_path IS NOT NULL AND rollout_path <> ''")
+        .all()
+      for (const row of rows) {
+        const item = row as Record<string, unknown>
+        const id = String(item.id ?? '')
+        if (selectedThreadIds && !selectedThreadIds.has(id)) continue
+        const raw = String(item.rollout_path ?? '').trim()
+        if (!raw) continue
+        const path = isAbsolute(raw) ? resolve(raw) : resolve(home, raw)
+        const fromHome = relative(resolve(home), path)
+        if (fromHome === '' || fromHome.startsWith('..') || isAbsolute(fromHome)) continue
+        referenced.add(path)
+      }
+    } catch (error) {
+      if (!isUnusableSqliteError(error) && !isLockedError(error)) throw error
+    } finally {
+      db?.close()
+    }
+  }
+  if (foundRolloutIndex) return [...referenced].sort()
+  return (
+    await Promise.all(
+      SESSION_DIRECTORIES.map((directory) => collectRolloutPaths(join(home, directory)))
+    )
+  ).flat()
 }
 
 async function loadGlobalState(home: string): Promise<GlobalStatePlan> {
@@ -614,16 +811,15 @@ async function snapshotId(
     for (const id of [...selectedThreadIds].sort()) hash.update(id)
   }
   await hashFile(hash, configPath)
-  await hashFile(hash, globalPath)
   for (const change of changes) {
     hash.update(change.path)
     hash.update(change.contentHash)
+    hash.update(String(change.rewriteNeeded))
   }
   for (const path of databasePaths) {
-    await hashFile(hash, path)
-    await hashFile(hash, `${path}-wal`)
-    await hashFile(hash, `${path}-shm`)
+    hash.update(path)
   }
+  hash.update(globalPath)
   return hash.digest('hex')
 }
 
@@ -657,14 +853,14 @@ export class SessionRepairService {
     threadIds?: readonly string[]
   ): Promise<SessionRepairResult> {
     if (!validProvider(explicitTarget)) return this.failure('供应商 ID 无效', explicitTarget)
+    this.reportProgress(1, 6, '正在分析历史对话和 SQLite 状态')
     const lockPath = join(this.options.codexHome, 'tmp', 'account-switcher-provider-sync.lock')
     try {
       await mkdir(dirname(lockPath), { recursive: true })
-      await mkdir(lockPath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      if (!await acquireRepairLock(lockPath)) {
         return this.failure('已有历史会话修复任务正在运行', explicitTarget)
       }
+    } catch (error) {
       return this.failure(error instanceof Error ? error.message : '无法创建修复锁', explicitTarget)
     }
 
@@ -684,6 +880,7 @@ export class SessionRepairService {
         sqliteRows === 0 &&
         plan.preview.globalStateKeys === 0
       ) {
+        this.reportProgress(6, 6, '历史会话已与当前供应商一致')
         return {
           ok: true,
           message: '历史会话已经与当前供应商一致',
@@ -694,65 +891,109 @@ export class SessionRepairService {
           backupPath: null
         }
       }
+      this.reportProgress(2, 6, '已完成分析，正在创建可回滚备份')
       backup = await this.createBackup(plan)
-      await mapConcurrent(
-        plan.changes.filter((item) => item.rewriteNeeded),
+      this.reportProgress(3, 6, `备份完成，正在修复 ${plan.preview.changedSessionFiles} 个会话文件`)
+      const repairPlan = plan
+      const rewriteTargets = repairPlan.changes.filter((item) => item.rewriteNeeded)
+      const rewriteResults = await mapConcurrent(
+        rewriteTargets,
         2,
-        async (change) => {
-          await replaceSessionMeta(change.path, change.nextSessionMetaLine)
-          await utimes(change.path, change.originalAtime, change.originalMtime)
+        async (change): Promise<'ok' | 'locked'> => {
+          try {
+            await replaceSessionMeta(change.path, explicitTarget, Boolean(repairPlan.selectedThreadIds))
+            await utimes(change.path, change.originalAtime, change.originalMtime)
+            return 'ok'
+          } catch (error) {
+            if (isLockedError(error)) return 'locked'
+            throw error
+          }
         }
       )
+      const applyLocked = rewriteTargets
+        .filter((_, index) => rewriteResults[index] === 'locked')
+        .map((change) => change.path)
+      const rewrittenFiles = rewriteResults.filter((status) => status === 'ok').length
       this.options.faultInjector?.('after-rollouts')
+      this.reportProgress(4, 6, '会话文件已处理，正在同步 SQLite 状态')
 
       const updated: SqliteCounts = { provider: 0, userEvent: 0, cwd: 0 }
+      const skippedDatabasePaths: string[] = []
       for (const path of plan.databasePaths) {
-        const counts = updateDatabase(
-          path,
-          explicitTarget,
-          plan.userEventThreadIds,
-          plan.cwdByThreadId,
-          plan.selectedThreadIds
-        )
-        updated.provider += counts.provider
-        updated.userEvent += counts.userEvent
-        updated.cwd += counts.cwd
+        try {
+          const counts = updateDatabase(
+            path,
+            explicitTarget,
+            plan.userEventThreadIds,
+            plan.cwdByThreadId,
+            plan.selectedThreadIds
+          )
+          updated.provider += counts.provider
+          updated.userEvent += counts.userEvent
+          updated.cwd += counts.cwd
+        } catch (error) {
+          if (isLockedError(error) || isUnusableSqliteError(error)) {
+            skippedDatabasePaths.push(path)
+            continue
+          }
+          throw error
+        }
       }
       this.options.faultInjector?.('after-sqlite')
+      this.reportProgress(5, 6, 'SQLite 状态已处理，正在同步全局状态并复检')
 
+      let globalStateUpdated = 0
       if (plan.globalState.changedKeys > 0 && plan.globalState.nextText !== null) {
-        if (plan.globalState.originalText === null) {
-          await mkdir(dirname(plan.globalState.path), { recursive: true })
-          await writeFile(plan.globalState.path, plan.globalState.nextText, 'utf8')
-        } else {
-          await atomicReplace(plan.globalState.path, plan.globalState.nextText)
+        try {
+          if (plan.globalState.originalText === null) {
+            await mkdir(dirname(plan.globalState.path), { recursive: true })
+            await writeFile(plan.globalState.path, plan.globalState.nextText, 'utf8')
+          } else {
+            await atomicReplace(plan.globalState.path, plan.globalState.nextText)
+          }
+          await writeFile(`${plan.globalState.path}.bak`, plan.globalState.nextText, 'utf8')
+          globalStateUpdated = plan.globalState.changedKeys
+        } catch (error) {
+          if (!isLockedError(error)) throw error
         }
-        await writeFile(`${plan.globalState.path}.bak`, plan.globalState.nextText, 'utf8')
       }
       this.options.faultInjector?.('after-global-state')
       const verification = await this.buildPlan(explicitTarget, threadIds)
-      const pendingRows =
+      const lockedSet = new Set([
+        ...plan.preview.skippedLockedFiles,
+        ...applyLocked,
+        ...verification.preview.skippedLockedFiles
+      ])
+      const remainingUnlocked = verification.changes.filter(
+        (change) => change.rewriteNeeded && !lockedSet.has(change.path)
+      )
+      const remainingSqliteRows =
         verification.preview.sqliteProviderRows +
         verification.preview.sqliteUserEventRows +
         verification.preview.sqliteCwdRows
-      if (
-        verification.preview.changedSessionFiles > 0 ||
-        pendingRows > 0 ||
-        verification.preview.globalStateKeys > 0
-      ) {
+      if (remainingUnlocked.length > 0 || (remainingSqliteRows > 0 && skippedDatabasePaths.length === 0)) {
         throw new Error(
-          `修复后复检未通过：仍有 ${verification.preview.changedSessionFiles} 个会话文件和 ${pendingRows} 条状态记录待修复`
+          `修复后复检未通过：仍有 ${remainingUnlocked.length} 个可写会话文件和 ${remainingSqliteRows} 条 SQLite 状态待修复`
         )
       }
       await this.pruneBackups()
-      const skipped = verification.preview.skippedLockedFiles.length
+      this.reportProgress(6, 6, '修复完成，复检通过')
+      const skipped = lockedSet.size
+      const partial =
+        skipped > 0 ||
+        skippedDatabasePaths.length > 0 ||
+        rewrittenFiles < plan.preview.changedSessionFiles ||
+        (plan.globalState.changedKeys > 0 && globalStateUpdated === 0)
+      const message = partial
+        ? `历史会话部分修复完成：文件 ${rewrittenFiles}/${plan.preview.changedSessionFiles}，状态 ${updated.provider + updated.userEvent + updated.cwd}，全局配置 ${globalStateUpdated}${skipped > 0 ? `；${skipped} 个被 Codex 占用的当前会话文件已跳过` : ''}${skippedDatabasePaths.length > 0 ? `；${skippedDatabasePaths.length} 个 SQLite 状态库不可用或被占用` : ''}`
+        : `历史会话修复完成并复检通过：文件 ${rewrittenFiles}，状态 ${updated.provider + updated.userEvent + updated.cwd}，全局配置 ${globalStateUpdated}`
       return {
         ok: true,
-        message: `历史会话修复完成并复检通过：文件 ${plan.preview.changedSessionFiles}，状态 ${updated.provider + updated.userEvent + updated.cwd}，全局配置 ${plan.globalState.changedKeys}${skipped > 0 ? `；${skipped} 个锁定文件未处理` : ''}`,
+        message,
         targetProvider: explicitTarget,
-        changedSessionFiles: plan.preview.changedSessionFiles,
+        changedSessionFiles: rewrittenFiles,
         sqliteRowsUpdated: updated.provider + updated.userEvent + updated.cwd,
-        globalStateKeysUpdated: plan.globalState.changedKeys,
+        globalStateKeysUpdated: globalStateUpdated,
         backupPath: backup.directory
       }
     } catch (error) {
@@ -782,16 +1023,15 @@ export class SessionRepairService {
     const targetProvider = explicitTarget?.trim() || configuredProvider
     if (!validProvider(targetProvider)) throw new Error('供应商 ID 无效')
     const globalState = await loadGlobalState(this.options.codexHome)
-    const rolloutPaths = (
-      await Promise.all(
-        SESSION_DIRECTORIES.map((directory) =>
-          collectRolloutPaths(join(this.options.codexHome, directory))
-        )
-      )
-    ).flat()
     const selectedThreadIds = threadIds && threadIds.length > 0
       ? new Set(threadIds.filter((id) => Boolean(id.trim())))
       : null
+    const databasePaths = await existingDatabasePaths(this.options.codexHome)
+    const rolloutPaths = await repairRolloutPaths(
+      this.options.codexHome,
+      databasePaths,
+      selectedThreadIds
+    )
     const inspections = await mapConcurrent<string, RolloutInspection>(rolloutPaths, 4, async (path) => {
       try {
         return {
@@ -799,6 +1039,7 @@ export class SessionRepairService {
           lockedPath: null
         }
       } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { change: null, lockedPath: null }
         if (isLockedError(error)) return { change: null, lockedPath: path }
         throw error
       }
@@ -824,7 +1065,6 @@ export class SessionRepairService {
         cwdByThreadId.set(change.threadId, change.cwd)
       }
     }
-    const databasePaths = await existingDatabasePaths(this.options.codexHome)
     const sqliteCounts: SqliteCounts = { provider: 0, userEvent: 0, cwd: 0 }
     const providers = new Set<string>([DEFAULT_PROVIDER, configuredProvider])
     for (const change of changes) {
@@ -833,13 +1073,19 @@ export class SessionRepairService {
       }
     }
     for (const path of databasePaths) {
-      const inspected = inspectDatabase(
-        path,
-        targetProvider,
-        userEventThreadIds,
-        cwdByThreadId,
-        selectedThreadIds
-      )
+      let inspected: ReturnType<typeof inspectDatabase>
+      try {
+        inspected = inspectDatabase(
+          path,
+          targetProvider,
+          userEventThreadIds,
+          cwdByThreadId,
+          selectedThreadIds
+        )
+      } catch (error) {
+        if (isUnusableSqliteError(error) || isLockedError(error)) continue
+        throw error
+      }
       sqliteCounts.provider += inspected.counts.provider
       sqliteCounts.userEvent += inspected.counts.userEvent
       sqliteCounts.cwd += inspected.counts.cwd
@@ -867,7 +1113,7 @@ export class SessionRepairService {
       availableProviders: [...providers].sort((left, right) =>
         left === configuredProvider ? -1 : right === configuredProvider ? 1 : left.localeCompare(right)
       ),
-      scannedSessionFiles: selectedThreadIds ? changes.length : rolloutPaths.length,
+      scannedSessionFiles: rolloutPaths.length,
       changedSessionFiles: changes.filter((change) => change.rewriteNeeded).length,
       skippedLockedFiles,
       encryptedContentFiles: encryptedChanges.length,
@@ -963,7 +1209,7 @@ export class SessionRepairService {
   private async rollback(plan: RepairPlan, backup: BackupState): Promise<void> {
     for (const change of plan.changes.filter((item) => item.rewriteNeeded)) {
       try {
-        await replaceSessionMeta(change.path, change.originalSessionMetaLines[0])
+        await restoreSessionMeta(change.path, change.originalSessionMetaLines)
         await utimes(change.path, change.originalAtime, change.originalMtime)
       } catch {
         // Continue restoring the remaining state.
@@ -1033,5 +1279,9 @@ export class SessionRepairService {
       globalStateKeysUpdated: 0,
       backupPath
     }
+  }
+
+  private reportProgress(done: number, total: number, message: string): void {
+    this.options.onProgress?.({ done, total, message })
   }
 }

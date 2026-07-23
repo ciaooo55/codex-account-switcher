@@ -112,7 +112,7 @@ const snapshot: AppSnapshot = {
   cpaGrokTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
   cpaCodexAccounts: [],
   cpaCodexTesting: { active: false, done: 0, total: 0, runningIds: [], updatedAccount: null },
-  customApi: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', hasApiKey: false }
+  customApi: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', hasApiKey: false, models: [] }
 }
 
 const conversationSummary: ConversationSummary = {
@@ -497,6 +497,7 @@ function api(): CodexSwitcherApi {
         importPreviewProgressListener = null
       }
     }),
+    onSessionRepairProgress: vi.fn().mockImplementation(() => () => undefined),
     onAutoSwitchState: vi.fn().mockImplementation(() => () => undefined),
     onTestProgress: vi.fn().mockImplementation((listener) => {
       progressListener = listener
@@ -559,7 +560,7 @@ describe('App', () => {
 
     expect(screen.getByText('未选择账号')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '测试选中' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '切换账号' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '切换并重启' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '删除选中' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '修复历史会话' })).toBeEnabled()
 
@@ -817,6 +818,13 @@ describe('App', () => {
     }))
   })
 
+  it('shows the current app version in the top-left header', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    expect(await screen.findByText('v0.1.0')).toBeInTheDocument()
+    expect(screen.getByTitle('当前版本 v0.1.0')).toHaveClass('app-version')
+  })
   it('shows newly imported Codex accounts even when the previous filter hid untested rows', async () => {
     const bridge = api()
     const importedAccount = {
@@ -1307,7 +1315,7 @@ describe('App', () => {
     await waitFor(() =>
       expect(window.codexSwitcher.switchAccount).toHaveBeenCalledWith('account-a', true)
     )
-    expect(await screen.findByText('切换成功，Codex 已重启')).toBeInTheDocument()
+    expect(await screen.findByText('切换成功，当前会话已同步，Codex 已重启')).toBeInTheDocument()
     expect(screen.getAllByRole('status')).toHaveLength(1)
   })
 
@@ -1318,7 +1326,6 @@ describe('App', () => {
     expect(row).toHaveTextContent('可切换 · 外部凭据，需重启')
     fireEvent.contextMenu(row, { clientX: 120, clientY: 160 })
     expect(screen.getByRole('menuitem', { name: '检测此账号' })).toBeEnabled()
-    expect(screen.getByRole('menuitem', { name: '切换到此账号' })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: '切换并重启' })).toBeEnabled()
   })
 
@@ -1360,10 +1367,10 @@ describe('App', () => {
     fireEvent.click(screen.getByText('更多'))
     fireEvent.click(screen.getByRole('button', { name: '恢复备份 API' }))
 
-    await waitFor(() => expect(window.codexSwitcher.restoreApiMode).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(window.codexSwitcher.restoreApiMode).toHaveBeenCalledWith(true))
   })
 
-  it('asks whether to restart Codex after saving a custom API without repairing conversations', async () => {
+  it('saves a tested custom API, then lets the user defer the repair/restart', async () => {
     const bridge = api()
     window.codexSwitcher = bridge
     render(<App />)
@@ -1377,18 +1384,107 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('API Key'), {
       target: { value: 'temporary-custom-key' }
     })
+    fireEvent.change(screen.getByLabelText('同步到 Codex 的模型目录'), {
+      target: { value: 'gpt-5.4\nmanual-model' }
+    })
     fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
+    const confirmation = await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' })
+    expect(confirmation).toHaveTextContent('测试失败不会修改配置')
+    fireEvent.click(within(confirmation).getByRole('button', { name: '测试并保存' }))
 
     await waitFor(() => expect(bridge.switchToCustomApi).toHaveBeenCalledWith({
       baseUrl: 'http://127.0.0.1:18317',
       model: 'gpt-5.4',
-      apiKey: 'temporary-custom-key'
-    }, false))
-    const confirmation = await screen.findByRole('alertdialog', { name: '重启 Codex 使 API 生效' })
-    expect(confirmation).toHaveTextContent('历史对话仍保留在原来的 openai 分组')
-    fireEvent.click(within(confirmation).getByRole('button', { name: '立即重启' }))
-    await waitFor(() => expect(bridge.restartCodex).toHaveBeenCalledTimes(1))
+      apiKey: 'temporary-custom-key',
+      models: ['gpt-5.4', 'manual-model'],
+      syncModelCatalog: true
+    }, true))
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: '第三方 API 已切换' }))
+      .getByRole('button', { name: '暂不重启' }))
+    expect(bridge.restartCodex).not.toHaveBeenCalled()
     expect(bridge.previewSessionRepair).not.toHaveBeenCalled()
+  })
+
+  it('requests the entered URL and API key before showing a fetched model list', async () => {
+    const bridge = api()
+    vi.mocked(bridge.listCustomApiModels).mockResolvedValue({
+      ok: true,
+      message: '已从 https://provider.example/v1/models 获取 1 个模型',
+      models: ['provider-model'],
+      baseUrl: 'https://provider.example/v1'
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: 'https://provider.example' } })
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'provider-key' } })
+    fireEvent.click(screen.getByRole('button', { name: '获取模型列表' }))
+
+    await waitFor(() => expect(bridge.listCustomApiModels).toHaveBeenCalledWith({
+      baseUrl: 'https://provider.example',
+      apiKey: 'provider-key'
+    }))
+    expect(await screen.findByText(/已从 https:\/\/provider\.example\/v1\/models 获取 1 个模型/)).toBeInTheDocument()
+  })
+
+  it('warns after a failed real API test and only forces switching after a second confirmation', async () => {
+    const bridge = api()
+    vi.mocked(bridge.switchToCustomApi)
+      .mockResolvedValueOnce({
+        ok: false,
+        canForce: true,
+        message: '真实 hi 测试失败：HTTP 503',
+        backupPath: null
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        warning: 'HTTP 503',
+        message: '已按用户确认强制切换',
+        backupPath: 'backup.json',
+        catalogModels: ['gpt-5.4']
+      })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'temporary-custom-key' } })
+    fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' }))
+      .getByRole('button', { name: '测试并保存' }))
+
+    const warning = await screen.findByRole('alertdialog', { name: 'API 测试失败' })
+    expect(warning).toHaveTextContent('HTTP 503')
+    fireEvent.click(within(warning).getByRole('button', { name: '仍然强制切换' }))
+
+    await waitFor(() => expect(bridge.switchToCustomApi).toHaveBeenCalledTimes(2))
+    expect(bridge.switchToCustomApi).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: 'gpt-5.4',
+      force: true
+    }), true)
+    expect(bridge.restartCodex).not.toHaveBeenCalled()
+  })
+
+  it('repairs and restarts Codex only after the user confirms after a successful API switch', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'temporary-custom-key' } })
+    fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' }))
+      .getByRole('button', { name: '测试并保存' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: '第三方 API 已切换' }))
+      .getByRole('button', { name: '修复并重启' }))
+
+    await waitFor(() => expect(bridge.restartCodex).toHaveBeenCalledTimes(1))
   })
 
   it('previews and confirms Codex++ style historical session repair', async () => {
