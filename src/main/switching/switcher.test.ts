@@ -162,19 +162,14 @@ describe('CredentialSwitcher', () => {
     expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual(['remote-b', 'manual-model'])
   })
 
-  it('writes Coc-style model shells to Codex and keeps upstream names for the local gateway', async () => {
+  it('writes the real upstream URL, key, and model IDs into Codex', async () => {
     const paths = await fixture()
-    const configureGateway = vi.fn().mockResolvedValue({
-      baseUrl: 'http://127.0.0.1:45678/v1',
-      token: 'local-gateway-token'
-    })
     const switcher = new CredentialSwitcher({
       ...paths,
       cipher,
       backupRetention: 20,
-      probeModel: async () => ({ endpoint: 'responses' as const, output: 'gateway test passed' }),
-      fetchModels: async () => ['deepseek-v4-pro', 'qwen3-coder'],
-      configureGateway
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'upstream test passed' }),
+      fetchModels: async () => ['deepseek-v4-pro', 'qwen3-coder']
     })
 
     const result = await switcher.switchToCustomApi({
@@ -188,25 +183,15 @@ describe('CredentialSwitcher', () => {
       selectedModel: 'deepseek-v4-pro',
       catalogModels: ['deepseek-v4-pro', 'qwen3-coder']
     })
-    expect(configureGateway).toHaveBeenCalledWith({
-      upstreamBaseUrl: 'https://provider.example/v1',
-      upstreamApiKey: 'upstream-secret',
-      slots: [
-        { clientModel: 'gpt-5.6-sol', upstreamModel: 'deepseek-v4-pro' },
-        { clientModel: 'gpt-5.6-terra', upstreamModel: 'qwen3-coder' }
-      ]
-    })
     const config = await readFile(paths.configPath, 'utf8')
-    expect(config).toContain('model = "gpt-5.6-sol"')
-    expect(config).toContain('base_url = "http://127.0.0.1:45678/v1"')
-    expect(config).toContain('experimental_bearer_token = "local-gateway-token"')
+    expect(config).toContain('model = "deepseek-v4-pro"')
+    expect(config).toContain('base_url = "https://provider.example/v1"')
+    expect(config).toContain('experimental_bearer_token = "upstream-secret"')
+    expect(config).not.toContain('127.0.0.1:45678')
     const catalog = JSON.parse(await readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
-    expect(catalog.models.map((entry: { slug: string; display_name: string }) => ({
-      slug: entry.slug,
-      display_name: entry.display_name
-    }))).toEqual([
-      { slug: 'gpt-5.6-sol', display_name: 'deepseek-v4-pro' },
-      { slug: 'gpt-5.6-terra', display_name: 'qwen3-coder' }
+    expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual([
+      'deepseek-v4-pro',
+      'qwen3-coder'
     ])
   })
 

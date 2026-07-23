@@ -1,12 +1,10 @@
 import type { CustomApiProfileInput, CustomApiProfileSummary, SecretCipher } from '../../shared/types'
-import { randomBytes } from 'node:crypto'
 import { atomicWriteFile, readUtf8File } from './atomic-file'
 
 interface StoredProfile {
   version: 1
   encryptedKey: string
   models?: string[]
-  encryptedGatewayToken?: string
 }
 
 function normalizeModels(values: readonly string[]): string[] {
@@ -33,7 +31,6 @@ export class CustomApiStore {
       version: 1,
       encryptedKey: this.cipher.encrypt(value),
       ...(previous?.models ? { models: previous.models } : {}),
-      ...(previous?.encryptedGatewayToken ? { encryptedGatewayToken: previous.encryptedGatewayToken } : {})
     }
     await atomicWriteFile(this.path, `${JSON.stringify(stored, null, 2)}\n`)
   }
@@ -45,7 +42,6 @@ export class CustomApiStore {
       version: 1,
       encryptedKey: stored.encryptedKey,
       models: normalizeModels(models),
-      ...(stored.encryptedGatewayToken ? { encryptedGatewayToken: stored.encryptedGatewayToken } : {})
     } satisfies StoredProfile, null, 2)}\n`)
   }
 
@@ -71,20 +67,6 @@ export class CustomApiStore {
     }
   }
 
-  async getOrCreateGatewayToken(apiKey?: string): Promise<string> {
-    const stored = await this.readStored()
-    if (stored?.encryptedGatewayToken) return this.cipher.decrypt(stored.encryptedGatewayToken)
-    const key = apiKey?.trim()
-    if (!stored?.encryptedKey && !key) throw new Error('请先保存 API Key')
-    const token = `cas-gateway-${randomBytes(24).toString('base64url')}`
-    await atomicWriteFile(this.path, `${JSON.stringify({
-      version: 1,
-      encryptedKey: stored?.encryptedKey ?? this.cipher.encrypt(key!),
-      ...(stored?.models ? { models: stored.models } : {}),
-      encryptedGatewayToken: this.cipher.encrypt(token)
-    } satisfies StoredProfile, null, 2)}\n`)
-    return token
-  }
 
   async summary(input: Pick<CustomApiProfileInput, 'baseUrl' | 'model'>): Promise<CustomApiProfileSummary> {
     const stored = await this.readStored()

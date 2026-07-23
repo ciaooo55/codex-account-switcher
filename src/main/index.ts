@@ -61,10 +61,9 @@ import { CustomApiStore } from './storage/custom-api-store'
 import { AccountMetadataStore } from './storage/account-metadata'
 import { GrokStatusStore } from './storage/grok-status-store'
 import { fetchOpenAiCompatibleModelIds, MODEL_CATALOG_RELATIVE_PATH, probeCustomApiModel } from './services/model-catalog'
-import { allocateModelGatewaySlots, CustomApiGateway } from './services/custom-api-gateway'
 import { atomicWriteFile } from './storage/atomic-file'
 import { CredentialSwitcher } from './switching/switcher'
-import { OWNED_PROVIDER_ID, replaceOwnedProviderBaseUrl } from './switching/config'
+import { applyCustomApiConfig, OWNED_PROVIDER_ID } from './switching/config'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const { autoUpdater } = electronUpdater
@@ -274,7 +273,6 @@ async function main(): Promise<void> {
   }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const customApiStore = new CustomApiStore(join(userData, 'custom-api.json'), cipher)
-  const customApiGateway = new CustomApiGateway()
   const statusStore = new StatusStore(join(userData, 'status.json'))
   const cpaCodexStatusStore = new StatusStore(join(userData, 'cpa-codex-status.json'))
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-library-status.json'))
@@ -420,82 +418,63 @@ async function main(): Promise<void> {
         configPath: settings.configPath,
         backupDir: join(userData, 'backups'),
         backupRetention: settings.backupRetention,
-        cipher,
-        configureGateway: async ({ upstreamBaseUrl, upstreamApiKey, slots }) => {
-          const token = await customApiStore.getOrCreateGatewayToken(upstreamApiKey)
-          return customApiGateway.configure({
-            upstreamBaseUrl,
-            upstreamApiKey,
-            token,
-            slots
-          })
-        }
+        cipher
       }).switchToCustomApi(input)
     }
   }
-  // The gateway uses a new loopback port each time this desktop app launches.
-  // Recreate its exact Coc-style shell map before Codex reads the saved provider,
-  // then atomically refresh only the managed provider's base_url.
-  const restoreCustomApiGateway = async (): Promise<void> => {
+  // Keep managed custom-API provider pointed at the real upstream from settings.
+  // This also migrates leftover local-gateway ports from older builds.
+  const ensureDirectCustomApiProvider = async (): Promise<void> => {
     const settings = await settingsStore.get()
     const configText = await readFile(settings.configPath, 'utf8').catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
       throw error
     })
-    const managedCatalogPattern = MODEL_CATALOG_RELATIVE_PATH.replace(/\./g, '\\.')
-    const ownsActiveCatalog = new RegExp(
-      `^\\s*model_provider\\s*=\\s*["']${OWNED_PROVIDER_ID}["']\\s*$`,
-      'm'
-    ).test(configText) && new RegExp(
-      `^\\s*model_catalog_json\\s*=\\s*["'][^"']*${managedCatalogPattern}["']\\s*$`,
+    const ownsProvider = new RegExp(
+      '^\s*model_provider\s*=\s*["\']' + OWNED_PROVIDER_ID + '["\']\s*$',
       'm'
     ).test(configText)
-    if (!ownsActiveCatalog) return
+    if (!ownsProvider) return
     const apiKey = await customApiStore.getKey()
     if (!apiKey) return
-    const profile = await customApiStore.summary({
-      baseUrl: settings.customApiBaseUrl,
-      model: settings.customApiModel
+    const baseUrl = normalizeCustomApiBaseUrl(settings.customApiBaseUrl)
+    if (!baseUrl) return
+    const preferredModel = settings.customApiModel.trim()
+    if (!preferredModel) return
+    const managedCatalogPattern = MODEL_CATALOG_RELATIVE_PATH.replace(/\./g, '\\.')
+    const syncModelCatalog = new RegExp(
+      '^\s*model_catalog_json\s*=\s*["\'][^"\']*' + managedCatalogPattern + '["\']\s*$',
+      'm'
+    ).test(configText)
+    const applied = applyCustomApiConfig(configText, {
+      baseUrl,
+      model: preferredModel,
+      apiKey,
+      syncModelCatalog
     })
-    const validModelId = (value: unknown): value is string =>
-      typeof value === 'string' && value.length <= 128 && /^[A-Za-z0-9._:/-]+$/.test(value)
-    let slots = [] as ReturnType<typeof allocateModelGatewaySlots>
+    if (applied.text !== configText) {
+      await atomicWriteFile(settings.configPath, applied.text)
+    }
+    let authNeedsWrite = true
     try {
-      const catalogText = await readFile(join(dirname(settings.configPath), MODEL_CATALOG_RELATIVE_PATH), 'utf8')
-      const catalog = JSON.parse(catalogText) as { models?: unknown }
-      if (Array.isArray(catalog.models)) {
-        const seen = new Set<string>()
-        slots = catalog.models.flatMap((entry) => {
-          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
-          const record = entry as { slug?: unknown; display_name?: unknown }
-          if (!validModelId(record.slug) || !validModelId(record.display_name)) return []
-          const key = record.slug.toLowerCase()
-          if (seen.has(key)) return []
-          seen.add(key)
-          return [{ clientModel: record.slug, upstreamModel: record.display_name }]
-        })
+      const currentAuth = JSON.parse(await readFile(settings.authPath, 'utf8')) as {
+        auth_mode?: unknown
+        OPENAI_API_KEY?: unknown
       }
+      authNeedsWrite = !(
+        currentAuth.auth_mode === 'apikey' &&
+        currentAuth.OPENAI_API_KEY === apiKey
+      )
     } catch {
-      // The store below can reconstruct a fresh catalog map if a legacy file was removed.
+      authNeedsWrite = true
     }
-    if (slots.length === 0) {
-      slots = allocateModelGatewaySlots([...profile.models, settings.customApiModel])
-    }
-    if (slots.length === 0) return
-    const token = await customApiStore.getOrCreateGatewayToken(apiKey)
-    const gateway = await customApiGateway.configure({
-      upstreamBaseUrl: settings.customApiBaseUrl,
-      upstreamApiKey: apiKey,
-      token,
-      slots
-    })
-    const refreshedConfig = replaceOwnedProviderBaseUrl(configText, gateway.baseUrl)
-    if (refreshedConfig && refreshedConfig !== configText) {
-      await atomicWriteFile(settings.configPath, refreshedConfig)
+    if (authNeedsWrite) {
+      const authText = `${JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: apiKey }, null, 2)}\n`
+      await atomicWriteFile(settings.authPath, authText)
     }
   }
-  await restoreCustomApiGateway().catch((error: unknown) => {
-    console.error('Failed to restore custom API model gateway', error)
+  await ensureDirectCustomApiProvider().catch((error: unknown) => {
+    console.error('Failed to ensure direct custom API provider', error)
   })
   let reconcileCodexStatusStores = async (): Promise<void> => undefined
   let reconcileGrokStatusStores = async (): Promise<void> => undefined
@@ -2282,7 +2261,6 @@ async function main(): Promise<void> {
     cpaCodexTestController?.abort()
     importPreviewTestController?.abort()
     autoSwitchScheduler.stop()
-    void customApiGateway.close().catch(() => undefined)
     tray?.destroy()
     tray = null
   })

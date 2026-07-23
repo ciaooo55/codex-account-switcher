@@ -30,7 +30,6 @@ import {
   probeCustomApiModel,
   writeModelCatalogFile
 } from '../services/model-catalog'
-import { allocateModelGatewaySlots, type ModelGatewaySlot } from '../services/custom-api-gateway'
 
 interface BackupPayload {
   createdAt: string
@@ -61,11 +60,6 @@ interface SwitcherOptions {
     probeUrl?: string
     output: string
   }>
-  configureGateway?: (input: {
-    upstreamBaseUrl: string
-    upstreamApiKey: string
-    slots: ModelGatewaySlot[]
-  }) => Promise<{ baseUrl: string; token: string }>
 }
 
 async function readOptional(path: string): Promise<string | null> {
@@ -317,35 +311,15 @@ export class CredentialSwitcher {
         input.models === undefined ? remoteModels : input.models,
         model
       )
+      // Write the real upstream base URL / API key / model IDs into Codex.
+      // Do not proxy through a local model-shell gateway.
       const sourceModels = sourceCatalog.models.map((entry) => entry.slug)
-      let configBaseUrl = discoveredBaseUrl
-      let configApiKey = input.apiKey
-      let configuredModel = model
-      let catalog = syncModelCatalog ? sourceCatalog : null
-      let writtenCatalogModels = catalog?.models.map((entry) => entry.slug) ?? []
-      if (syncModelCatalog && this.options.configureGateway) {
-        const slots = allocateModelGatewaySlots(sourceModels)
-        const selectedSlot = slots.find((slot) => slot.upstreamModel.toLowerCase() === model.toLowerCase())
-        if (!selectedSlot) throw new Error('无法为选中模型分配 Codex 模型壳')
-        const gateway = await this.options.configureGateway({
-          upstreamBaseUrl: discoveredBaseUrl,
-          upstreamApiKey: input.apiKey,
-          slots
-        })
-        configBaseUrl = gateway.baseUrl
-        configApiKey = gateway.token
-        configuredModel = selectedSlot.clientModel
-        catalog = buildModelCatalog(
-          slots.map((slot) => slot.clientModel),
-          configuredModel,
-          new Map(slots.map((slot) => [slot.clientModel.toLowerCase(), slot.upstreamModel]))
-        )
-        writtenCatalogModels = catalog.models.map((entry) => entry.slug)
-      }
+      const catalog = syncModelCatalog ? sourceCatalog : null
+      const writtenCatalogModels = catalog?.models.map((entry) => entry.slug) ?? []
       const appliedConfig = applyCustomApiConfig(previousConfig, {
-        baseUrl: configBaseUrl,
-        model: configuredModel,
-        apiKey: configApiKey,
+        baseUrl: discoveredBaseUrl,
+        model,
+        apiKey: input.apiKey,
         syncModelCatalog
       })
       backupPath = await this.writeBackup({
@@ -376,7 +350,7 @@ export class CredentialSwitcher {
         `[model_providers.${OWNED_PROVIDER_ID}]`,
         'wire_api = "responses"',
         'requires_openai_auth = true',
-        `experimental_bearer_token = ${JSON.stringify(configApiKey)}`,
+        `experimental_bearer_token = ${JSON.stringify(input.apiKey)}`,
         'supports_websockets = false'
       ]
       if (syncModelCatalog) {

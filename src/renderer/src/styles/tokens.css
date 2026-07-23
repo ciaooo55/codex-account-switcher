@@ -1,0 +1,105 @@
+/* Design tokens — modern desktop workbench (2025/26) */
+:root {
+  /* Type */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", "Consolas", ui-monospace, monospace;
+  --text-xs: 10px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 17px;
+  --leading-tight: 1.2;
+  --leading-normal: 1.45;
+
+  /* Space */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Control */
+  --control-height: 32px;
+  --control-height-sm: 28px;
+  --control-height-lg: 36px;
+
+  /* Radius */
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+  --ui-radius-sm: var(--radius-sm);
+  --ui-radius-md: var(--radius-md);
+
+  /* Motion */
+  --motion-fast: 140ms;
+  --motion-standard: 180ms;
+  --motion-emphasis: 240ms;
+  --ease-out: cubic-bezier(.2, .78, .24, 1);
+  --ease-soft: cubic-bezier(.22, .61, .36, 1);
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .24);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, .32);
+  --shadow-lg: 0 22px 48px rgba(0, 0, 0, .4);
+  --ui-shadow-sm: var(--shadow-sm);
+  --ui-shadow-md: var(--shadow-md);
+
+  /* Semantic surfaces (dark default) */
+  --color-bg: #0c1010;
+  --color-surface-0: #111618;
+  --color-surface-1: #161c1f;
+  --color-surface-2: #1c2428;
+  --color-surface-3: #243036;
+  --color-border: #2a353b;
+  --color-border-strong: #3d4b53;
+  --color-text: #eef3f1;
+  --color-text-secondary: #b7c4c0;
+  --color-text-muted: #7f9096;
+  --color-accent: #5ad48f;
+  --color-accent-strong: #3fba74;
+  --color-accent-soft: rgba(90, 212, 143, 0.14);
+  --color-danger: #ff7b72;
+  --color-warn: #e3b341;
+  --color-info: #6cb9df;
+  --color-grok: #b7a9ff;
+  --ui-accent: var(--color-accent-strong);
+  --ui-focus: rgba(90, 212, 143, .42);
+
+  /* Glass */
+  --glass-bg: rgba(18, 24, 26, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="light"] {
+  --color-bg: #eef2f0;
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f7faf8;
+  --color-surface-2: #eef3f0;
+  --color-surface-3: #e3ebe6;
+  --color-border: #d3dde0;
+  --color-border-strong: #b5c3c8;
+  --color-text: #142019;
+  --color-text-secondary: #3d4f48;
+  --color-text-muted: #5f726a;
+  --color-accent: #1f9a5c;
+  --color-accent-strong: #17864e;
+  --color-accent-soft: rgba(31, 154, 92, 0.12);
+  --shadow-sm: 0 1px 2px rgba(16, 28, 22, .08);
+  --shadow-md: 0 10px 28px rgba(16, 28, 22, .12);
+  --shadow-lg: 0 22px 48px rgba(16, 28, 22, .16);
+  --ui-focus: rgba(31, 154, 92, .32);
+  --glass-bg: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(20, 40, 30, 0.08);
+}
+
+html, body {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}

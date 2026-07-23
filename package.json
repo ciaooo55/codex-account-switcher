@@ -1,6 +1,6 @@
 {
   "name": "codex-account-switcher",
-  "version": "0.13.13",
+  "version": "0.13.14",
   "private": true,
   "description": "Windows desktop account switcher for Codex and CPA credentials",
   "author": "ciaooo55",

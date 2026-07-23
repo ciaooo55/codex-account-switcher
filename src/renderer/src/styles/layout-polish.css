@@ -1,0 +1,237 @@
+/* Visual system polish — class API preserved for tests */
+
+.app-shell {
+  background:
+    radial-gradient(1100px 520px at 8% -18%, rgba(90, 212, 143, 0.11), transparent 58%),
+    radial-gradient(900px 420px at 92% -8%, rgba(108, 185, 223, 0.08), transparent 52%),
+    radial-gradient(700px 360px at 70% 110%, rgba(183, 169, 255, 0.05), transparent 55%),
+    var(--color-bg);
+}
+
+.app-header {
+  min-height: 54px;
+  padding: 8px 14px;
+  gap: 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-surface-1) 92%, transparent), color-mix(in srgb, var(--color-surface-0) 96%, transparent));
+  border-bottom: 1px solid var(--color-border);
+  backdrop-filter: saturate(1.15) blur(10px);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.app-header h1 {
+  font-size: var(--text-xl);
+  letter-spacing: -0.02em;
+}
+
+.product-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 6px 14px rgba(0,0,0,.18);
+}
+
+.view-tabs {
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-surface-0) 88%, black);
+  border-color: var(--color-border);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+
+.view-tabs button {
+  min-width: 118px;
+  border-radius: calc(var(--radius-md) - 2px);
+  font-weight: 600;
+}
+
+.view-tabs button.active {
+  background: color-mix(in srgb, var(--color-surface-2) 90%, var(--color-accent) 10%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.header-import-button {
+  min-height: var(--control-height-lg);
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(46, 150, 95, .22);
+}
+
+.page-view {
+  animation: page-view-in var(--motion-emphasis) var(--ease-out) both;
+}
+
+.library-overview,
+.automation-status-band,
+.summary-band {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-surface-1) 96%, transparent), var(--color-surface-0));
+  border-bottom-color: var(--color-border);
+}
+
+.library-overview span,
+.automation-status-band span,
+.summary-band span {
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.toolbar,
+.selection-toolbar,
+.filter-row,
+.automation-filter-row,
+.automation-controls {
+  background: color-mix(in srgb, var(--color-surface-1) 94%, transparent);
+  border-bottom-color: var(--color-border);
+}
+
+.selection-toolbar:not(.is-idle) {
+  background: linear-gradient(90deg, color-mix(in srgb, #14212a 88%, var(--color-info)), #14212a);
+}
+
+.table-wrap {
+  background: color-mix(in srgb, var(--color-surface-0) 96%, transparent);
+  scrollbar-gutter: stable;
+}
+
+table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--color-surface-1) 92%, transparent) !important;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.account-row {
+  transition: background-color var(--motion-fast) var(--ease-soft), box-shadow var(--motion-fast) var(--ease-soft);
+}
+
+.account-row:hover {
+  background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+}
+
+.account-row.selected-row {
+  box-shadow: inset 3px 0 0 var(--color-info);
+}
+
+.account-row.active-row {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.account-row.selected-row.active-row {
+  box-shadow: inset 3px 0 0 var(--color-accent), inset 6px 0 0 var(--color-info);
+}
+
+.account-email {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.status {
+  border-radius: var(--radius-pill);
+  font-weight: 700;
+}
+
+.modal-backdrop,
+.repair-backdrop {
+  backdrop-filter: blur(6px) saturate(1.05);
+  background: rgba(6, 10, 10, 0.55);
+}
+
+.settings-panel,
+.repair-panel,
+.import-panel,
+.export-panel {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(14px) saturate(1.08);
+}
+
+.panel-header h2 {
+  letter-spacing: -0.02em;
+}
+
+.primary-button {
+  font-weight: 700;
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 18px rgba(46, 150, 95, .18);
+}
+
+.secondary-button,
+.danger-button,
+.icon-button {
+  border-radius: var(--radius-md);
+}
+
+.search-field {
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-surface-0) 90%, black);
+  border-color: var(--color-border);
+}
+
+.message {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(10px);
+}
+
+.global-test-progress .task-progress {
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.custom-api-panel,
+.update-panel {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-1) 92%, transparent);
+  padding: var(--space-3);
+}
+
+.section-heading strong {
+  letter-spacing: -0.01em;
+}
+
+:root[data-theme="light"] .app-shell {
+  background:
+    radial-gradient(1100px 520px at 8% -18%, rgba(31, 154, 92, 0.09), transparent 58%),
+    radial-gradient(900px 420px at 92% -8%, rgba(60, 130, 180, 0.06), transparent 52%),
+    var(--color-bg);
+}
+
+:root[data-theme="light"] .app-header {
+  background: linear-gradient(180deg, rgba(255,255,255,.95), rgba(247,250,248,.96));
+  box-shadow: 0 1px 0 rgba(255,255,255,.8), 0 8px 20px rgba(16,28,22,.04);
+}
+
+:root[data-theme="light"] .modal-backdrop,
+:root[data-theme="light"] .repair-backdrop {
+  background: rgba(18, 28, 24, 0.28);
+}
+
+:root[data-theme="light"] .settings-panel,
+:root[data-theme="light"] .repair-panel,
+:root[data-theme="light"] .import-panel,
+:root[data-theme="light"] .export-panel {
+  background: rgba(255, 255, 255, 0.94);
+}
+
+/* Density refinement for dense account tables */
+.table-wrap td {
+  vertical-align: top;
+}
+
+.compact-row-meta,
+.workspace-id,
+.status-detail,
+.muted,
+.source-path {
+  color: var(--color-text-muted);
+}

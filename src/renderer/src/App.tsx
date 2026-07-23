@@ -33,7 +33,6 @@ import {
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
-  AccountStatusSyncPatch,
   AppSnapshot,
   AppSnapshotPatch,
   AppSnapshotScope,
@@ -45,7 +44,6 @@ import type {
   AccountSummary,
   AppSettings,
   CodexTestMode,
-  CpaCodexAccountSummary,
   DisplayAccountStatus,
   CredentialExportFormat,
   CredentialExportLayout,
@@ -55,12 +53,9 @@ import type {
   ImportPreviewResult,
   LibraryHealthReport,
   GrokAccountSummary,
-  GrokTestResult,
   RefreshTokenClientMode,
   ScanResult,
-  SessionRepairPreview,
-  TestResult,
-  UsageWindow
+  SessionRepairPreview
 } from '../../shared/types'
 import { ACCOUNT_SORT_OPTIONS, compareAccounts, type AccountSortMode } from './account-sort'
 import {
@@ -82,211 +77,25 @@ import { ImportPreviewDialog } from './components/ImportPreviewDialog'
 import { LibraryHealthDialog } from './components/LibraryHealthDialog'
 import { CurrentAccountOverview } from './components/CurrentAccountOverview'
 import { StatusFilterStrip, type StatusCategoryAction } from './components/StatusFilterStrip'
-import { CpaPage, GrokLibraryPage } from './GrokPage'
+import { AccountsPage, AutomationPage, CpaPage, GrokLibraryPage } from './pages'
+import { AccountMetadataChips } from './components/accounts/AccountMetadataChips'
+import { Quota } from './components/accounts/Quota'
+import { AppHeader } from './components/layout/AppHeader'
+import { AppToast } from './components/layout/AppToast'
+import { GlobalTestProgress } from './components/layout/GlobalTestProgress'
 import { useDialogFocus } from './hooks/useDialogFocus'
 import { useConfirmation } from './hooks/useConfirmation'
 import { toggleSelection, usePrunedSelection } from './hooks/usePrunedSelection'
 import { useVirtualTableRows } from './hooks/useVirtualTableRows'
+import { dateTime, sourceFileName } from './lib/format'
+import type { AppView } from './lib/navigation'
+import { applyStatusSync, bootstrapSnapshotFromAccountsPage } from './lib/snapshot'
+import { applyTheme, initialTheme, toggleTheme, type ThemeMode } from './lib/theme'
+import { codexApi, type CodexSwitcherApi } from './services/codexApi'
+import { AppSessionProvider } from './context/AppSessionContext'
+import { SettingsDialog } from './components/dialogs/SettingsDialog'
 
-type ThemeMode = 'light' | 'dark'
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
-const THEME_STORAGE_KEY = 'codex-account-switcher/theme'
-
-const EMPTY_TEST_PROGRESS = { active: false, done: 0, total: 0, runningIds: [] as string[], updatedAccount: null }
-const EMPTY_CPA_DIRECTORY_STATS = {
-  credentialFiles: 0,
-  codexFiles: 0,
-  grokFiles: 0,
-  duplicateFiles: 0,
-  mixedFiles: 0,
-  unrecognizedFiles: 0
-}
-
-function bootstrapSnapshotFromAccountsPage(patch: AppSnapshotPatch): AppSnapshot {
-  if (!patch.settings || !patch.importDirectory || !patch.autoSwitch || !patch.customApi || !patch.accounts || !patch.testing) {
-    throw new Error('首屏账号库快照不完整')
-  }
-  return {
-    accounts: patch.accounts,
-    settings: patch.settings,
-    importDirectory: patch.importDirectory,
-    testing: patch.testing,
-    autoSwitch: patch.autoSwitch,
-    grokAccounts: patch.grokAccounts ?? [],
-    cpaGrokAccounts: patch.cpaGrokAccounts ?? [],
-    grokDirectory: patch.grokDirectory ?? patch.settings.grokDirectory,
-    grokTesting: patch.grokTesting ?? { ...EMPTY_TEST_PROGRESS },
-    cpaGrokTesting: patch.cpaGrokTesting ?? { ...EMPTY_TEST_PROGRESS },
-    cpaCodexAccounts: patch.cpaCodexAccounts ?? [],
-    cpaCodexTesting: patch.cpaCodexTesting ?? { ...EMPTY_TEST_PROGRESS },
-    cpaDirectoryStats: patch.cpaDirectoryStats ?? { ...EMPTY_CPA_DIRECTORY_STATS },
-    customApi: patch.customApi
-  }
-}
-
-
-function applyCodexStatusUpdates<T extends AccountSummary | CpaCodexAccountSummary>(accounts: readonly T[], results: readonly TestResult[] | undefined): T[] {
-  if (!results?.length) return accounts as T[]
-  const updates = new Map(results.map((result) => [result.accountId, result]))
-  return accounts.map((account) => {
-    const result = updates.get(account.id)
-    return result ? {
-      ...account,
-      status: result.status,
-      detail: result.detail,
-      lastCheckedAt: result.checkedAt,
-      usage: result.usage,
-      planType: result.usage?.planType?.trim() || account.planType
-    } : account
-  })
-}
-
-function applyGrokStatusUpdates(accounts: readonly GrokAccountSummary[], results: readonly GrokTestResult[] | undefined): GrokAccountSummary[] {
-  if (!results?.length) return accounts as GrokAccountSummary[]
-  const updates = new Map(results.map((result) => [result.accountId, result]))
-  return accounts.map((account) => {
-    const result = updates.get(account.id)
-    return result ? {
-      ...account,
-      status: result.status,
-      detail: result.detail,
-      lastCheckedAt: result.checkedAt,
-      usage: result.usage,
-      planType: result.usage?.planType?.trim() || account.planType
-    } : account
-  })
-}
-
-function applyStatusSync(current: AppSnapshot, patch: AccountStatusSyncPatch): AppSnapshot {
-  return {
-    ...current,
-    accounts: applyCodexStatusUpdates(current.accounts, patch.accounts),
-    cpaCodexAccounts: applyCodexStatusUpdates(current.cpaCodexAccounts, patch.cpaCodexAccounts),
-    grokAccounts: applyGrokStatusUpdates(current.grokAccounts, patch.grokAccounts),
-    cpaGrokAccounts: applyGrokStatusUpdates(current.cpaGrokAccounts, patch.cpaGrokAccounts)
-  }
-}
-
-function initialTheme(): ThemeMode {
-  try {
-    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
-  } catch {
-    return 'light'
-  }
-}
-
-function dateTime(value: string | null): string {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
-}
-
-function sourceFileName(value: string): string {
-  return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value
-}
-
-function secondsUntilReset(window: UsageWindow, checkedAt: string, now: number): number | null {
-  const referenceNow = Math.max(now, Date.now())
-  if (window.resetAt) {
-    const timestamp = Date.parse(window.resetAt)
-    return Number.isFinite(timestamp) ? Math.max(0, Math.ceil((timestamp - referenceNow) / 1_000)) : null
-  }
-  if (window.resetInSeconds === null) return null
-  const checkedTimestamp = Date.parse(checkedAt)
-  const elapsed = Number.isFinite(checkedTimestamp) ? Math.max(0, Math.floor((referenceNow - checkedTimestamp) / 1_000)) : 0
-  return Math.max(0, window.resetInSeconds - elapsed)
-}
-
-function resetMoment(window: UsageWindow, checkedAt: string): string {
-  if (window.resetAt) return dateTime(window.resetAt)
-  if (window.resetInSeconds !== null) {
-    const checkedTimestamp = Date.parse(checkedAt)
-    if (Number.isFinite(checkedTimestamp)) return dateTime(new Date(checkedTimestamp + window.resetInSeconds * 1_000).toISOString())
-  }
-  return '-'
-}
-
-function resetCountdown(window: UsageWindow, checkedAt: string, now: number): string | null {
-  const seconds = secondsUntilReset(window, checkedAt, now)
-  if (seconds === null) return null
-  if (seconds === 0) return '即将恢复'
-  const weekly = window.windowSeconds === 604_800 || /周|week/i.test(window.label)
-  const fiveHour = window.windowSeconds === 18_000 || /5\s*(?:小时|h(?:our)?s?)/i.test(window.label)
-  if (weekly) return `剩余 ${Math.ceil(seconds / 3_600)} 小时`
-  if (fiveHour) return `剩余 ${Math.ceil(seconds / 60)} 分钟`
-  return seconds >= 21_600 ? `剩余 ${Math.ceil(seconds / 3_600)} 小时` : `剩余 ${Math.ceil(seconds / 60)} 分钟`
-}
-
-function Quota({
-  account,
-  running = false,
-  now
-}: {
-  account: AccountSummary
-  running?: boolean
-  now: number
-}): React.JSX.Element {
-  if (running) {
-    return (
-      <span className="testing-inline">
-        <LoaderCircle className="spin" size={14} />正在刷新额度
-      </span>
-    )
-  }
-  if (!account.usage) return <span className="muted">-</span>
-  const { windows, credits, spendLimit, resetCreditsAvailable } = account.usage
-  if (
-    windows.length === 0 &&
-    !credits &&
-    !spendLimit &&
-    resetCreditsAvailable == null
-  ) return <span className="muted">-</span>
-  return (
-    <div className="quota-list">
-      {windows.slice(0, 3).map((window) => {
-        const remaining = window.remainingPercent
-        const className = remaining !== null && remaining <= 10 ? 'danger' : remaining !== null && remaining <= 30 ? 'warn' : ''
-        const countdown = resetCountdown(window, account.usage!.checkedAt, now)
-        return (
-          <div className="quota-item" key={window.id}>
-            <div className="quota-label">
-              <span>{window.label}</span>
-              <span className="quota-values"><strong>{remaining === null ? '-' : `${Math.round(remaining)}%`}</strong>{countdown && <em>{countdown}</em>}</span>
-            </div>
-            <div className="quota-track">
-              <div className={`quota-fill ${className}`} style={{ width: `${remaining ?? 0}%` }} />
-            </div>
-            <span className="quota-reset">重置 {resetMoment(window, account.usage!.checkedAt)}</span>
-          </div>
-        )
-      })}
-      {credits && (
-        <div className="quota-meta">
-          <span>额外余额</span>
-          <strong>{credits.unlimited ? '无限' : credits.balance ?? (credits.hasCredits ? '可用' : '0')}</strong>
-        </div>
-      )}
-      {spendLimit && (
-        <div className="quota-meta" title={spendLimit.resetAt ? `重置 ${dateTime(spendLimit.resetAt)}` : undefined}>
-          <span>支出限额</span>
-          <strong>{spendLimit.remainingPercent !== null ? `${Math.round(spendLimit.remainingPercent)}%` : spendLimit.remaining ?? '-'}</strong>
-        </div>
-      )}
-      {resetCreditsAvailable != null && (
-        <div className="quota-meta"><span>重置券</span><strong>{resetCreditsAvailable}</strong></div>
-      )}
-    </div>
-  )
-}
-
-function AccountMetadataChips({ account }: { account: AccountSummary }): React.JSX.Element | null {
-  if (!account.group) return null
-  return (
-    <div className="account-metadata-chips">
-      {account.group && <span className="account-group-chip">{account.group}</span>}
-    </div>
-  )
-}
 
 export function App(): React.JSX.Element {
   const [theme, setTheme] = useState<ThemeMode>(() => {
@@ -302,7 +111,7 @@ export function App(): React.JSX.Element {
   const [facetFilters, setFacetFilters] = useState<AccountFacetFilterValues>(EMPTY_ACCOUNT_FACET_FILTERS)
   const [accountSort, setAccountSort] = useState<AccountSortMode>('availability_reset')
   const [testMode, setTestMode] = useState<CodexTestMode>('full')
-  const [activeView, setActiveView] = useState<'accounts' | 'grok' | 'cpa' | 'automation'>('accounts')
+  const [activeView, setActiveView] = useState<AppView>('accounts')
   const [grokViewRevision, setGrokViewRevision] = useState(0)
   const [automationKeyword, setAutomationKeyword] = useState('')
   const [automationSort, setAutomationSort] = useState<AccountSortMode>('availability_reset')
@@ -347,8 +156,8 @@ export function App(): React.JSX.Element {
 
   const closeImportDialog = (force = false): void => {
     if ((busy || importPreviewTesting?.active) && !force) return
-    if (importPreviewTesting?.active) void window.codexSwitcher.cancelImportPreviewTests()
-    if (importPreview) void window.codexSwitcher.discardImportPreview(importPreview.sessionId)
+    if (importPreviewTesting?.active) void codexApi().cancelImportPreviewTests()
+    if (importPreview) void codexApi().discardImportPreview(importPreview.sessionId)
     setImportOpen(false)
     setImportPreview(null)
     setImportPreviewTesting(null)
@@ -383,12 +192,7 @@ export function App(): React.JSX.Element {
   const settingsDialogRef = useDialogFocus<HTMLElement>(settingsOpen, closeSettingsDialog)
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
-    } catch {
-      // The selected theme still applies for this session when storage is unavailable.
-    }
+    applyTheme(theme)
   }, [theme])
 
   const applySnapshotPatch = (patch: AppSnapshotPatch, preserveSettingsDraft = false): void => {
@@ -400,14 +204,14 @@ export function App(): React.JSX.Element {
     preserveSettingsDraft = false,
     scope: AppSnapshotScope = activeView
   ): Promise<void> => {
-    applySnapshotPatch(await window.codexSwitcher.getPageSnapshot(scope), preserveSettingsDraft)
+    applySnapshotPatch(await codexApi().getPageSnapshot(scope), preserveSettingsDraft)
   }
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
       try {
-        const page = await window.codexSwitcher.getPageSnapshot('accounts')
+        const page = await codexApi().getPageSnapshot('accounts')
         if (cancelled) return
         const next = bootstrapSnapshotFromAccountsPage(page)
         setSnapshot(next)
@@ -415,8 +219,8 @@ export function App(): React.JSX.Element {
         // Warm other libraries after accounts are in hand. Merge onto current/next so a
         // pre-commit warm response cannot be dropped by applySnapshotPatch(current=null).
         void Promise.all([
-          window.codexSwitcher.getPageSnapshot('grok').catch(() => null),
-          window.codexSwitcher.getPageSnapshot('cpa').catch(() => null)
+          codexApi().getPageSnapshot('grok').catch(() => null),
+          codexApi().getPageSnapshot('cpa').catch(() => null)
         ]).then(([grok, cpa]) => {
           if (cancelled) return
           setSnapshot((current) => {
@@ -430,15 +234,15 @@ export function App(): React.JSX.Element {
           setSecondaryLibrariesHydrated(true)
         })
       } catch {
-        const next = await window.codexSwitcher.getSnapshot()
+        const next = await codexApi().getSnapshot()
         if (cancelled) return
         setSnapshot(next)
         setSettingsDraft(next.settings)
         setSecondaryLibrariesHydrated(true)
       }
     })()
-    void window.codexSwitcher.getUpdateState().then(setUpdateState)
-    const stopTesting = window.codexSwitcher.onTestProgress((testing) =>
+    void codexApi().getUpdateState().then(setUpdateState)
+    const stopTesting = codexApi().onTestProgress((testing) =>
       setSnapshot((current) => {
         if (!current) return current
         const accounts = testing.updatedAccount
@@ -449,8 +253,8 @@ export function App(): React.JSX.Element {
         return { ...current, accounts, testing }
       })
     )
-    const stopUpdates = window.codexSwitcher.onUpdateState(setUpdateState)
-    const stopGrokTesting = window.codexSwitcher.onGrokTestProgress((grokTesting) =>
+    const stopUpdates = codexApi().onUpdateState(setUpdateState)
+    const stopGrokTesting = codexApi().onGrokTestProgress((grokTesting) =>
       setSnapshot((current) => {
         if (!current) return current
         const grokAccounts = grokTesting.updatedAccount
@@ -459,7 +263,7 @@ export function App(): React.JSX.Element {
         return { ...current, grokAccounts, grokTesting }
       })
     )
-    const stopCpaCodexTesting = window.codexSwitcher.onCpaCodexTestProgress((cpaCodexTesting) =>
+    const stopCpaCodexTesting = codexApi().onCpaCodexTestProgress((cpaCodexTesting) =>
       setSnapshot((current) => {
         if (!current) return current
         const cpaCodexAccounts = cpaCodexTesting.updatedAccount
@@ -468,10 +272,10 @@ export function App(): React.JSX.Element {
         return { ...current, cpaCodexAccounts, cpaCodexTesting }
       })
     )
-    const stopAccountStatusSync = window.codexSwitcher.onAccountStatusSync((patch) => {
+    const stopAccountStatusSync = codexApi().onAccountStatusSync((patch) => {
       setSnapshot((current) => current ? applyStatusSync(current, patch) : current)
     })
-    const stopCpaGrokTesting = window.codexSwitcher.onCpaGrokTestProgress((cpaGrokTesting) =>
+    const stopCpaGrokTesting = codexApi().onCpaGrokTestProgress((cpaGrokTesting) =>
       setSnapshot((current) => {
         if (!current) return current
         const cpaGrokAccounts = cpaGrokTesting.updatedAccount
@@ -480,7 +284,7 @@ export function App(): React.JSX.Element {
         return { ...current, cpaGrokAccounts, cpaGrokTesting }
       })
     )
-    const stopImportPreviewTesting = window.codexSwitcher.onImportPreviewTestProgress((testing) => {
+    const stopImportPreviewTesting = codexApi().onImportPreviewTestProgress((testing) => {
       setImportPreviewTesting(testing)
       if (!testing.updatedItem) return
       setImportPreview((current) => current?.sessionId === testing.sessionId
@@ -490,11 +294,11 @@ export function App(): React.JSX.Element {
           }
         : current)
     })
-    const stopSessionRepairProgress = window.codexSwitcher.onSessionRepairProgress(setRepairProgress)
-    const stopAutoSwitch = window.codexSwitcher.onAutoSwitchState((autoSwitch) => {
+    const stopSessionRepairProgress = codexApi().onSessionRepairProgress(setRepairProgress)
+    const stopAutoSwitch = codexApi().onAutoSwitchState((autoSwitch) => {
       setSnapshot((current) => current ? { ...current, autoSwitch } : current)
       if (!autoSwitch.running) {
-        void window.codexSwitcher.getPageSnapshot('accounts').then((patch) => applySnapshotPatch(patch, true))
+        void codexApi().getPageSnapshot('accounts').then((patch) => applySnapshotPatch(patch, true))
       }
     })
     return () => {
@@ -655,7 +459,7 @@ export function App(): React.JSX.Element {
             defaultPriority: exportDialog.defaultPriority,
             ...(exportDialog.individualPriorities ? { priorities: exportDialog.priorities } : {})
           }
-      const result = await window.codexSwitcher.exportAccounts(request)
+      const result = await codexApi().exportAccounts(request)
       if (!result.cancelled) {
         setMessage({ kind: result.ok ? 'ok' : 'error', text: result.message })
         setExportDialog(null)
@@ -704,23 +508,23 @@ export function App(): React.JSX.Element {
     const action = pasteImportMode === 'oauth'
       ? () => {
           if (!oauthSession) throw new Error('请先打开官方授权页')
-          return window.codexSwitcher.previewOAuthComplete(oauthSession.sessionId, pasteText)
+          return codexApi().previewOAuthComplete(oauthSession.sessionId, pasteText)
         }
       : pasteImportMode === 'auto'
-        ? () => window.codexSwitcher.previewAnyPasted(pasteText)
-        : () => window.codexSwitcher.previewRefreshTokens(pasteText, pasteImportMode)
+        ? () => codexApi().previewAnyPasted(pasteText)
+        : () => codexApi().previewRefreshTokens(pasteText, pasteImportMode)
     await runImportPreview(action)
   }
 
   const commitImportPreview = async (
-    decisions: Parameters<typeof window.codexSwitcher.commitImportPreview>[0]['decisions'],
+    decisions: Parameters<CodexSwitcherApi['commitImportPreview']>[0]['decisions'],
     skipUnrecognized = false
   ): Promise<void> => {
     if (!importPreview) return
     setBusy(true)
     setMessage(null)
     try {
-      const result: ImportPreviewCommitResult = await window.codexSwitcher.commitImportPreview({
+      const result: ImportPreviewCommitResult = await codexApi().commitImportPreview({
         sessionId: importPreview.sessionId,
         decisions,
         ...(skipUnrecognized ? { skipUnrecognized: true } : {})
@@ -753,7 +557,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.refineImportPreview({
+      const result = await codexApi().refineImportPreview({
         sessionId: importPreview.sessionId,
         sourceKey,
         mode
@@ -788,7 +592,7 @@ export function App(): React.JSX.Element {
       updatedItem: null
     })
     try {
-      const result = await window.codexSwitcher.testImportPreview({
+      const result = await codexApi().testImportPreview({
         sessionId,
         ...(itemKeys ? { itemKeys } : {})
       })
@@ -806,12 +610,12 @@ export function App(): React.JSX.Element {
   }
 
   const cancelImportPreviewTests = (): void => {
-    void window.codexSwitcher.cancelImportPreviewTests()
+    void codexApi().cancelImportPreviewTests()
   }
 
   const backFromImportPreview = (): void => {
     if (!importPreview || busy || importPreviewTesting?.active) return
-    void window.codexSwitcher.discardImportPreview(importPreview.sessionId)
+    void codexApi().discardImportPreview(importPreview.sessionId)
     setImportPreview(null)
     setImportPreviewTesting(null)
   }
@@ -820,7 +624,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const session = await window.codexSwitcher.startOAuthAuthorization()
+      const session = await codexApi().startOAuthAuthorization()
       setOauthSession(session)
       setMessage({ kind: 'ok', text: '已打开 OpenAI 官方授权页，登录后将浏览器地址粘贴回来' })
     } catch (error) {
@@ -835,7 +639,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.exportAccountsToCpa({
+      const result = await codexApi().exportAccountsToCpa({
         accountIds: exportDialog.accountIds,
         defaultPriority: exportDialog.defaultPriority,
         ...(exportDialog.individualPriorities ? { priorities: exportDialog.priorities } : {})
@@ -857,7 +661,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      setHealthReport(await window.codexSwitcher.inspectLibraries())
+      setHealthReport(await codexApi().inspectLibraries())
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -877,7 +681,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.repairLibraries(healthReport.snapshotId, issueIds)
+      const result = await codexApi().repairLibraries(healthReport.snapshotId, issueIds)
       setHealthReport(result.report)
       await reload(true, activeView)
       setMessage({ kind: result.errors.length ? 'warn' : 'ok', text: result.message })
@@ -890,7 +694,7 @@ export function App(): React.JSX.Element {
 
   const checkForUpdates = async (): Promise<void> => {
     try {
-      setUpdateState(await window.codexSwitcher.checkForUpdates())
+      setUpdateState(await codexApi().checkForUpdates())
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     }
@@ -898,7 +702,7 @@ export function App(): React.JSX.Element {
 
   const downloadUpdate = async (): Promise<void> => {
     try {
-      await window.codexSwitcher.downloadUpdate()
+      await codexApi().downloadUpdate()
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     }
@@ -913,7 +717,7 @@ export function App(): React.JSX.Element {
       tone: 'warning'
     })) return
     try {
-      await window.codexSwitcher.installUpdate()
+      await codexApi().installUpdate()
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     }
@@ -931,7 +735,7 @@ export function App(): React.JSX.Element {
       setMessage({ kind: 'error', text: '启用自动切换前至少选择一个候选账号' })
       return
     }
-    await run(() => window.codexSwitcher.updateSettings(automationPatch()), '自动切换设置已保存')
+    await run(() => codexApi().updateSettings(automationPatch()), '自动切换设置已保存')
   }
 
   const saveAndRunAutomation = async (): Promise<void> => {
@@ -942,8 +746,8 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      await window.codexSwitcher.updateSettings(automationPatch())
-      const result = await window.codexSwitcher.runAutoSwitchNow()
+      await codexApi().updateSettings(automationPatch())
+      const result = await codexApi().runAutoSwitchNow()
       await reload()
       setMessage({ kind: result.ok ? 'ok' : 'warn', text: result.message })
     } catch (error) {
@@ -1023,7 +827,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.switchAccount(id, true)
+      const result = await codexApi().switchAccount(id, true)
       if (!result.ok) throw new Error(result.message)
       await reload()
       setMessage({
@@ -1066,7 +870,7 @@ export function App(): React.JSX.Element {
     setBusy(true)
     setMessage(null)
     try {
-      const result = await window.codexSwitcher.deleteAccounts(accountIds)
+      const result = await codexApi().deleteAccounts(accountIds)
       if (result.deleted === 0) throw new Error('没有删除任何账号')
       const removed = new Set(accountIds)
       setSnapshot((current) => current ? {
@@ -1100,7 +904,7 @@ export function App(): React.JSX.Element {
     }
     if (action === 'test') {
       void runTest(
-        () => window.codexSwitcher.testAccounts(ids, testMode),
+        () => codexApi().testAccounts(ids, testMode),
         `${category ? STATUS_LABELS[category] : '全部账号'} ${ids.length} 个检测完成`
       )
       return
@@ -1123,7 +927,7 @@ export function App(): React.JSX.Element {
     }
     if (action === 'test') {
       void runTest(
-        () => window.codexSwitcher.testAccounts(ids, testMode),
+        () => codexApi().testAccounts(ids, testMode),
         `${groupLabel} ${ids.length} 个检测完成`
       )
       return
@@ -1157,8 +961,8 @@ export function App(): React.JSX.Element {
       setRepairThreadIds(selectedThreadIds)
       setRepairProgress(null)
       setRepairPreview(selectedThreadIds?.length
-        ? await window.codexSwitcher.previewSessionRepair(targetProvider, selectedThreadIds)
-        : await window.codexSwitcher.previewSessionRepair(targetProvider))
+        ? await codexApi().previewSessionRepair(targetProvider, selectedThreadIds)
+        : await codexApi().previewSessionRepair(targetProvider))
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -1172,12 +976,12 @@ export function App(): React.JSX.Element {
     setMessage(null)
     try {
       const result = repairThreadIds?.length
-        ? await window.codexSwitcher.applySessionRepair(
+        ? await codexApi().applySessionRepair(
             repairPreview.snapshotId,
             repairPreview.targetProvider,
             repairThreadIds
           )
-        : await window.codexSwitcher.applySessionRepair(
+        : await codexApi().applySessionRepair(
             repairPreview.snapshotId,
             repairPreview.targetProvider
           )
@@ -1208,283 +1012,81 @@ export function App(): React.JSX.Element {
     if (mode === 'personal_access_token') return '可切换 · Personal Access Token，需重启'
     return '可切换 · 外部凭据，需重启'
   }
+  const sessionValue = {
+    snapshot,
+    theme,
+    activeView,
+    busy,
+    message,
+    applySnapshotPatch,
+    setBusy,
+    notify: (kind: 'ok' | 'warn' | 'error', text: string): void => { setMessage({ kind, text }) },
+    setActiveView
+  }
+
   return (
+    <AppSessionProvider value={sessionValue}>
     <div className="app-shell">
-      <header className="app-header">
-        <div className="app-identity">
-          <div className="identity-title">
-            <span className="product-mark"><Code2 size={17} /></span>
-            <div className="identity-copy">
-              <h1>Codex Account Switcher</h1>
-              <span className="app-version" title={updateState?.currentVersion ? `当前版本 v${updateState.currentVersion}` : '正在读取版本'}>
-                {updateState?.currentVersion ? `v${updateState.currentVersion}` : 'v…'}
-              </span>
-            </div>
-          </div>
-        </div>
-        <nav className="view-tabs" aria-label="主页面">
-          <button className={activeView === 'accounts' ? 'active' : ''} aria-pressed={activeView === 'accounts'} onClick={() => setActiveView('accounts')}>
-            <ListChecks size={16} />Codex 账号库 <span className="tab-count">{snapshot.accounts.length}</span>
-          </button>
-          <button className={activeView === 'grok' ? 'active' : ''} aria-pressed={activeView === 'grok'} onClick={() => setActiveView('grok')}>
-            <Zap size={16} />Grok 账号库 <span className="tab-count grok">{secondaryLibrariesHydrated ? snapshot.grokAccounts.length : '…'}</span>
-          </button>
-          <button className={activeView === 'cpa' ? 'active' : ''} aria-pressed={activeView === 'cpa'} onClick={() => setActiveView('cpa')}>
-            <PackageOpen size={16} />CPA 账号管理 <span className="tab-count">{secondaryLibrariesHydrated ? snapshot.cpaCodexAccounts.length + snapshot.cpaGrokAccounts.length : '…'}</span>
-          </button>
-          <button className={activeView === 'automation' ? 'active' : ''} aria-pressed={activeView === 'automation'} onClick={() => setActiveView('automation')}>
-            <TimerReset size={16} />定时切换
-          </button>
-        </nav>
-        <button className="header-import-button" aria-label="导入账号" onClick={() => setImportOpen(true)} disabled={busy}>
-          <Import size={17} />导入账号
-        </button>
-        <button
-          className="icon-button"
-          title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
-          aria-label={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
-          onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}
-        >
-          {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
-        </button>
-        <button className="icon-button" title="设置" aria-label="设置" onClick={openSettingsDialog} disabled={busy}>
-          <Settings size={19} />
-        </button>
-      </header>
-
-      {message && (
-        <div className={`message ${message.kind}`} role="status" aria-live="polite" aria-atomic="true">
-          {message.kind === 'ok' ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
-          <span>{message.text}</span>
-          <button className="message-close" title="关闭提示" aria-label="关闭提示" onClick={() => setMessage(null)}><X size={14} /></button>
-        </div>
-      )}
-
-      {(snapshot.testing.active || snapshot.grokTesting.active || snapshot.cpaGrokTesting.active || snapshot.cpaCodexTesting.active) && (
-        <div className="global-test-progress" aria-live="polite" aria-label="账号检测进度">
-          {snapshot.testing.active && (
-            <div className="task-progress">
-              <div style={{ width: `${snapshot.testing.total ? (snapshot.testing.done / snapshot.testing.total) * 100 : 0}%` }} />
-              <span>Codex 检测 {snapshot.testing.done} / {snapshot.testing.total}</span>
-              <button type="button" className="progress-cancel" title="取消 Codex 检测" onClick={() => void window.codexSwitcher.cancelTests()}>取消</button>
-            </div>
-          )}
-          {snapshot.grokTesting.active && (
-            <div className="task-progress">
-              <div style={{ width: `${snapshot.grokTesting.total ? (snapshot.grokTesting.done / snapshot.grokTesting.total) * 100 : 0}%` }} />
-              <span>Grok 检测 {snapshot.grokTesting.done} / {snapshot.grokTesting.total}</span>
-              <button type="button" className="progress-cancel" title="取消 Grok 检测" onClick={() => void window.codexSwitcher.cancelGrokTests()}>取消</button>
-            </div>
-          )}
-          {snapshot.cpaCodexTesting.active && (
-            <div className="task-progress">
-              <div style={{ width: `${snapshot.cpaCodexTesting.total ? (snapshot.cpaCodexTesting.done / snapshot.cpaCodexTesting.total) * 100 : 0}%` }} />
-              <span>CPA Codex 检测 {snapshot.cpaCodexTesting.done} / {snapshot.cpaCodexTesting.total}</span>
-              <button type="button" className="progress-cancel" title="取消 CPA Codex 检测" onClick={() => void window.codexSwitcher.cancelCpaCodexTests()}>取消</button>
-            </div>
-          )}
-          {snapshot.cpaGrokTesting.active && (
-            <div className="task-progress">
-              <div style={{ width: `${snapshot.cpaGrokTesting.total ? (snapshot.cpaGrokTesting.done / snapshot.cpaGrokTesting.total) * 100 : 0}%` }} />
-              <span>CPA Grok 检测 {snapshot.cpaGrokTesting.done} / {snapshot.cpaGrokTesting.total}</span>
-              <button type="button" className="progress-cancel" title="取消 CPA Grok 检测" onClick={() => void window.codexSwitcher.cancelCpaGrokTests()}>取消</button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeView === 'accounts' ? <div className="page-view accounts-view" key="accounts">
-
-      <section className="library-overview codex-overview">
-        <div><span>账号库</span><strong>{snapshot.accounts.length} 个账号</strong></div>
-        <CurrentAccountOverview
-          account={activeAccount}
-          running={Boolean(activeAccount && runningAccountIds.has(activeAccount.id))}
-          now={clock}
-          disabled={busy || snapshot.testing.active}
-          onRefresh={() => {
-            if (!activeAccount) return
-            void runTest(
-        () => window.codexSwitcher.testAccounts([activeAccount.id], 'usage'),
-              '当前账号额度已刷新'
-            )
-          }}
-        />
-        <div><span>自动切换</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '检测中' : snapshot.autoSwitch.enabled ? '已启用' : '关闭'}</strong></div>
-        <div className="library-path"><span>本地账号目录</span><strong title={`${snapshot.importDirectory}\\codex`}>{snapshot.importDirectory}\\codex</strong></div>
-      </section>
-      <StatusFilterStrip
-        value={statusFilter}
-        counts={accountFacets.statusCounts}
-        total={snapshot.accounts.length}
-        onChange={setStatusFilter}
-        label="Codex 账号状态"
-        onAction={handleCodexCategoryAction}
-        disabled={busy || snapshot.testing.active}
-        groups={availableAccountFacets.groups}
-        groupValue={facetFilters.group}
-        onGroupChange={(group) => setFacetFilters((current) => ({ ...current, group }))}
-        onGroupAction={handleCodexGroupAction}
+      <AppHeader
+        activeView={activeView}
+        onViewChange={setActiveView}
+        accountsCount={snapshot.accounts.length}
+        grokCount={secondaryLibrariesHydrated ? snapshot.grokAccounts.length : '…'}
+        cpaCount={secondaryLibrariesHydrated ? snapshot.cpaCodexAccounts.length + snapshot.cpaGrokAccounts.length : '…'}
+        version={updateState?.currentVersion ?? null}
+        theme={theme}
+        busy={busy}
+        onImport={() => setImportOpen(true)}
+        onToggleTheme={() => setTheme((current) => toggleTheme(current))}
+        onOpenSettings={openSettingsDialog}
       />
 
-      <div className="toolbar codex-toolbar">
-        <div className="toolbar-group">
-        <button onClick={() => void runScan(() => window.codexSwitcher.scanDirectory(), 'aa 重新扫描完成')} disabled={busy}>
-          <RefreshCw size={16} />重新扫描
-        </button>
-        <button onClick={() => openExport()} disabled={busy || snapshot.accounts.length === 0}>
-          <Download size={16} />导出账号
-        </button>
-        </div>
-        <div className="toolbar-group">
-        <CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.testing.active} />
-        <button
-          onClick={() => void runTest(
-        () => window.codexSwitcher.testAccounts(accounts.map((account) => account.id), testMode),
-            `当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`
-          )}
-          disabled={busy || snapshot.testing.active || accounts.length === 0}
-        >
-          <TestTube2 size={16} />测试当前页面全部
-        </button>
-        {snapshot.testing.active && !snapshot.autoSwitch.running && (
-          <button className="danger-button" onClick={() => void window.codexSwitcher.cancelTests()}>
-            <Square size={15} />取消
-          </button>
-        )}
-        </div>
-        <details className="action-menu toolbar-end" onClick={(event) => {
-          if ((event.target as Element).closest('button')) event.currentTarget.removeAttribute('open')
-        }}>
-          <summary><MoreHorizontal size={17} />更多</summary>
-          <div className="action-menu-popover">
-            <button onClick={() => void run(async () => {
-              const result = await window.codexSwitcher.restoreLatest(true)
-              if (!result.ok) throw new Error(result.message)
-            }, '已恢复上一个配置')} disabled={busy}>
-              <RotateCcw size={16} />恢复上一个
-            </button>
-            <button onClick={() => void run(async () => {
-              const result = await window.codexSwitcher.restoreApiMode(true)
-              if (!result.ok) throw new Error(result.message)
-            }, '已恢复原 API/代理模式')} disabled={busy}>
-              <RotateCcw size={16} />恢复备份 API
-            </button>
-            <button onClick={openSettingsDialog} disabled={busy}>
-              <KeyRound size={16} />自定义 API
-            </button>
-            <button onClick={() => void inspectLibraries()} disabled={busy}>
-              <ScanSearch size={16} />账号库体检
-            </button>
-          </div>
-        </details>
-      </div>
+      {message && <AppToast message={message} onClose={() => setMessage(null)} />}
 
-      <div className={`selection-toolbar${selected.size === 0 ? ' is-idle' : ''}`} aria-label="选中账号操作">
-        <div className="selection-summary">
-          <CheckCircle2 size={15} />
-          <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
-          <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.alias ?? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
-        </div>
-        <button onClick={() => void runTest(
-        () => window.codexSwitcher.testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.testing.active || selected.size === 0}>
-          <Play size={16} />测试选中
-        </button>
-        <button className="primary-button" onClick={() => void switchSelected()} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : '切换后会同步当前会话并重启 Codex'}>
-          <RotateCcw size={16} />切换并重启
-        </button>
-        <button onClick={() => void openSessionRepair()} disabled={busy}>
-          <Wrench size={16} />修复历史会话
-        </button>
-        <button onClick={() => setConversationOpen(true)} disabled={busy}>
-          <MessagesSquare size={16} />对话管理
-        </button>
-        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
-          <Trash2 size={16} />删除选中
-        </button>
-      </div>
+      <GlobalTestProgress snapshot={snapshot} />
 
-      <div className="filter-row">
-        <label className="search-field">
-          <Search size={16} />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、文件或错误" />
-        </label>
-        <AccountFacetFilters
-          label="Codex"
-          facets={availableAccountFacets}
-          value={facetFilters}
-          onChange={setFacetFilters}
+      {activeView === 'accounts' ? (
+        <AccountsPage
+          snapshot={snapshot}
+          accounts={accounts}
+          activeAccount={activeAccount}
+          selectedAccount={selectedAccount}
+          selected={selected}
+          setSelected={setSelected}
+          toggle={toggle}
+          selectAccountRow={selectAccountRow}
+          keyword={keyword}
+          setKeyword={setKeyword}
+          statusFilter={statusFilter}
+          setStatusFilter={setStatusFilter}
+          facetFilters={facetFilters}
+          setFacetFilters={setFacetFilters}
+          accountSort={accountSort}
+          setAccountSort={setAccountSort}
+          testMode={testMode}
+          setTestMode={setTestMode}
+          accountFacets={accountFacets}
+          availableAccountFacets={availableAccountFacets}
+          runningAccountIds={runningAccountIds}
+          virtualAccounts={virtualAccounts}
+          busy={busy}
+          clock={clock}
+          switchCapability={switchCapability}
+          handleCodexCategoryAction={handleCodexCategoryAction}
+          handleCodexGroupAction={handleCodexGroupAction}
+          run={run}
+          runScan={runScan}
+          runTest={runTest}
+          openExport={openExport}
+          openSettingsDialog={openSettingsDialog}
+          inspectLibraries={inspectLibraries}
+          switchSelected={switchSelected}
+          openSessionRepair={openSessionRepair}
+          setConversationOpen={setConversationOpen}
+          deleteAccounts={deleteAccounts}
+          openContextMenu={openContextMenu}
         />
-        <select className="visually-hidden" aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
-          <option value="">全部状态</option>
-          {Object.entries(STATUS_LABELS).filter(([value]) =>
-            (accountFacets.statusCounts[value as DisplayAccountStatus] ?? 0) > 0 || statusFilter === value
-          ).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <select aria-label="Codex 账号排序" value={accountSort} onChange={(event) => setAccountSort(event.target.value as AccountSortMode)}>
-          {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <span className="selection-count">显示 {accounts.length} / {snapshot.accounts.length} · 已选 {selected.size}</span>
-      </div>
-
-      <div className="table-wrap" ref={virtualAccounts.scrollRef}>
-        <table>
-          <thead>
-            <tr>
-              <th className="select-column"><input type="checkbox" aria-label="选择全部" checked={accounts.length > 0 && accounts.every((item) => selected.has(item.id))} onChange={(event) => setSelected(event.target.checked ? new Set(accounts.map((item) => item.id)) : new Set())} /></th>
-              <th>账号</th><th>状态</th><th>计划</th><th>用量与重置</th><th>凭据时间</th><th>来源</th>
-            </tr>
-          </thead>
-          <tbody>
-            {virtualAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingTop }} /></tr>}
-            {virtualAccounts.rows.map(({ index, item: account }) => {
-              const running = runningAccountIds.has(account.id)
-              return (
-              <tr
-                key={account.id}
-                data-index={index}
-                ref={virtualAccounts.enabled ? virtualAccounts.measureElement : undefined}
-                className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${selected.has(account.id) ? ' selected-row' : ''}`}
-                aria-busy={running}
-                aria-current={account.active ? 'true' : undefined}
-                tabIndex={0}
-                onClick={() => selectAccountRow(account.id)}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return
-                  if (event.key !== 'Enter' && event.key !== ' ') return
-                  event.preventDefault()
-                  selectAccountRow(account.id)
-                }}
-                onContextMenu={(event) => openContextMenu(event, account)}
-              >
-                <td><input type="checkbox" aria-label={`选择 ${account.email ?? account.sourcePath}`} checked={selected.has(account.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggle(account.id)} /></td>
-                <td>
-                  <div className="account-title-line"><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'}</div>{account.active && <span className="active-badge"><BadgeCheck size={12} />正在使用</span>}</div>
-                  {account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}
-                  <div className="workspace-id">{account.workspaceId ?? 'workspace 未知'} · {switchCapability(account)}</div>
-                  <AccountMetadataChips account={account} />
-                  <div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div>
-                </td>
-                <td>
-                  {running ? (
-                    <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">{CODEX_TEST_MODE_RUNNING[testMode]}</div></>
-                  ) : (
-                    <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>
-                  )}
-                </td>
-                <td>{account.planType ?? '-'}</td>
-                <td><Quota account={account} running={running} now={clock} /></td>
-                <td><div>刷新 {dateTime(account.lastRefresh)}</div><div className="muted">Token 到期 {dateTime(account.accessExpiresAt)}</div><div className="muted">检测 {dateTime(account.lastCheckedAt)}</div></td>
-                <td><div className="source-path" title={account.sourcePath}>{sourceFileName(account.sourcePath)}</div><div className="source-tags"><span className="provider-label codex"><Code2 size={11} />CODEX</span><span className="format-label">{account.sourceDialect.toUpperCase()} · {account.sourceFormat.toUpperCase()}</span></div></td>
-              </tr>
-              )
-            })}
-            {virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}
-            {accounts.length === 0 && <tr><td colSpan={7} className="empty-state">没有匹配的账号</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      </div> : activeView === 'grok' ? (
+      ) : activeView === 'grok' ? (
         <GrokLibraryPage
           key={grokViewRevision}
           snapshot={snapshot}
@@ -1502,71 +1104,23 @@ export function App(): React.JSX.Element {
           requestConfirmation={requestConfirmation}
         />
       ) : (
-        <main className="page-view automation-view" key="automation">
-          <section className="automation-status-band">
-            <div><span>运行状态</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '正在检查' : snapshot.autoSwitch.enabled ? '已启用' : '未启用'}</strong></div>
-            <div><span>当前账号</span><strong>{snapshot.accounts.find((account) => account.active)?.email ?? '未匹配'}</strong></div>
-            <div><span>上次检查</span><strong>{dateTime(snapshot.autoSwitch.lastCheckAt)}</strong></div>
-            <div><span>下次检查</span><strong>{dateTime(snapshot.autoSwitch.nextCheckAt)}</strong></div>
-            <div className="automation-message"><span>结果</span><strong>{snapshot.autoSwitch.lastMessage}</strong></div>
-          </section>
-
-
-          <section className="automation-controls" aria-label="自动切换设置">
-            <label className="automation-toggle">
-              <span>定时自动切换</span>
-              <span className="switch-control">
-                <input aria-label="启用定时自动切换" type="checkbox" checked={settingsDraft.autoSwitchEnabled} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchEnabled: event.target.checked })} />
-                <span />
-              </span>
-            </label>
-            <label>检查间隔（秒）<input aria-label="自动切换检查间隔" type="number" min={5} max={86400} value={settingsDraft.autoSwitchIntervalSeconds} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchIntervalSeconds: Number(event.target.value) })} /></label>
-            <label className="check-option"><input type="checkbox" checked={settingsDraft.autoSwitchRestartCodex} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchRestartCodex: event.target.checked })} />切换成功后重启 Codex</label>
-            <span className="automation-spacer" />
-            <button onClick={() => void saveAutomation()} disabled={busy}>保存设置</button>
-            <button className="primary-button" onClick={() => void saveAndRunAutomation()} disabled={busy || snapshot.autoSwitch.running || settingsDraft.autoSwitchAccountIds.length === 0}>
-              {snapshot.autoSwitch.running ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}立即检查
-            </button>
-          </section>
-
-          <div className="automation-filter-row">
-            <label className="search-field"><Search size={16} /><input value={automationKeyword} onChange={(event) => setAutomationKeyword(event.target.value)} placeholder="搜索候选账号" /></label>
-            <select aria-label="定时切换账号排序" value={automationSort} onChange={(event) => setAutomationSort(event.target.value as AccountSortMode)}>
-              {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-            <span>候选 {settingsDraft.autoSwitchAccountIds.length} / {snapshot.accounts.filter((account) => account.switchable).length}</span>
-            <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: snapshot.accounts.filter((account) => account.switchable).map((account) => account.id) })}>全选可切换</button>
-            <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</button>
-          </div>
-
-          <div className="table-wrap automation-table-wrap" ref={virtualAutomationAccounts.scrollRef}>
-            <table className="automation-table">
-              <thead><tr><th className="select-column">候选</th><th>账号</th><th>状态</th><th>等级</th><th>当前额度</th><th>最后检测</th></tr></thead>
-              <tbody>
-                {virtualAutomationAccounts.paddingTop > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={6} style={{ height: virtualAutomationAccounts.paddingTop }} /></tr>}
-                {virtualAutomationAccounts.rows.map(({ index, item: account }) => {
-                  const checked = settingsDraft.autoSwitchAccountIds.includes(account.id)
-                  const running = runningAccountIds.has(account.id)
-                  return (
-                    <tr key={account.id} data-index={index} ref={virtualAutomationAccounts.enabled ? virtualAutomationAccounts.measureElement : undefined} className={`account-row status-row-${displayStatus(account.status)}${account.active ? ' active-row' : ''}${running ? ' testing-row' : ''}${checked ? ' selected-row' : ''}`} onClick={() => {
-                      if (!account.switchable) return
-                      setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: checked ? settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) : [...settingsDraft.autoSwitchAccountIds, account.id] })
-                    }}>
-                      <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
-                      <td><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div>{account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}<div className="workspace-id">{switchCapability(account)}</div><AccountMetadataChips account={account} /></td>
-                      <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail">{account.detail}</div></>}</td>
-                      <td>{account.planType ?? '未知'}</td>
-                      <td><Quota account={account} running={running} now={clock} /></td>
-                      <td>{dateTime(account.lastCheckedAt)}</td>
-                    </tr>
-                  )
-                })}
-                {virtualAutomationAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={6} style={{ height: virtualAutomationAccounts.paddingBottom }} /></tr>}
-                {automationAccounts.length === 0 && <tr><td colSpan={6} className="empty-state">没有匹配的账号</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </main>
+        <AutomationPage
+          snapshot={snapshot}
+          settingsDraft={settingsDraft}
+          setSettingsDraft={setSettingsDraft}
+          automationAccounts={automationAccounts}
+          automationKeyword={automationKeyword}
+          setAutomationKeyword={setAutomationKeyword}
+          automationSort={automationSort}
+          setAutomationSort={setAutomationSort}
+          virtualAutomationAccounts={virtualAutomationAccounts}
+          runningAccountIds={runningAccountIds}
+          busy={busy}
+          clock={clock}
+          switchCapability={switchCapability}
+          saveAutomation={saveAutomation}
+          saveAndRunAutomation={saveAndRunAutomation}
+        />
       )}
 
       {importOpen && (
@@ -1592,8 +1146,8 @@ export function App(): React.JSX.Element {
               </button>
             </div>
             <div className="import-source-actions">
-              <button aria-label="导入多个文件" onClick={() => void runImportPreview(() => window.codexSwitcher.previewAnyFiles())} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>先识别、去重并预览</small></span></button>
-              <button aria-label="导入文件夹" onClick={() => void runImportPreview(() => window.codexSwitcher.previewAnyDirectory())} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别后确认写入</small></span></button>
+              <button aria-label="导入多个文件" onClick={() => void runImportPreview(() => codexApi().previewAnyFiles())} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>先识别、去重并预览</small></span></button>
+              <button aria-label="导入文件夹" onClick={() => void runImportPreview(() => codexApi().previewAnyDirectory())} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别后确认写入</small></span></button>
             </div>
             <div className="import-divider"><span>或粘贴凭据</span></div>
             <div className="option-group import-method-group">
@@ -1758,7 +1312,7 @@ export function App(): React.JSX.Element {
           <div className="context-account" title={contextMenu.account.email ?? contextMenu.account.sourcePath}>
             {contextMenu.account.alias ?? contextMenu.account.email ?? '邮箱未知'}
           </div>
-          <button role="menuitem" onClick={() => contextAction(() => runTest(() => window.codexSwitcher.testAccounts([contextMenu.account.id], testMode), CODEX_TEST_MODE_SUCCESS[testMode]))}>
+          <button role="menuitem" onClick={() => contextAction(() => runTest(() => codexApi().testAccounts([contextMenu.account.id], testMode), CODEX_TEST_MODE_SUCCESS[testMode]))}>
             <TestTube2 size={15} />检测此账号
           </button>
           <button role="menuitem" disabled={busy || !contextMenu.account.switchable} title={!contextMenu.account.switchable ? '缺少可供 Codex 使用的认证材料' : '切换后会同步当前会话并重启 Codex'} onClick={() => contextAction(() => switchAccount(contextMenu.account.id))}>
@@ -1768,7 +1322,7 @@ export function App(): React.JSX.Element {
             <Download size={15} />导出此账号
           </button>
           <button role="menuitem" onClick={() => contextAction(async () => {
-            const result = await window.codexSwitcher.revealSource(contextMenu.account.id)
+            const result = await codexApi().revealSource(contextMenu.account.id)
             if (!result.ok) setMessage({ kind: 'error', text: result.message })
           })}>
             <FolderOpen size={15} />打开源文件位置
@@ -1886,204 +1440,34 @@ export function App(): React.JSX.Element {
         </div>
       )}
 
-      {settingsOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section ref={settingsDialogRef} className="settings-panel" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
-            <div className="panel-header"><h2>设置</h2><button className="icon-button" title="关闭" aria-label="关闭设置" onClick={() => closeSettingsDialog()} disabled={busy}><X size={18} /></button></div>
-            <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
-            <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><button title="选择目录" onClick={async () => { const path = await window.codexSwitcher.chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
-            <label>CPA 共享账号目录（Codex + Grok）<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><button title="选择 CPA 共享目录" onClick={async () => { const path = await window.codexSwitcher.chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></button></div></label>
-            <label>auth.json 路径<input value={settingsDraft.authPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, authPath: event.target.value })} /></label>
-            <label>config.toml 路径<input value={settingsDraft.configPath} onChange={(event) => setSettingsDraft({ ...settingsDraft, configPath: event.target.value })} /></label>
-            <div className="settings-grid">
-              <label>并发数<input aria-label="并发数" type="number" min={1} max={12} value={settingsDraft.concurrency} onChange={(event) => setSettingsDraft({ ...settingsDraft, concurrency: Number(event.target.value) })} /></label>
-              <label>超时（毫秒）<input type="number" min={1000} value={settingsDraft.timeoutMs} onChange={(event) => setSettingsDraft({ ...settingsDraft, timeoutMs: Number(event.target.value) })} /></label>
-              <label>备份保留数<input type="number" min={1} value={settingsDraft.backupRetention} onChange={(event) => setSettingsDraft({ ...settingsDraft, backupRetention: Number(event.target.value) })} /></label>
-              <label>深度检测模型<input value={settingsDraft.deepTestModel} onChange={(event) => setSettingsDraft({ ...settingsDraft, deepTestModel: event.target.value })} /></label>
-            </div>
-            <section className="custom-api-panel" aria-label="自定义 API">
-              <div className="section-heading">
-                <div><strong>自定义 API</strong><span>可从上游获取模型后逐行增删，并选择是否导入 Codex。保存前会真实发送 hi，成功后由你决定是否修复会话并重启。应用保存的 Key 副本使用 DPAPI 加密，但 Codex 运行配置会按兼容格式写入明文 Key</span></div>
-                <span className={`saved-secret ${snapshot.customApi.hasApiKey ? 'ready' : ''}`}>{snapshot.customApi.hasApiKey ? 'Key 已保存' : '未保存 Key'}</span>
-              </div>
-              <label>API 地址<input value={settingsDraft.customApiBaseUrl} onChange={(event) => {
-                setSettingsDraft({ ...settingsDraft, customApiBaseUrl: event.target.value })
-                setCustomApiModels([])
-                setCustomApiModelsText('')
-                setCustomApiModelsNote('')
-              }} placeholder="https://api.example.com/v1 或完整 .../v1/chat/completions" /></label>
-              <div className="settings-grid">
-                <label>模型
-                  <input
-                    list="custom-api-model-options"
-                    value={settingsDraft.customApiModel}
-                    onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiModel: event.target.value })}
-                    placeholder={customApiModels.length > 0 ? '从编辑后的目录选择，也可手动填写' : '必填：用于真实 hi 测试'}
-                  />
-                  <datalist id="custom-api-model-options">
-                    {customApiModels.map((modelId) => (
-                      <option key={modelId} value={modelId} />
-                    ))}
-                  </datalist>
-                </label>
-                <label>API Key<input type="password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} placeholder={snapshot.customApi.hasApiKey ? '留空继续使用已保存 Key' : '输入 API Key'} autoComplete="new-password" /></label>
-              </div>
-              <label className="check-option"><input type="checkbox" checked={customApiSyncCatalog} onChange={(event) => setCustomApiSyncCatalog(event.target.checked)} />将下面的模型目录导入 Codex</label>
-              <label>同步到 Codex 的模型目录（每行一个，可自由增删）
-                <textarea
-                  aria-label="同步到 Codex 的模型目录"
-                  rows={6}
-                  value={customApiModelsText}
-                  onChange={(event) => {
-                    const text = event.target.value
-                    const seen = new Set<string>()
-                    const models = text.split(/\r?\n/).map((item) => item.trim()).filter((item) => {
-                      if (!item || seen.has(item)) return false
-                      seen.add(item)
-                      return true
-                    })
-                    setCustomApiModelsText(text)
-                    setCustomApiModels(models)
-                    setCustomApiModelsNote(`将同步 ${models.length + (models.includes(settingsDraft.customApiModel.trim()) ? 0 : 1)} 个模型（当前模型会自动保留）`)
-                  }}
-                  placeholder={'model-a\nmodel-b\n也可以手动增加上游未列出的模型'}
-                />
-              </label>
-              {customApiModelsNote ? <p className="custom-api-models-note">{customApiModelsNote}</p> : null}
-              {customApiModels.length > 0 ? (
-                <label>从编辑后的模型目录中选择
-                  <select
-                    value={customApiModels.includes(settingsDraft.customApiModel) ? settingsDraft.customApiModel : ''}
-                    onChange={(event) => setSettingsDraft({ ...settingsDraft, customApiModel: event.target.value })}
-                  >
-                    <option value="">（使用上方填写的模型）</option>
-                    {customApiModels.map((modelId) => (
-                      <option key={modelId} value={modelId}>{modelId}</option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              <div className="custom-api-actions">
-                <button type="button" className="secondary-button" disabled={busy || !settingsDraft.customApiBaseUrl.trim() || (!snapshot.customApi.hasApiKey && !customApiKey.trim())} onClick={() => void run(async () => {
-                  const listed = await window.codexSwitcher.listCustomApiModels({
-                    baseUrl: settingsDraft.customApiBaseUrl,
-                    ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
-                  })
-                  setCustomApiModels(listed.models)
-                  setCustomApiModelsText(listed.models.join('\n'))
-                  setCustomApiModelsNote(listed.message)
-                  if (!listed.ok) throw new Error(listed.message)
-                  if (listed.models.length > 0) {
-                    const current = settingsDraft.customApiModel.trim()
-                    if (!current || !listed.models.includes(current)) {
-                      setSettingsDraft({ ...settingsDraft, customApiModel: listed.models[0], customApiBaseUrl: listed.baseUrl || settingsDraft.customApiBaseUrl })
-                    } else if (listed.baseUrl) {
-                      setSettingsDraft({ ...settingsDraft, customApiBaseUrl: listed.baseUrl })
-                    }
-                  }
-                }, '已获取自定义 API 模型列表', false)}>
-                  获取模型列表
-                </button>
-                <button className="primary-button" onClick={() => void (async () => {
-                  if (!await requestConfirmation({
-                    title: '测试并切换第三方 API',
-                    message: '先真实测试 API；通过后保存 provider 配置，再由你选择是否修复会话并重启 Codex。',
-                    detail: '测试失败不会修改配置。强制保存需要第二次确认，且不会自动重启。',
-                    confirmLabel: '测试并保存',
-                    tone: 'warning'
-                  })) return
-                  await run(async () => {
-                    const profile = {
-                      baseUrl: settingsDraft.customApiBaseUrl,
-                      model: settingsDraft.customApiModel,
-                      models: customApiModels,
-                      syncModelCatalog: customApiSyncCatalog,
-                      ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
-                    }
-                    let result = await window.codexSwitcher.switchToCustomApi(profile, true)
-                    if (!result.ok && result.canForce) {
-                      const force = await requestConfirmation({
-                        title: 'API 测试失败',
-                        message: result.message,
-                        detail: '强制切换后 Codex 可能无法发送消息或启动异常。配置仍会备份，可使用“恢复备份 API”撤销。',
-                        confirmLabel: '仍然强制切换',
-                        tone: 'danger'
-                      })
-                      if (!force) throw new Error('API 测试未通过，已取消强制切换；本地配置未修改')
-                      result = await window.codexSwitcher.switchToCustomApi({ ...profile, force: true }, true)
-                    }
-                    if (!result.ok) throw new Error(result.message)
-                    if (result.restartResult && !result.restartResult.ok) {
-                      throw new Error(`自定义 API 已保存，但 Codex 重启失败：${result.restartResult.message}`)
-                    }
-                    if (result.catalogModels?.length) {
-                      setCustomApiModels(result.catalogModels)
-                      setCustomApiModelsText(result.catalogModels.join('\n'))
-                    }
-                    setCustomApiModelsNote(result.message)
-                    if (result.selectedModel || result.discoveredBaseUrl) {
-                      setSettingsDraft({
-                        ...settingsDraft,
-                        customApiModel: result.selectedModel || settingsDraft.customApiModel,
-                        customApiBaseUrl: result.discoveredBaseUrl || settingsDraft.customApiBaseUrl
-                      })
-                    }
-                    setCustomApiKey('')
-                    await reload()
-                    if (result.warning) {
-                      setMessage({ kind: 'warn', text: `${result.message}；未自动重启 Codex` })
-                      return
-                    }
-                    const restart = await requestConfirmation({
-                      title: '第三方 API 已切换',
-                      message: result.message,
-                      detail: '重启会先自动修复对话，再启动官方 Codex。选择暂不重启会保留已保存的配置。',
-                      confirmLabel: '修复并重启',
-                      cancelLabel: '暂不重启',
-                      tone: 'warning'
-                    })
-                    if (!restart) {
-                      setMessage({ kind: 'ok', text: `${result.message}；已切换，暂未重启` })
-                      return
-                    }
-                    const restarted = await window.codexSwitcher.restartCodex()
-                    if (!restarted.ok) throw new Error(`API 已切换，但自动修复/重启失败：${restarted.message}`)
-                    setMessage({ kind: 'ok', text: `${result.message}；已自动修复对话并重启 Codex` })
-                  }, undefined, false)
-                })()} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
-                  <KeyRound size={16} />测试并切换
-                </button>
-              </div>
-            </section>
-            <section className="update-panel" aria-label="应用更新">
-              <div>
-                <strong>应用更新</strong>
-                <span>{updateState?.message ?? '正在读取版本信息'}</span>
-              </div>
-              {updateState?.status === 'available' && (
-                <button onClick={() => void downloadUpdate()} disabled={busy}>
-                  <Download size={16} />下载 {updateState.availableVersion}
-                </button>
-              )}
-              {updateState?.status === 'downloading' && (
-                <button disabled><LoaderCircle className="spin" size={16} />{Math.round(updateState.percent ?? 0)}%</button>
-              )}
-              {updateState?.status === 'downloaded' && (
-                <button className="primary-button" onClick={() => void installUpdate()}>
-                  <PackageOpen size={16} />安装并重启
-                </button>
-              )}
-              {!['available', 'downloading', 'downloaded'].includes(updateState?.status ?? '') && (
-                <button onClick={() => void checkForUpdates()} disabled={updateState?.status === 'checking'}>
-                  {updateState?.status === 'checking' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                  检查更新
-                </button>
-              )}
-            </section>
-            <div className="panel-actions"><button className="secondary-button" onClick={() => closeSettingsDialog()} disabled={busy}><X size={16} />取消</button><button className="primary-button" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await window.codexSwitcher.updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}><CheckCircle2 size={16} />保存设置</button></div>
-          </section>
-        </div>
-      )}
+      <SettingsDialog
+        open={settingsOpen}
+        snapshot={snapshot}
+        settingsDraft={settingsDraft}
+        setSettingsDraft={setSettingsDraft}
+        settingsDialogRef={settingsDialogRef}
+        busy={busy}
+        customApiKey={customApiKey}
+        setCustomApiKey={setCustomApiKey}
+        customApiModels={customApiModels}
+        setCustomApiModels={setCustomApiModels}
+        customApiModelsText={customApiModelsText}
+        setCustomApiModelsText={setCustomApiModelsText}
+        customApiSyncCatalog={customApiSyncCatalog}
+        setCustomApiSyncCatalog={setCustomApiSyncCatalog}
+        customApiModelsNote={customApiModelsNote}
+        setCustomApiModelsNote={setCustomApiModelsNote}
+        updateState={updateState}
+        closeSettingsDialog={closeSettingsDialog}
+        run={run}
+        requestConfirmation={requestConfirmation}
+        reload={reload}
+        setMessage={setMessage}
+        downloadUpdate={downloadUpdate}
+        installUpdate={installUpdate}
+        checkForUpdates={checkForUpdates}
+      />
+
       {healthReport && (
         <LibraryHealthDialog
           report={healthReport}
@@ -2095,5 +1479,6 @@ export function App(): React.JSX.Element {
       )}
       {confirmationDialog}
     </div>
+    </AppSessionProvider>
   )
 }
