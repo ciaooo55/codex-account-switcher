@@ -7,6 +7,7 @@ import { displayStatus, STATUS_LABELS } from '../account-status'
 import { AccountMetadataChips } from '../components/accounts/AccountMetadataChips'
 import { Quota } from '../components/accounts/Quota'
 import type { useVirtualTableRows } from '../hooks/useVirtualTableRows'
+import { Button, PageView, SearchField, Select } from '@/components/ui'
 import { dateTime } from '../lib/format'
 
 type VirtualAccounts = ReturnType<typeof useVirtualTableRows<AccountSummary>>
@@ -49,8 +50,8 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
   } = props
 
   return (
-    <main className="page-view automation-view">
-          <section className="automation-status-band">
+    <PageView className="automation-view">
+          <section className="automation-status-band flex flex-wrap items-stretch gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)] p-2">
             <div><span>运行状态</span><strong className={snapshot.autoSwitch.enabled ? 'text-ok' : ''}>{snapshot.autoSwitch.running ? '正在检查' : snapshot.autoSwitch.enabled ? '已启用' : '未启用'}</strong></div>
             <div><span>当前账号</span><strong>{snapshot.accounts.find((account) => account.active)?.email ?? '未匹配'}</strong></div>
             <div><span>上次检查</span><strong>{dateTime(snapshot.autoSwitch.lastCheckAt)}</strong></div>
@@ -59,7 +60,7 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
           </section>
 
 
-          <section className="automation-controls" aria-label="自动切换设置">
+          <section className="automation-controls flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2" aria-label="自动切换设置">
             <label className="automation-toggle">
               <span>定时自动切换</span>
               <span className="switch-control">
@@ -70,23 +71,23 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
             <label>检查间隔（秒）<input aria-label="自动切换检查间隔" type="number" min={5} max={86400} value={settingsDraft.autoSwitchIntervalSeconds} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchIntervalSeconds: Number(event.target.value) })} /></label>
             <label className="check-option"><input type="checkbox" checked={settingsDraft.autoSwitchRestartCodex} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchRestartCodex: event.target.checked })} />切换成功后重启 Codex</label>
             <span className="automation-spacer" />
-            <button onClick={() => void saveAutomation()} disabled={busy}>保存设置</button>
-            <button className="primary-button" onClick={() => void saveAndRunAutomation()} disabled={busy || snapshot.autoSwitch.running || settingsDraft.autoSwitchAccountIds.length === 0}>
+            <Button onClick={() => void saveAutomation()} disabled={busy}>保存设置</Button>
+            <Button variant="default" onClick={() => void saveAndRunAutomation()} disabled={busy || snapshot.autoSwitch.running || settingsDraft.autoSwitchAccountIds.length === 0}>
               {snapshot.autoSwitch.running ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}立即检查
-            </button>
+            </Button>
           </section>
 
-          <div className="automation-filter-row">
-            <label className="search-field"><Search size={16} /><input value={automationKeyword} onChange={(event) => setAutomationKeyword(event.target.value)} placeholder="搜索候选账号" /></label>
-            <select aria-label="定时切换账号排序" value={automationSort} onChange={(event) => setAutomationSort(event.target.value as AccountSortMode)}>
+          <div className="automation-filter-row flex flex-wrap items-center gap-2">
+            <SearchField icon={<Search size={16} />} value={automationKeyword} onChange={(event) => setAutomationKeyword(event.target.value)} placeholder="搜索候选账号" />
+            <Select aria-label="定时切换账号排序" value={automationSort} onChange={(event) => setAutomationSort(event.target.value as AccountSortMode)}>
               {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            </Select>
             <span>候选 {settingsDraft.autoSwitchAccountIds.length} / {snapshot.accounts.filter((account) => account.switchable).length}</span>
-            <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: snapshot.accounts.filter((account) => account.switchable).map((account) => account.id) })}>全选可切换</button>
-            <button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</button>
+            <Button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: snapshot.accounts.filter((account) => account.switchable).map((account) => account.id) })}>全选可切换</Button>
+            <Button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</Button>
           </div>
 
-          <div className="table-wrap automation-table-wrap" ref={virtualAutomationAccounts.scrollRef}>
+          <div className="table-wrap automation-table-wrap min-h-0 flex-1 overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)]" ref={virtualAutomationAccounts.scrollRef}>
             <table className="automation-table">
               <thead><tr><th className="select-column">候选</th><th>账号</th><th>状态</th><th>等级</th><th>当前额度</th><th>最后检测</th></tr></thead>
               <tbody>
@@ -113,6 +114,6 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
               </tbody>
             </table>
           </div>
-    </main>
+    </PageView>
   )
 }

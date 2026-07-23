@@ -8,15 +8,15 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          'bg-[var(--color-accent-strong)] text-[#04140c] shadow-[var(--shadow-sm)] hover:bg-[var(--color-accent)]',
+          'primary-button bg-[var(--color-accent-strong)] text-[#04140c] shadow-[var(--shadow-sm)] hover:bg-[var(--color-accent)]',
         secondary:
-          'bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] hover:bg-[var(--color-surface-3)]',
+          'secondary-button bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] hover:bg-[var(--color-surface-3)]',
         outline:
           'border border-[var(--color-border-strong)] bg-transparent text-[var(--color-text)] hover:bg-[var(--color-surface-2)]',
         ghost:
-          'bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
+          'icon-button bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
         danger:
-          'bg-[rgba(255,123,114,0.14)] text-[var(--color-danger)] border border-[rgba(255,123,114,0.28)] hover:bg-[rgba(255,123,114,0.22)]',
+          'danger-button bg-[rgba(255,123,114,0.14)] text-[var(--color-danger)] border border-[rgba(255,123,114,0.28)] hover:bg-[rgba(255,123,114,0.22)]',
         soft:
           'bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[rgba(90,212,143,0.22)]'
       },
@@ -28,7 +28,7 @@ const buttonVariants = cva(
       }
     },
     defaultVariants: {
-      variant: 'default',
+      variant: 'secondary',
       size: 'default'
     }
   }

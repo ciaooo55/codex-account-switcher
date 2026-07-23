@@ -1,5 +1,6 @@
 import { BadgeCheck, LoaderCircle, RefreshCw } from 'lucide-react'
 import type { AccountSummary, UsageWindow } from '../../../shared/types'
+import { Button } from '@/components/ui'
 
 function sourceName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1)?.replace(/\.json$/i, '') ?? '当前账号'
@@ -46,7 +47,7 @@ export function CurrentAccountOverview({
 }): React.JSX.Element {
   if (!account) {
     return (
-      <div className="current-account-overview current-summary">
+      <div className="current-account-overview current-summary flex min-w-[320px] flex-1 flex-wrap items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-2">
         <div className="current-account-identity">
           <span>当前正在使用</span>
           <strong>未知 / API 模式</strong>
@@ -62,7 +63,7 @@ export function CurrentAccountOverview({
   const checkedAt = account.usage?.checkedAt ?? account.lastCheckedAt ?? new Date(now).toISOString()
 
   return (
-    <div className="current-account-overview current-summary">
+    <div className="current-account-overview current-summary flex min-w-[320px] flex-1 flex-wrap items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-2">
       <div className="current-account-identity">
         <span>当前正在使用</span>
         <strong title={account.email ?? account.sourcePath}>
@@ -77,14 +78,15 @@ export function CurrentAccountOverview({
       <div className="current-quota" title={weekly?.resetAt ? `重置 ${dateTime(weekly.resetAt)}` : undefined}>
         <span>周额度</span><strong>{quotaText(weekly, checkedAt, now, true)}</strong>
       </div>
-      <button
+      <Button
         className="current-refresh-button"
+        variant="soft"
         disabled={disabled || running}
         onClick={onRefresh}
       >
         {running ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
         {running ? '刷新中' : '刷新额度'}
-      </button>
+      </Button>
     </div>
   )
 }

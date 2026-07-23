@@ -42,6 +42,8 @@ import { AccountMetadataChips } from '../components/accounts/AccountMetadataChip
 import { Quota } from '../components/accounts/Quota'
 import type { useVirtualTableRows } from '../hooks/useVirtualTableRows'
 import { dateTime, sourceFileName } from '../lib/format'
+import { Button, PageView, SearchField, Select, Toolbar, ToolbarGroup } from '@/components/ui'
+import { cn } from '@/lib/cn'
 import { codexApi } from '../services/codexApi'
 
 type VirtualAccounts = ReturnType<typeof useVirtualTableRows<AccountSummary>>
@@ -130,8 +132,8 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
   } = props
 
   return (
-    <div className="page-view accounts-view">
-      <section className="library-overview codex-overview">
+    <PageView className="accounts-view">
+      <section className="library-overview codex-overview flex flex-wrap items-stretch gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)] p-2">
         <div><span>账号库</span><strong>{snapshot.accounts.length} 个账号</strong></div>
         <CurrentAccountOverview
           account={activeAccount}
@@ -163,18 +165,18 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
         onGroupAction={handleCodexGroupAction}
       />
 
-      <div className="toolbar codex-toolbar">
-        <div className="toolbar-group">
-        <button onClick={() => void runScan(() => codexApi().scanDirectory(), 'aa 重新扫描完成')} disabled={busy}>
+      <Toolbar className="codex-toolbar">
+        <ToolbarGroup>
+        <Button onClick={() => void runScan(() => codexApi().scanDirectory(), 'aa 重新扫描完成')} disabled={busy}>
           <RefreshCw size={16} />重新扫描
-        </button>
-        <button onClick={() => openExport()} disabled={busy || snapshot.accounts.length === 0}>
+        </Button>
+        <Button onClick={() => openExport()} disabled={busy || snapshot.accounts.length === 0}>
           <Download size={16} />导出账号
-        </button>
-        </div>
-        <div className="toolbar-group">
+        </Button>
+        </ToolbarGroup>
+        <ToolbarGroup>
         <CodexTestModeControl value={testMode} onChange={setTestMode} disabled={busy || snapshot.testing.active} />
-        <button
+        <Button
           onClick={() => void runTest(
         () => codexApi().testAccounts(accounts.map((account) => account.id), testMode),
             `当前筛选 ${accounts.length} 个账号${CODEX_TEST_MODE_SUCCESS[testMode]}`
@@ -182,88 +184,90 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
           disabled={busy || snapshot.testing.active || accounts.length === 0}
         >
           <TestTube2 size={16} />测试当前页面全部
-        </button>
+        </Button>
         {snapshot.testing.active && !snapshot.autoSwitch.running && (
-          <button className="danger-button" onClick={() => void codexApi().cancelTests()}>
+          <Button variant="danger" onClick={() => void codexApi().cancelTests()}>
             <Square size={15} />取消
-          </button>
+          </Button>
         )}
-        </div>
+        </ToolbarGroup>
         <details className="action-menu toolbar-end" onClick={(event) => {
           if ((event.target as Element).closest('button')) event.currentTarget.removeAttribute('open')
         }}>
           <summary><MoreHorizontal size={17} />更多</summary>
           <div className="action-menu-popover">
-            <button onClick={() => void run(async () => {
+            <Button onClick={() => void run(async () => {
               const result = await codexApi().restoreLatest(true)
               if (!result.ok) throw new Error(result.message)
             }, '已恢复上一个配置')} disabled={busy}>
               <RotateCcw size={16} />恢复上一个
-            </button>
-            <button onClick={() => void run(async () => {
+            </Button>
+            <Button onClick={() => void run(async () => {
               const result = await codexApi().restoreApiMode(true)
               if (!result.ok) throw new Error(result.message)
             }, '已恢复原 API/代理模式')} disabled={busy}>
               <RotateCcw size={16} />恢复备份 API
-            </button>
-            <button onClick={openSettingsDialog} disabled={busy}>
+            </Button>
+            <Button onClick={openSettingsDialog} disabled={busy}>
               <KeyRound size={16} />自定义 API
-            </button>
-            <button onClick={() => void inspectLibraries()} disabled={busy}>
+            </Button>
+            <Button onClick={() => void inspectLibraries()} disabled={busy}>
               <ScanSearch size={16} />账号库体检
-            </button>
+            </Button>
           </div>
         </details>
-      </div>
+      </Toolbar>
 
-      <div className={`selection-toolbar${selected.size === 0 ? ' is-idle' : ''}`} aria-label="选中账号操作">
+      <div className={cn('selection-toolbar flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2', selected.size === 0 && 'is-idle')} aria-label="选中账号操作">
         <div className="selection-summary">
           <CheckCircle2 size={15} />
           <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
           <span>{selected.size === 0 ? '点击账号行可单选或多选' : selected.size === 1 ? selectedAccount?.alias ?? selectedAccount?.email ?? '' : '切换操作仅对单个账号可用'}</span>
         </div>
-        <button onClick={() => void runTest(
+        <Button onClick={() => void runTest(
         () => codexApi().testAccounts([...selected], testMode), `选中账号${CODEX_TEST_MODE_SUCCESS[testMode]}`)} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Play size={16} />测试选中
-        </button>
-        <button className="primary-button" onClick={() => void switchSelected()} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : '切换后会同步当前会话并重启 Codex'}>
+        </Button>
+        <Button variant="default" onClick={() => void switchSelected()} disabled={busy || !selectedAccount?.switchable} title={selectedAccount && !selectedAccount.switchable ? '该账号缺少可供 Codex 使用的认证材料' : '切换后会同步当前会话并重启 Codex'}>
           <RotateCcw size={16} />切换并重启
-        </button>
-        <button onClick={() => void openSessionRepair()} disabled={busy}>
+        </Button>
+        <Button onClick={() => void openSessionRepair()} disabled={busy}>
           <Wrench size={16} />修复历史会话
-        </button>
-        <button onClick={() => setConversationOpen(true)} disabled={busy}>
+        </Button>
+        <Button onClick={() => setConversationOpen(true)} disabled={busy}>
           <MessagesSquare size={16} />对话管理
-        </button>
-        <button className="danger-button" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
+        </Button>
+        <Button variant="danger" onClick={() => void deleteAccounts()} disabled={busy || snapshot.testing.active || selected.size === 0}>
           <Trash2 size={16} />删除选中
-        </button>
+        </Button>
       </div>
 
-      <div className="filter-row">
-        <label className="search-field">
-          <Search size={16} />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、文件或错误" />
-        </label>
+      <div className="filter-row flex flex-wrap items-center gap-2">
+        <SearchField
+          icon={<Search size={16} />}
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          placeholder="搜索邮箱、文件或错误"
+        />
         <AccountFacetFilters
           label="Codex"
           facets={availableAccountFacets}
           value={facetFilters}
           onChange={setFacetFilters}
         />
-        <select className="visually-hidden" aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
+        <Select className="visually-hidden" aria-label="Codex 状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as DisplayAccountStatus | '')}>
           <option value="">全部状态</option>
           {Object.entries(STATUS_LABELS).filter(([value]) =>
             (accountFacets.statusCounts[value as DisplayAccountStatus] ?? 0) > 0 || statusFilter === value
           ).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <select aria-label="Codex 账号排序" value={accountSort} onChange={(event) => setAccountSort(event.target.value as AccountSortMode)}>
+        </Select>
+        <Select aria-label="Codex 账号排序" value={accountSort} onChange={(event) => setAccountSort(event.target.value as AccountSortMode)}>
           {ACCOUNT_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+        </Select>
         <span className="selection-count">显示 {accounts.length} / {snapshot.accounts.length} · 已选 {selected.size}</span>
       </div>
 
-      <div className="table-wrap" ref={virtualAccounts.scrollRef}>
+      <div className="table-wrap min-h-0 flex-1 overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)]" ref={virtualAccounts.scrollRef}>
         <table>
           <thead>
             <tr>
@@ -320,6 +324,6 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageView>
   )
 }

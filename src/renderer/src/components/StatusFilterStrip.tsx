@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { DisplayAccountStatus } from '../../../shared/types'
 import type { AccountFacetOption } from '../account-filters'
 import { STATUS_LABELS } from '../account-status'
+import { cn } from '@/lib/cn'
 
 export type StatusCategoryAction = 'select' | 'test' | 'delete' | 'enable' | 'disable'
 
@@ -96,9 +97,15 @@ export function StatusFilterStrip({
   const menuKind = menu?.target === 'group' ? '分组' : '分类'
   return (
     <>
-      <div className="status-filter-strip" aria-label={label}>
+      <div className="status-filter-strip flex flex-wrap items-center gap-1.5 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-1.5" aria-label={label}>
       <button
-        className={value === '' ? 'active' : ''}
+        type="button"
+        className={cn(
+          'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+          value === ''
+            ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
+            : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
+        )}
         aria-pressed={value === ''}
         title="左键筛选，右键批量操作"
         onClick={() => onChange('')}
@@ -111,7 +118,14 @@ export function StatusFilterStrip({
       ).map(([status, statusLabel]) => (
         <button
           key={status}
-          className={`${value === status ? 'active ' : ''}filter-${status}`}
+          type="button"
+          className={cn(
+            'filter-' + status,
+            'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+            value === status
+              ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
+              : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
+          )}
           aria-pressed={value === status}
           title="左键筛选，右键批量操作"
           onClick={() => onChange(status as DisplayAccountStatus)}
@@ -121,9 +135,15 @@ export function StatusFilterStrip({
         </button>
       ))}
       {onGroupChange && groups.length > 0 && (
-        <div className="group-filter-buttons" role="group" aria-label={`${label}分组筛选`}>
+        <div className="group-filter-buttons ml-auto flex flex-wrap items-center gap-1 border-l border-[var(--color-border)] pl-1.5" role="group" aria-label={`${label}分组筛选`}>
           <button
-            className={groupValue === '' ? 'active' : ''}
+            type="button"
+            className={cn(
+              'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+              groupValue === ''
+                ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
+                : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
+            )}
             aria-pressed={groupValue === ''}
             title="左键筛选，右键批量操作"
             onClick={() => onGroupChange('')}
@@ -134,7 +154,13 @@ export function StatusFilterStrip({
           {groups.map((group) => (
             <button
               key={group.value}
-              className={groupValue === group.value ? 'active' : ''}
+              type="button"
+              className={cn(
+                'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+                groupValue === group.value
+                  ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
+                  : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
+              )}
               aria-pressed={groupValue === group.value}
               title="左键筛选，右键批量操作"
               onClick={() => onGroupChange(group.value)}
@@ -146,7 +172,7 @@ export function StatusFilterStrip({
         </div>
       )}
       </div>
-      {menu && <div ref={menuRef} className="account-context-menu category-context-menu" role="menu" aria-label={`${label}${menuKind}操作`} style={{ left: menu.x, top: menu.y }}>
+      {menu && <div ref={menuRef} className="account-context-menu category-context-menu fixed z-50 min-w-[220px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)] p-1 shadow-[var(--shadow-lg)]" role="menu" aria-label={`${label}${menuKind}操作`} style={{ left: menu.x, top: menu.y }}>
         <div className="context-account">{menu.label}<span>{menu.count} 个账号</span></div>
         <button role="menuitem" disabled={menu.count === 0} onClick={() => runAction('select')}><CheckSquare2 size={15} />选择该{menuKind}</button>
         <button className="context-test" role="menuitem" disabled={menu.count === 0} onClick={() => runAction('test')}><TestTube2 size={15} />测试该{menuKind}</button>

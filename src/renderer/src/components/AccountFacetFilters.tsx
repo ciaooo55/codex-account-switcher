@@ -3,6 +3,7 @@ import type {
   AccountFacetFilters as AccountFacetFilterValues,
   AccountFacets
 } from '../account-filters'
+import { Button, Select } from '@/components/ui'
 
 export function AccountFacetFilters({
   label,
@@ -17,10 +18,10 @@ export function AccountFacetFilters({
 }): React.JSX.Element {
   const active = Boolean(value.plan || value.domain || value.reason || value.group)
   return (
-    <div className="facet-filters" aria-label={`${label}动态筛选`}>
+    <div className="facet-filters flex flex-wrap items-center gap-1.5" aria-label={label + '动态筛选'}>
       {facets.plans.length > 0 && (
-        <select
-          aria-label={`${label}账号类型`}
+        <Select
+          aria-label={label + '账号类型'}
           value={value.plan}
           onChange={(event) => onChange({ ...value, plan: event.target.value })}
         >
@@ -28,11 +29,11 @@ export function AccountFacetFilters({
           {facets.plans.map((option) => (
             <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
           ))}
-        </select>
+        </Select>
       )}
       {facets.domains.length > 0 && (
-        <select
-          aria-label={`${label}邮箱域名`}
+        <Select
+          aria-label={label + '邮箱域名'}
           value={value.domain}
           onChange={(event) => onChange({ ...value, domain: event.target.value })}
         >
@@ -40,12 +41,12 @@ export function AccountFacetFilters({
           {facets.domains.map((option) => (
             <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
           ))}
-        </select>
+        </Select>
       )}
       {facets.reasons.length > 0 && (
-        <select
+        <Select
           className="reason-filter"
-          aria-label={`${label}失效或错误原因`}
+          aria-label={label + '失效或错误原因'}
           value={value.reason}
           onChange={(event) => onChange({ ...value, reason: event.target.value })}
         >
@@ -53,17 +54,19 @@ export function AccountFacetFilters({
           {facets.reasons.map((option) => (
             <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
           ))}
-        </select>
+        </Select>
       )}
       {active && (
-        <button
-          className="icon-button clear-facets"
+        <Button
+          variant="ghost"
+          size="icon"
+          className="clear-facets"
           title="清除动态筛选"
-          aria-label={`清除${label}动态筛选`}
+          aria-label={'清除' + label + '动态筛选'}
           onClick={() => onChange({ plan: '', domain: '', reason: '', group: '', tag: '' })}
         >
           <FilterX size={15} />
-        </button>
+        </Button>
       )}
     </div>
   )
