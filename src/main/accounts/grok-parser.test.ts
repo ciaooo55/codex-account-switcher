@@ -6,6 +6,42 @@ function token(payload: Record<string, unknown>): string {
 }
 
 describe('parseGrokCredentialText', () => {
+  it('supports Sub2API Grok API-key aliases and preserves scheduler extensions', () => {
+    const result = parseGrokCredentialText(JSON.stringify({
+      accounts: [{
+        name: 'grok-api@example.invalid',
+        platform: 'xai',
+        type: 'api-key',
+        credentials: {
+          api_key: 'xai-redacted-key',
+          base_url: 'https://api.x.ai/v1',
+          model_mapping: { grok: 'grok-upstream' }
+        },
+        extra: { region: 'test' },
+        concurrency: 4,
+        priority: 3,
+        rate_multiplier: 0.75,
+        auto_pause_on_expired: false,
+        future_option: 'retained'
+      }]
+    }), { sourcePath: 'grok-sub2api-alias.json', format: 'json' })
+
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      accessToken: 'xai-redacted-key',
+      authKind: 'api_key',
+      sourceDialect: 'sub2api',
+      secretExtensions: {
+        modelMapping: { grok: 'grok-upstream' },
+        concurrency: 4,
+        priority: 3,
+        rateMultiplier: 0.75,
+        autoPauseOnExpired: false,
+        metadata: { future_option: 'retained' }
+      }
+    })
+  })
+
   it('parses and deduplicates a Sub2API Grok bundle with nested credentials', () => {
     const access = token({ iss: 'https://auth.x.ai', sub: 'grok-user', team_id: 'team-a', exp: 1_900_000_000 })
     const id = token({ sub: 'grok-user', email: 'grok@example.com' })

@@ -54,6 +54,38 @@ describe('CredentialVault', () => {
     expect(await vault.get('account-a')).toMatchObject({ email: 'person@example.com' })
   })
 
+  it('encrypts and restores provider-specific secret extensions', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-vault-'))
+    tempDirs.push(dir)
+    const path = join(dir, 'vault.json')
+    const vault = new CredentialVault(path, cipher)
+    await vault.upsertMany([credential({
+      secretExtensions: {
+        schemaVersion: 1,
+        accountType: 'personal_access_token',
+        credentials: { access_token: 'extension-secret-token' },
+        extra: { private_runtime_note: 'extension-secret-note' },
+        modelMapping: { public: 'upstream' },
+        concurrency: 10,
+        priority: 1,
+        rateMultiplier: 1,
+        autoPauseOnExpired: true,
+        metadata: { future_option: 'retained' }
+      }
+    })])
+
+    const raw = await readFile(path, 'utf8')
+    expect(raw).not.toContain('extension-secret-token')
+    expect(raw).not.toContain('extension-secret-note')
+    const reloaded = await new CredentialVault(path, cipher).get('account-a')
+    expect(reloaded?.secretExtensions).toMatchObject({
+      accountType: 'personal_access_token',
+      modelMapping: { public: 'upstream' },
+      concurrency: 10,
+      metadata: { future_option: 'retained' }
+    })
+  })
+
   it('updates an existing identity and survives a new vault instance', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-switcher-vault-'))
     tempDirs.push(dir)

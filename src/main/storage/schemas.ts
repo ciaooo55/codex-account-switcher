@@ -1,8 +1,23 @@
 import { z } from 'zod'
 
 const nullableString = z.string().nullable()
+const secretExtensionsSchema = z.object({
+  schemaVersion: z.literal(1),
+  accountType: z.enum([
+    'oauth', 'personal_access_token', 'setup_token', 'api_key', 'upstream', 'agent_identity'
+  ]),
+  credentials: z.record(z.string(), z.unknown()).nullable(),
+  extra: z.record(z.string(), z.unknown()).nullable(),
+  modelMapping: z.record(z.string(), z.string()),
+  concurrency: z.number().nullable(),
+  priority: z.number().nullable(),
+  rateMultiplier: z.number().nullable(),
+  autoPauseOnExpired: z.boolean().nullable(),
+  metadata: z.record(z.string(), z.unknown())
+})
 
 export const normalizedCredentialSchema = z.object({
+  credentialKind: z.literal('access_token').optional().default('access_token'),
   id: z.string().min(1),
   email: nullableString,
   accountId: nullableString,
@@ -12,7 +27,9 @@ export const normalizedCredentialSchema = z.object({
   oauthClientId: nullableString.optional().default(null),
   isFedRamp: z.boolean().nullable().optional().default(null),
   idToken: nullableString,
-  authKind: z.enum(['oauth', 'personal_access_token']).default('oauth'),
+  authKind: z.enum([
+    'oauth', 'personal_access_token', 'setup_token', 'api_key', 'upstream'
+  ]).default('oauth'),
   planType: nullableString,
   lastRefresh: nullableString,
   accessExpiresAt: nullableString,
@@ -20,7 +37,8 @@ export const normalizedCredentialSchema = z.object({
   canRefresh: z.boolean(),
   sourcePath: z.string().min(1),
   sourceFormat: z.enum(['json', 'jsonl', 'txt', 'js', 'md', 'zip', 'paste']),
-  sourceDialect: z.enum(['codex', 'cpa', 'sub2api', 'generic'])
+  sourceDialect: z.enum(['codex', 'cpa', 'sub2api', 'cockpit', 'generic']),
+  secretExtensions: secretExtensionsSchema.optional()
 })
 
 const usageWindowSchema = z.object({

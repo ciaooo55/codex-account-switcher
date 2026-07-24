@@ -1,9 +1,12 @@
-import { createHash } from 'node:crypto'
+import { createHash, createPrivateKey } from 'node:crypto'
 import { parse, type Node } from 'acorn'
 import type {
   CredentialDialect,
+  CredentialAuthKind,
   CredentialParseOptions,
   CredentialParseResult,
+  CredentialSecretExtensions,
+  NormalizedAgentIdentityCredential,
   NormalizedCredential
 } from '../../shared/types'
 
@@ -18,6 +21,7 @@ type AstNode = Node & Record<string, unknown>
 interface CredentialCandidate {
   record: Record<string, unknown>
   dialect: CredentialDialect
+  extensions?: CredentialSecretExtensions
 }
 
 const ACCESS_TOKEN_KEYS = [
@@ -33,6 +37,21 @@ const ID_TOKEN_KEYS = ['id_token', 'idToken'] as const
 const MAX_PARSE_DEPTH = 64
 const MAX_CREDENTIAL_VALUE_NODES = 250_000
 const MAX_STATIC_JS_NODES = 10_000
+const SUB2_ACCOUNT_TYPES = new Map<string, CredentialAuthKind>([
+  ['oauth', 'oauth'],
+  ['personalaccesstoken', 'personal_access_token'],
+  ['pat', 'personal_access_token'],
+  ['setuptoken', 'setup_token'],
+  ['apikey', 'api_key'],
+  ['upstream', 'upstream'],
+  ['agentidentity', 'agent_identity']
+])
+
+const SUB2_KNOWN_ACCOUNT_KEYS = new Set([
+  'name', 'platform', 'provider', 'type', 'auth_type', 'authType', 'credentials', 'extra',
+  'model_mapping', 'modelMapping', 'concurrency', 'priority', 'rate_multiplier',
+  'rateMultiplier', 'auto_pause_on_expired', 'autoPauseOnExpired'
+])
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -50,6 +69,81 @@ function firstString(...values: unknown[]): string | null {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return null
+}
+
+function firstFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+    if (Number.isFinite(number)) return number
+  }
+  return null
+}
+
+function firstBoolean(...values: unknown[]): boolean | null {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'string') {
+      if (value.toLowerCase() === 'true') return true
+      if (value.toLowerCase() === 'false') return false
+    }
+  }
+  return null
+}
+
+function sub2AccountType(value: unknown): CredentialAuthKind | null {
+  if (typeof value !== 'string') return null
+  return SUB2_ACCOUNT_TYPES.get(value.trim().toLowerCase().replace(/[\s_-]+/g, '')) ?? null
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  const source = asRecord(value)
+  if (!source) return {}
+  return Object.fromEntries(
+    Object.entries(source).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  )
+}
+
+function clonedRecord(value: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!value) return null
+  // Parser inputs are already depth/node limited. A JSON round trip also strips prototypes.
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>
+}
+
+function secretExtensions(
+  wrapper: Record<string, unknown>,
+  credentials: Record<string, unknown>,
+  extra: Record<string, unknown> | null,
+  accountType: CredentialAuthKind
+): CredentialSecretExtensions {
+  const metadata = Object.fromEntries(
+    Object.entries(wrapper).filter(([key]) => !SUB2_KNOWN_ACCOUNT_KEYS.has(key))
+  )
+  return {
+    schemaVersion: 1,
+    accountType,
+    credentials: clonedRecord(credentials),
+    extra: clonedRecord(extra),
+    modelMapping: stringRecord(
+      credentials.model_mapping ?? credentials.modelMapping ??
+      extra?.model_mapping ?? extra?.modelMapping ??
+      wrapper.model_mapping ?? wrapper.modelMapping
+    ),
+    concurrency: firstFiniteNumber(wrapper.concurrency, extra?.concurrency),
+    priority: firstFiniteNumber(wrapper.priority, extra?.priority),
+    rateMultiplier: firstFiniteNumber(
+      wrapper.rate_multiplier,
+      wrapper.rateMultiplier,
+      extra?.rate_multiplier,
+      extra?.rateMultiplier
+    ),
+    autoPauseOnExpired: firstBoolean(
+      wrapper.auto_pause_on_expired,
+      wrapper.autoPauseOnExpired,
+      extra?.auto_pause_on_expired,
+      extra?.autoPauseOnExpired
+    ),
+    metadata: clonedRecord(metadata) ?? {}
+  }
 }
 
 function valuesAt(record: Record<string, unknown> | null, keys: readonly string[]): unknown[] {
@@ -167,7 +261,8 @@ function credentialId(
 function normalizeCredential(
   record: Record<string, unknown>,
   options: CredentialParseOptions,
-  sourceDialect: CredentialDialect
+  sourceDialect: CredentialDialect,
+  extensions?: CredentialSecretExtensions
 ): NormalizedCredential | null {
   const tokens = asRecord(record.tokens)
   const accessToken = tokenFrom(record, tokens, ACCESS_TOKEN_KEYS)
@@ -192,10 +287,14 @@ function normalizeCredential(
     record.openai_auth_mode,
     record.openaiAuthMode
   )?.toLowerCase()
-  const authKind = accessToken.startsWith('at-') || declaredAuthMode === 'personalaccesstoken' ||
-    declaredAuthMode === 'personal_access_token'
-    ? 'personal_access_token' as const
-    : 'oauth' as const
+  const declaredKind = sub2AccountType(record.__credentialAuthKind)
+  const personalAccessToken = accessToken.startsWith('at-') ||
+    declaredAuthMode === 'personalaccesstoken' || declaredAuthMode === 'personal_access_token'
+  const authKind = declaredKind && declaredKind !== 'agent_identity' && declaredKind !== 'oauth'
+    ? declaredKind
+    : personalAccessToken
+      ? 'personal_access_token' as const
+      : 'oauth' as const
   const accessPayload = decodeJwtPayload(accessToken)
   const idPayload = decodeJwtPayload(idToken)
   const credentialType = firstString(record.type, record.platform)?.toLowerCase()
@@ -303,6 +402,7 @@ function normalizeCredential(
   )
 
   return {
+    credentialKind: 'access_token',
     id: credentialId(subject, email, accountId, accessToken),
     email,
     accountId,
@@ -328,7 +428,8 @@ function normalizeCredential(
     canRefresh: refreshToken !== null,
     sourcePath: options.sourcePath,
     sourceFormat: options.format,
-    sourceDialect
+    sourceDialect,
+    ...(extensions ? { secretExtensions: { ...extensions, accountType: authKind } } : {})
   }
 }
 
@@ -358,20 +459,50 @@ function emailFromName(value: unknown): string | null {
   return value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null
 }
 
+function sub2Secret(credentials: Record<string, unknown>, accountType: CredentialAuthKind): string | null {
+  if (accountType === 'api_key' || accountType === 'upstream') {
+    return firstString(
+      credentials.api_key,
+      credentials.apiKey,
+      credentials.key,
+      credentials.secret,
+      credentials.token,
+      credentials.access_token,
+      credentials.accessToken
+    )
+  }
+  if (accountType === 'setup_token') {
+    return firstString(
+      credentials.setup_token,
+      credentials.setupToken,
+      credentials.token,
+      credentials.access_token,
+      credentials.accessToken
+    )
+  }
+  return tokenFrom(credentials, asRecord(credentials.tokens), ACCESS_TOKEN_KEYS)
+}
+
 function sub2ApiCandidate(record: Record<string, unknown>): CredentialCandidate | null {
   const credentials = asRecord(record.credentials)
-  if (!credentials || !looksLikeCredential(credentials)) return null
+  if (!credentials) return null
   const platform = firstString(record.platform)?.toLowerCase()
-  const accountType = firstString(record.type)?.toLowerCase()
+  const accountType = sub2AccountType(firstString(record.type, record.auth_type, record.authType)) ??
+    (looksLikeCredential(credentials) ? 'oauth' : null)
   if (platform && platform !== 'openai') return null
-  if (accountType && !['oauth', 'setup_token', 'api_key', 'upstream'].includes(accountType)) return null
+  if (!accountType || accountType === 'agent_identity') return null
+  const accessToken = sub2Secret(credentials, accountType)
+  if (!accessToken && !looksLikeCredential(credentials)) return null
   const extra = asRecord(record.extra)
   return {
     dialect: 'sub2api',
+    extensions: secretExtensions(record, credentials, extra, accountType),
     record: {
       ...extra,
       ...record,
       ...credentials,
+      access_token: accessToken,
+      __credentialAuthKind: accountType,
       email: firstString(credentials.email, extra?.email, record.email, emailFromName(record.name)),
       last_refresh: firstString(
         credentials.last_refresh,
@@ -390,11 +521,136 @@ function sub2ApiCandidate(record: Record<string, unknown>): CredentialCandidate 
 function isUnsupportedSub2ApiAccount(record: Record<string, unknown>): boolean {
   if (!asRecord(record.credentials)) return false
   const platform = firstString(record.platform)?.toLowerCase()
-  const accountType = firstString(record.type)?.toLowerCase()
+  const rawAccountType = firstString(record.type, record.auth_type, record.authType)
+  const accountType = sub2AccountType(rawAccountType)
   return Boolean(
     (platform && platform !== 'openai') ||
-      (accountType && !['oauth', 'setup_token', 'api_key', 'upstream'].includes(accountType))
+      (rawAccountType && !accountType)
   )
+}
+
+function validEd25519PrivateKey(value: string): boolean {
+  const compact = value.replace(/\s+/g, '')
+  if (!compact || !/^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) return false
+  try {
+    const key = createPrivateKey({
+      key: Buffer.from(compact.replace(/-/g, '+').replace(/_/g, '/'), 'base64'),
+      format: 'der',
+      type: 'pkcs8'
+    })
+    return key.asymmetricKeyType === 'ed25519'
+  } catch {
+    return false
+  }
+}
+
+function normalizedAgentIdentity(
+  wrapper: Record<string, unknown>,
+  options: CredentialParseOptions
+): NormalizedAgentIdentityCredential | null {
+  const credentials = asRecord(wrapper.credentials) ?? wrapper
+  const identity = asRecord(credentials.agent_identity) ??
+    asRecord(credentials.agentIdentity) ??
+    asRecord(wrapper.agent_identity) ??
+    asRecord(wrapper.agentIdentity) ??
+    credentials
+  const account = asRecord(identity.account) ?? asRecord(credentials.account)
+  const user = asRecord(identity.user) ?? asRecord(credentials.user)
+  const runtimeId = firstString(
+    identity.agent_runtime_id,
+    identity.agentRuntimeId,
+    identity.runtime_id,
+    identity.runtimeId
+  )
+  const privateKey = firstString(
+    identity.agent_private_key,
+    identity.agentPrivateKey,
+    identity.private_key,
+    identity.privateKey
+  )
+  const accountId = firstString(
+    identity.chatgpt_account_id,
+    identity.chatgptAccountId,
+    identity.account_id,
+    identity.accountId,
+    account?.chatgpt_account_id,
+    account?.chatgptAccountId,
+    account?.id
+  )
+  const userId = firstString(
+    identity.chatgpt_user_id,
+    identity.chatgptUserId,
+    identity.user_id,
+    identity.userId,
+    user?.id
+  )
+  if (!runtimeId || !privateKey || !accountId || !userId || !validEd25519PrivateKey(privateKey)) {
+    return null
+  }
+  const extra = asRecord(wrapper.extra)
+  const sourceDialect: CredentialDialect = asRecord(wrapper.credentials) ? 'sub2api' : 'cockpit'
+  const email = firstString(identity.email, credentials.email, extra?.email, wrapper.email, user?.email)
+  const taskId = firstString(
+    identity.agent_task_id,
+    identity.agentTaskId,
+    identity.task_id,
+    identity.taskId
+  )
+  const extensions = secretExtensions(wrapper, credentials, extra, 'agent_identity')
+  return {
+    credentialKind: 'agent_identity',
+    id: createHash('sha256')
+      .update(`agent:${runtimeId}\u0000account:${accountId}\u0000user:${userId}`, 'utf8')
+      .digest('hex'),
+    email,
+    accountId,
+    subject: userId,
+    authKind: 'agent_identity',
+    agentIdentity: { runtimeId, privateKey, taskId, accountId, userId },
+    planType: firstString(
+      identity.plan_type,
+      identity.planType,
+      credentials.plan_type,
+      credentials.planType,
+      extra?.plan_type,
+      extra?.planType
+    ),
+    expiresAt: timestampFrom(
+      identity.expires_at,
+      identity.expiresAt,
+      wrapper.expires_at,
+      wrapper.expiresAt
+    ),
+    sourcePath: options.sourcePath,
+    sourceFormat: options.format,
+    sourceDialect,
+    secretExtensions: extensions
+  }
+}
+
+function agentIdentityRecords(
+  value: unknown,
+  options: CredentialParseOptions,
+  depth = 0
+): NormalizedAgentIdentityCredential[] {
+  if (depth > MAX_PARSE_DEPTH) throw new RangeError('Credential data exceeds maximum depth')
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => agentIdentityRecords(item, options, depth + 1))
+  }
+  const record = asRecord(value)
+  if (!record) return []
+  const accountType = sub2AccountType(firstString(record.type, record.auth_type, record.authType))
+  const hasIdentityContainer = Boolean(
+    asRecord(record.agent_identity) ||
+    asRecord(record.agentIdentity) ||
+    asRecord(asRecord(record.credentials)?.agent_identity) ||
+    asRecord(asRecord(record.credentials)?.agentIdentity)
+  )
+  if (accountType === 'agent_identity' || hasIdentityContainer) {
+    const parsed = normalizedAgentIdentity(record, options)
+    if (parsed) return [parsed]
+  }
+  return Object.values(record).flatMap((item) => agentIdentityRecords(item, options, depth + 1))
 }
 
 function recordDialect(record: Record<string, unknown>): CredentialDialect {
@@ -832,6 +1088,7 @@ export function parseCredentialText(
 ): CredentialParseResult {
   const errorResult = (): CredentialParseResult => ({
     credentials: [],
+    agentIdentities: [],
     errors: [`No usable credentials found in ${options.sourcePath || '<unknown file>'}`]
   })
 
@@ -840,10 +1097,22 @@ export function parseCredentialText(
     validateValueLimits(values)
     const credentials = values
       .flatMap((value) => credentialRecords(value))
-      .map((candidate) => normalizeCredential(candidate.record, options, candidate.dialect))
+      .map((candidate) => normalizeCredential(
+        candidate.record,
+        options,
+        candidate.dialect,
+        candidate.extensions
+      ))
       .filter((credential): credential is NormalizedCredential => credential !== null)
+    const agentIdentities = [...new Map(
+      values
+        .flatMap((value) => agentIdentityRecords(value, options))
+        .map((credential) => [credential.id, credential])
+    ).values()]
 
-    return credentials.length > 0 ? { credentials, errors: [] } : errorResult()
+    return credentials.length > 0 || agentIdentities.length > 0
+      ? { credentials, agentIdentities, errors: [] }
+      : errorResult()
   } catch {
     return errorResult()
   }
@@ -880,6 +1149,7 @@ function preferredCredential(
   if (refreshDifference < 0) return current
   const dialectPriority: Record<CredentialDialect, number> = {
     sub2api: 4,
+    cockpit: 4,
     codex: 3,
     cpa: 2,
     generic: 1
@@ -907,7 +1177,8 @@ function mergedCredential(
     isFedRamp: preferred.isFedRamp ?? fallback.isFedRamp,
     idToken: preferred.idToken ?? fallback.idToken,
     planType: preferred.planType ?? fallback.planType,
-    idExpiresAt: preferred.idExpiresAt ?? fallback.idExpiresAt
+    idExpiresAt: preferred.idExpiresAt ?? fallback.idExpiresAt,
+    secretExtensions: preferred.secretExtensions ?? fallback.secretExtensions
   }
   return {
     ...merged,

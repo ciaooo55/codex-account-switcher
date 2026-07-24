@@ -3,6 +3,8 @@ import type {
   CredentialParseOptions,
   CredentialParseResult,
   CredentialDialect,
+  CredentialAuthKind,
+  CredentialSecretExtensions,
   GrokCredential
 } from '../../shared/types'
 import { extractCredentialValues } from './parser'
@@ -13,6 +15,15 @@ export interface GrokCredentialParseResult extends Omit<CredentialParseResult, '
 const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
 const XAI_API_BASE = 'https://api.x.ai/v1'
 const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token'
+const ACCOUNT_TYPES = new Map<string, Exclude<CredentialAuthKind, 'agent_identity'>>([
+  ['oauth', 'oauth'], ['personalaccesstoken', 'personal_access_token'], ['pat', 'personal_access_token'],
+  ['setuptoken', 'setup_token'], ['apikey', 'api_key'], ['upstream', 'upstream']
+])
+const KNOWN_ACCOUNT_KEYS = new Set([
+  'name', 'platform', 'provider', 'type', 'auth_type', 'authType', 'credentials', 'extra',
+  'model_mapping', 'modelMapping', 'concurrency', 'priority', 'rate_multiplier',
+  'rateMultiplier', 'auto_pause_on_expired', 'autoPauseOnExpired'
+])
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -25,6 +36,68 @@ function string(...values: unknown[]): string | null {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return null
+}
+
+function number(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function boolean(...values: unknown[]): boolean | null {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'string' && /^(?:true|false)$/i.test(value)) return value.toLowerCase() === 'true'
+  }
+  return null
+}
+
+function accountType(value: unknown): Exclude<CredentialAuthKind, 'agent_identity'> | null {
+  if (typeof value !== 'string') return null
+  return ACCOUNT_TYPES.get(value.trim().toLowerCase().replace(/[\s_-]+/g, '')) ?? null
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  const source = record(value)
+  return source
+    ? Object.fromEntries(Object.entries(source).filter((item): item is [string, string] => typeof item[1] === 'string'))
+    : {}
+}
+
+function clone(value: Record<string, unknown> | null): Record<string, unknown> | null {
+  return value ? JSON.parse(JSON.stringify(value)) as Record<string, unknown> : null
+}
+
+function extensions(
+  wrapper: Record<string, unknown>,
+  credentials: Record<string, unknown>,
+  extra: Record<string, unknown> | null,
+  kind: Exclude<CredentialAuthKind, 'agent_identity'>
+): CredentialSecretExtensions {
+  return {
+    schemaVersion: 1,
+    accountType: kind,
+    credentials: clone(credentials),
+    extra: clone(extra),
+    modelMapping: stringRecord(
+      credentials.model_mapping ?? credentials.modelMapping ?? extra?.model_mapping ??
+      extra?.modelMapping ?? wrapper.model_mapping ?? wrapper.modelMapping
+    ),
+    concurrency: number(wrapper.concurrency, extra?.concurrency),
+    priority: number(wrapper.priority, extra?.priority),
+    rateMultiplier: number(
+      wrapper.rate_multiplier, wrapper.rateMultiplier, extra?.rate_multiplier, extra?.rateMultiplier
+    ),
+    autoPauseOnExpired: boolean(
+      wrapper.auto_pause_on_expired, wrapper.autoPauseOnExpired,
+      extra?.auto_pause_on_expired, extra?.autoPauseOnExpired
+    ),
+    metadata: clone(Object.fromEntries(
+      Object.entries(wrapper).filter(([key]) => !KNOWN_ACCOUNT_KEYS.has(key))
+    )) ?? {}
+  }
 }
 
 function jwt(token: string | null): Record<string, unknown> | null {
@@ -80,9 +153,21 @@ function dialectFor(value: Record<string, unknown>, wrapper: Record<string, unkn
 function normalize(
   value: Record<string, unknown>,
   wrapper: Record<string, unknown> | null,
-  options: CredentialParseOptions
+  options: CredentialParseOptions,
+  rawCredentials = value
 ): GrokCredential | null {
-  const accessToken = string(value.access_token, value.accessToken)
+  const kind = accountType(string(
+    wrapper?.type,
+    wrapper?.auth_type,
+    wrapper?.authType,
+    value.auth_kind,
+    value.authKind
+  )) ?? 'oauth'
+  const accessToken = kind === 'api_key' || kind === 'upstream'
+    ? string(value.api_key, value.apiKey, value.key, value.secret, value.token, value.access_token, value.accessToken)
+    : kind === 'setup_token'
+      ? string(value.setup_token, value.setupToken, value.token, value.access_token, value.accessToken)
+      : string(value.access_token, value.accessToken, value.personal_access_token, value.personalAccessToken, value.token)
   if (!accessToken) return null
   const accessPayload = jwt(accessToken)
   if (!isXai(value, accessPayload) && !isXai(wrapper ?? {}, accessPayload)) return null
@@ -128,7 +213,9 @@ function normalize(
     sourceFormat: options.format,
     sourceDialect: dialectFor(value, wrapper),
     billingSnapshot,
-    usageSnapshot
+    usageSnapshot,
+    authKind: kind,
+    ...(wrapper ? { secretExtensions: extensions(wrapper, rawCredentials, extra, kind) } : {})
   }
 }
 
@@ -140,7 +227,7 @@ function candidates(value: unknown, options: CredentialParseOptions, depth = 0):
   const credentials = record(outer.credentials)
   if (credentials) {
     const merged = { ...record(outer.extra), ...credentials }
-    const parsed = normalize(merged, outer, options)
+    const parsed = normalize(merged, outer, options, credentials)
     return parsed ? [parsed] : []
   }
   const parsed = normalize(outer, null, options)
@@ -167,7 +254,8 @@ function merge(left: GrokCredential, right: GrokCredential): GrokCredential {
     idToken: preferred.idToken ?? fallback.idToken,
     planType: preferred.planType ?? fallback.planType,
     billingSnapshot: preferred.billingSnapshot ?? fallback.billingSnapshot,
-    usageSnapshot: preferred.usageSnapshot ?? fallback.usageSnapshot
+    usageSnapshot: preferred.usageSnapshot ?? fallback.usageSnapshot,
+    secretExtensions: preferred.secretExtensions ?? fallback.secretExtensions
   }
 }
 

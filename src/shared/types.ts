@@ -1,7 +1,60 @@
 export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'md' | 'zip' | 'paste'
-export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'generic'
-export type CredentialAuthKind = 'oauth' | 'personal_access_token'
+export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'cockpit' | 'generic'
+export type CredentialAuthKind =
+  | 'oauth'
+  | 'personal_access_token'
+  | 'setup_token'
+  | 'api_key'
+  | 'upstream'
+  | 'agent_identity'
 export type RefreshTokenClientMode = 'auto' | 'codex' | 'mobile'
+
+/**
+ * Provider-specific data that must stay in the encrypted, main-process credential store.
+ * It intentionally never belongs in account summaries or renderer IPC payloads.
+ */
+export interface CredentialSecretExtensions {
+  schemaVersion: 1
+  accountType: CredentialAuthKind
+  credentials: Record<string, unknown> | null
+  extra: Record<string, unknown> | null
+  modelMapping: Record<string, string>
+  concurrency: number | null
+  priority: number | null
+  rateMultiplier: number | null
+  autoPauseOnExpired: boolean | null
+  /** Unrecognized account-level fields retained for lossless future migrations/export. */
+  metadata: Record<string, unknown>
+}
+
+export interface AgentIdentitySecret {
+  runtimeId: string
+  privateKey: string
+  taskId: string | null
+  accountId: string
+  userId: string
+}
+
+/** A non-Bearer Codex identity. It deliberately has no accessToken property. */
+export interface NormalizedAgentIdentityCredential {
+  credentialKind: 'agent_identity'
+  id: string
+  email: string | null
+  accountId: string
+  subject: string
+  authKind: 'agent_identity'
+  agentIdentity: AgentIdentitySecret
+  planType: string | null
+  expiresAt: string | null
+  sourcePath: string
+  sourceFormat: CredentialSourceFormat
+  sourceDialect: CredentialDialect
+  secretExtensions: CredentialSecretExtensions
+}
+
+export type NormalizedImportedCredential =
+  | NormalizedCredential
+  | NormalizedAgentIdentityCredential
 
 export interface OAuthAuthorizationSession {
   sessionId: string
@@ -10,6 +63,8 @@ export interface OAuthAuthorizationSession {
 }
 
 export interface NormalizedCredential {
+  /** Optional for backward compatibility with vault v1 records. */
+  credentialKind?: 'access_token'
   id: string
   email: string | null
   accountId: string | null
@@ -19,7 +74,7 @@ export interface NormalizedCredential {
   oauthClientId?: string | null
   isFedRamp?: boolean | null
   idToken: string | null
-  authKind: CredentialAuthKind
+  authKind: Exclude<CredentialAuthKind, 'agent_identity'>
   planType: string | null
   lastRefresh: string | null
   accessExpiresAt: string | null
@@ -28,6 +83,7 @@ export interface NormalizedCredential {
   sourcePath: string
   sourceFormat: CredentialSourceFormat
   sourceDialect: CredentialDialect
+  secretExtensions?: CredentialSecretExtensions
 }
 
 export interface CredentialParseOptions {
@@ -37,6 +93,8 @@ export interface CredentialParseOptions {
 
 export interface CredentialParseResult {
   credentials: NormalizedCredential[]
+  /** Agent Identity entries are isolated so legacy Bearer-token consumers cannot use them by mistake. */
+  agentIdentities?: NormalizedAgentIdentityCredential[]
   errors: string[]
 }
 
@@ -234,6 +292,8 @@ export interface GrokCredential {
   sourceDialect: CredentialDialect
   billingSnapshot: Record<string, unknown> | null
   usageSnapshot: Record<string, unknown> | null
+  authKind?: Exclude<CredentialAuthKind, 'agent_identity'>
+  secretExtensions?: CredentialSecretExtensions
 }
 
 export interface GrokAccountSummary extends AccountMetadataFields {

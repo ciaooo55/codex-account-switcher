@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { generateKeyPairSync } from 'node:crypto'
 import { dedupeCredentials, parseCredentialText } from './parser'
 
 function jwt(payload: Record<string, unknown>): string {
@@ -7,6 +8,134 @@ function jwt(payload: Record<string, unknown>): string {
 }
 
 describe('parseCredentialText', () => {
+  it('preserves redacted Sub2API runtime and unknown metadata without exposing it in summaries', () => {
+    const result = parseCredentialText(JSON.stringify({
+      exported_at: '2026-07-24T10:57:07Z',
+      proxies: [],
+      accounts: [{
+        name: 'codex-redacted@example.invalid',
+        platform: 'openai',
+        type: 'oauth',
+        credentials: {
+          access_token: 'at-expired-redacted-token',
+          auth_mode: 'personalAccessToken',
+          chatgpt_account_id: 'workspace-redacted',
+          chatgpt_user_id: 'user-redacted',
+          email: 'redacted@example.invalid',
+          model_mapping: { 'public-model': 'upstream-model' },
+          openai_auth_mode: 'personal_access_token',
+          plan_type: 'team',
+          token_type: 'Bearer'
+        },
+        extra: { import_source: 'redacted_fixture', future_extra: { retained: true } },
+        concurrency: 10,
+        priority: 2,
+        rate_multiplier: 1.5,
+        auto_pause_on_expired: true,
+        future_scheduler_option: 'keep-me'
+      }]
+    }), { sourcePath: 'redacted-sub2api.json', format: 'json' })
+
+    expect(result.credentials).toHaveLength(1)
+    expect(result.credentials[0]).toMatchObject({
+      authKind: 'personal_access_token',
+      email: 'redacted@example.invalid',
+      secretExtensions: {
+        schemaVersion: 1,
+        accountType: 'personal_access_token',
+        modelMapping: { 'public-model': 'upstream-model' },
+        concurrency: 10,
+        priority: 2,
+        rateMultiplier: 1.5,
+        autoPauseOnExpired: true,
+        metadata: { future_scheduler_option: 'keep-me' }
+      }
+    })
+    expect(result.credentials[0].secretExtensions?.credentials).toMatchObject({
+      access_token: 'at-expired-redacted-token',
+      token_type: 'Bearer'
+    })
+    expect(result.credentials[0].secretExtensions?.extra).toEqual({
+      import_source: 'redacted_fixture',
+      future_extra: { retained: true }
+    })
+  })
+
+  it('accepts current and legacy Sub2API account type aliases', () => {
+    const accounts = [
+      { type: 'setup-token', credentials: { setup_token: 'setup-redacted-token' } },
+      { type: 'setup_token', credentials: { setupToken: 'setup-legacy-redacted-token' } },
+      { type: 'apikey', credentials: { api_key: 'sk-redacted-api-key' } },
+      { type: 'api_key', credentials: { apiKey: 'sk-redacted-legacy-key' } },
+      { type: 'upstream', credentials: { key: 'sk-redacted-upstream-key' } }
+    ].map((account, index) => ({
+      name: `alias-${index}@example.invalid`,
+      platform: 'openai',
+      ...account
+    }))
+    const result = parseCredentialText(JSON.stringify({ accounts }), {
+      sourcePath: 'sub2api-aliases.json',
+      format: 'json'
+    })
+
+    expect(result.credentials.map((credential) => credential.authKind)).toEqual([
+      'setup_token', 'setup_token', 'api_key', 'api_key', 'upstream'
+    ])
+    expect(result.credentials.every((credential) => credential.sourceDialect === 'sub2api')).toBe(true)
+  })
+
+  it('recognizes a Cockpit Agent Identity without manufacturing an access token', () => {
+    const { privateKey } = generateKeyPairSync('ed25519')
+    const encodedPrivateKey = privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64')
+    const result = parseCredentialText(JSON.stringify({
+      type: 'agent-identity',
+      provider: 'codex',
+      agent_identity: {
+        agent_runtime_id: 'runtime-redacted',
+        agent_private_key: encodedPrivateKey,
+        agent_task_id: 'task-redacted',
+        chatgpt_account_id: 'workspace-redacted',
+        chatgpt_user_id: 'user-redacted',
+        email: 'agent@example.invalid'
+      },
+      future_cockpit_field: { retained: true }
+    }), { sourcePath: 'cockpit-agent.json', format: 'json' })
+
+    expect(result.errors).toEqual([])
+    expect(result.credentials).toEqual([])
+    expect(result.agentIdentities).toHaveLength(1)
+    expect(result.agentIdentities?.[0]).toMatchObject({
+      credentialKind: 'agent_identity',
+      authKind: 'agent_identity',
+      email: 'agent@example.invalid',
+      accountId: 'workspace-redacted',
+      subject: 'user-redacted',
+      sourceDialect: 'cockpit',
+      agentIdentity: {
+        runtimeId: 'runtime-redacted',
+        taskId: 'task-redacted'
+      },
+      secretExtensions: {
+        metadata: { future_cockpit_field: { retained: true } }
+      }
+    })
+    expect(result.agentIdentities?.[0]).not.toHaveProperty('accessToken')
+  })
+
+  it('rejects malformed Agent Identity private keys', () => {
+    const result = parseCredentialText(JSON.stringify({
+      type: 'agent_identity',
+      agent_runtime_id: 'runtime-redacted',
+      agent_private_key: 'bm90LWEtcGs4LWVkMjU1MTkta2V5',
+      chatgpt_account_id: 'workspace-redacted',
+      chatgpt_user_id: 'user-redacted'
+    }), { sourcePath: 'invalid-agent.json', format: 'json' })
+
+    expect(result.agentIdentities).toEqual([])
+    expect(result.credentials).toEqual([])
+    expect(result.errors[0]).toContain('invalid-agent.json')
+  })
+
   it('normalizes nested Codex auth and extracts email and organization id from JWT claims', () => {
     const idToken = jwt({
       sub: 'auth0|user-a',
