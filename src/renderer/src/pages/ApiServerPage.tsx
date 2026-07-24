@@ -776,7 +776,7 @@ export function ApiServerPage(): React.JSX.Element {
       setNotice(stillOverridden
         ? {
             kind: 'warn',
-            text: `${result.message}；但 Codex 当前仍由 ${integration.configuredProvider ?? '其他配置'} 接管，模型目录尚未切回本项目。请关闭外部工具的 Codex API 接管后，再点击“重新应用到 Codex”。`
+            text: `${result.message}；${integration.message}`
           }
         : { kind: 'ok', text: result.message })
     } catch (error) {
@@ -814,7 +814,7 @@ export function ApiServerPage(): React.JSX.Element {
   const codexIntegration = state.codexIntegration
   const codexIntegrationTone = codexIntegration?.state === 'active'
     ? 'is-active'
-    : codexIntegration?.state === 'external_override' || codexIntegration?.state === 'model_mismatch' || codexIntegration?.state === 'catalog_missing'
+    : codexIntegration?.state === 'external_override' || codexIntegration?.state === 'binding_mismatch' || codexIntegration?.state === 'model_mismatch' || codexIntegration?.state === 'catalog_missing'
       ? 'is-warning'
       : codexIntegration?.state === 'unavailable'
         ? 'is-error'
@@ -1205,7 +1205,7 @@ export function ApiServerPage(): React.JSX.Element {
             <p className="mt-1 max-w-[60ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">Codex 只保存本地地址与本软件密钥，不会拿到第三方上游 Key。切换上游或路由时地址保持不变。</p>
             {codexIntegration ? (
               <div className={cn('api-codex-integration mt-2', codexIntegrationTone)} role="status">
-                <span className="font-medium">{codexIntegration.state === 'active' ? '本项目正在控制 Codex' : codexIntegration.state === 'external_override' ? '检测到外部配置覆盖' : 'Codex 尚未完成本地 API 绑定'}</span>
+                <span className="font-medium">{codexIntegration.state === 'active' ? '本项目正在控制 Codex' : codexIntegration.state === 'external_override' ? '检测到外部配置覆盖' : codexIntegration.state === 'binding_mismatch' ? 'Codex 本地 API 绑定不一致' : 'Codex 尚未完成本地 API 绑定'}</span>
                 <span>{codexIntegration.message}</span>
                 {codexIntegration.state === 'external_override' && codexIntegration.configuredProvider ? (
                   <span className="api-codex-conflict font-[var(--font-mono)]">

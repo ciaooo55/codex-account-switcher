@@ -509,14 +509,22 @@ async function main(): Promise<void> {
     // Use a snapshot for this asynchronous inspection. The runtime config can
     // be refreshed while reading files, but the status must remain coherent.
     const expectedModel = binding?.model ?? null
+    const externalOwner = (provider: string | null, catalogPath: string | null): string => {
+      // Cockpit's stable provider/catalog names are enough to give the user a
+      // concrete instruction without relying on its process being installed.
+      // Keep a generic fallback for every other account manager or manual TOML edit.
+      if (provider === 'codex_local_access' || /cockpit/i.test(catalogPath ?? '')) return 'Cockpit Tools'
+      return provider ? `provider “${provider}”` : '其他配置'
+    }
     try {
       const text = await readFile(settings.configPath, 'utf8')
       const active = readActiveOwnedProviderConfig(text)
       if (!binding) {
         if (active && active.topLevelProvider !== OWNED_PROVIDER_ID) {
+          const owner = externalOwner(active.topLevelProvider, active.modelCatalogJson)
           return {
             state: 'external_override' as const,
-            message: '检测到本项目的 provider 仍在配置中，但 Codex 的 provider/model 已被其他工具或配置层接管。',
+            message: `检测到 ${owner} 正在接管 Codex。关闭其 Codex API 接管后，再点击“应用到 Codex”。`,
             configuredProvider: active.topLevelProvider,
             configuredModel: active.model,
             expectedModel: null,
@@ -533,19 +541,66 @@ async function main(): Promise<void> {
         }
       }
       if (!active || active.topLevelProvider !== OWNED_PROVIDER_ID) {
+        const owner = externalOwner(active?.topLevelProvider ?? null, active?.modelCatalogJson ?? null)
         return {
           state: 'external_override' as const,
-          message: '检测到 Codex 的 provider/model 目前被其他工具或配置层接管；请点击“重新应用到 Codex”恢复本项目的模型目录。',
+          message: `检测到 ${owner} 正在接管 Codex。请先关闭其 Codex API 接管，再点击“重新应用到 Codex”恢复本项目的地址和模型目录。`,
           configuredProvider: active?.topLevelProvider ?? null,
           configuredModel: active?.model ?? null,
           expectedModel,
           catalogPath: active?.modelCatalogJson ?? null
         }
       }
+      const accessKey = runtime.accessKeys.find((entry) => entry.id === binding.accessKeyId && entry.enabled)
+      if (!accessKey) {
+        return {
+          state: 'binding_mismatch' as const,
+          message: 'Codex 绑定的本软件访问密钥已被删除或禁用。请选择一枚已启用密钥后重新应用。',
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: active.modelCatalogJson
+        }
+      }
+      const allowedModels = accessKey.allowedModels.length > 0
+        ? runtime.routes.map((route) => route.publicModel).filter((model) => accessKey.allowedModels.includes(model))
+        : runtime.routes.map((route) => route.publicModel)
+      if (!allowedModels.includes(binding.model)) {
+        return {
+          state: 'binding_mismatch' as const,
+          message: `绑定模型“${binding.model}”不在当前密钥可访问的公开模型中。请重新选择模型并应用到 Codex。`,
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: active.modelCatalogJson
+        }
+      }
       if (active.model !== binding.model) {
         return {
           state: 'model_mismatch' as const,
           message: `Codex 当前模型为“${active.model ?? '未设置'}”，与本项目绑定的“${binding.model}”不一致。`,
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: active.modelCatalogJson
+        }
+      }
+      const expectedBaseUrl = `http://127.0.0.1:${runtime.port}/v1`
+      const activeBaseUrl = active.baseUrl?.replace(/\/+$/, '') ?? null
+      if (activeBaseUrl !== expectedBaseUrl) {
+        return {
+          state: 'binding_mismatch' as const,
+          message: `Codex provider 地址为“${active.baseUrl ?? '未设置'}”，应为“${expectedBaseUrl}”。请重新应用到 Codex；不会改用随机端口。`,
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: active.modelCatalogJson
+        }
+      }
+      if (active.bearerToken !== accessKey.key) {
+        return {
+          state: 'binding_mismatch' as const,
+          message: 'Codex provider 使用的本软件访问密钥与当前绑定不一致。请重新应用到 Codex，第三方上游 Key 不会写入 Codex。',
           configuredProvider: active.topLevelProvider,
           configuredModel: active.model,
           expectedModel,
@@ -572,10 +627,13 @@ async function main(): Promise<void> {
       const slugs = Array.isArray(catalog.models)
         ? catalog.models.map((item) => typeof item?.slug === 'string' ? item.slug : '')
         : []
-      if (!slugs.includes(binding.model)) {
+      const catalogModels = [...new Set(slugs.filter(Boolean))]
+      const missingModels = allowedModels.filter((model) => !catalogModels.includes(model))
+      const unexpectedModels = catalogModels.filter((model) => !allowedModels.includes(model))
+      if (!catalogModels.includes(binding.model) || missingModels.length > 0 || unexpectedModels.length > 0) {
         return {
           state: 'catalog_missing' as const,
-          message: '本项目模型目录缺少当前默认模型；请重新应用到 Codex 以重新生成目录。',
+          message: 'Codex 模型目录与当前项目密钥可访问的公开模型不一致；请重新应用到 Codex 以重新生成目录。',
           configuredProvider: active.topLevelProvider,
           configuredModel: active.model,
           expectedModel,
@@ -584,7 +642,7 @@ async function main(): Promise<void> {
       }
       return {
         state: 'active' as const,
-        message: `Codex 正在使用本地 API 服务和 ${slugs.length} 个公开模型。`,
+        message: `Codex 正在使用本地 API 服务和 ${catalogModels.length} 个公开模型。`,
         configuredProvider: active.topLevelProvider,
         configuredModel: active.model,
         expectedModel,

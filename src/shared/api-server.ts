@@ -154,6 +154,8 @@ export type CodexLocalApiIntegrationState =
   | 'not_bound'
   | 'active'
   | 'external_override'
+  /** The owned provider remains selected, but its URL/key/bound model is stale. */
+  | 'binding_mismatch'
   | 'model_mismatch'
   | 'catalog_missing'
   | 'unavailable'
