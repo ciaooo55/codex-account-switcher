@@ -236,6 +236,7 @@ export class CredentialSwitcher {
     apiKey: string
     models?: string[]
     syncModelCatalog?: boolean
+    supportsWebsockets?: boolean
     verifiedProbe?: {
       endpoint: 'responses'
       baseUrl: string
@@ -328,7 +329,8 @@ export class CredentialSwitcher {
         model,
         apiKey: input.apiKey,
         modelCatalogPath: modelCatalogConfigPath(dirname(this.options.configPath)),
-        syncModelCatalog
+        syncModelCatalog,
+        supportsWebsockets: input.supportsWebsockets
       })
       backupPath = await this.writeBackup({
         createdAt: new Date().toISOString(),
@@ -359,7 +361,7 @@ export class CredentialSwitcher {
         'wire_api = "responses"',
         'requires_openai_auth = true',
         `experimental_bearer_token = ${JSON.stringify(input.apiKey)}`,
-        'supports_websockets = false'
+        `supports_websockets = ${input.supportsWebsockets === true ? 'true' : 'false'}`
       ]
       if (syncModelCatalog) {
         requiredProviderLines.push(

@@ -2,6 +2,15 @@
 
 Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测真实请求能力与额度，安全切换 Codex `auth.json` / `config.toml`，并统一管理 CPA 目录中的 Codex 与 Grok 凭据。
 
+## 0.14 本地 API 服务
+
+- 内置真正的 OpenAI 兼容服务，固定监听 `127.0.0.1`，默认端口 `8888`；端口被占用时明确失败，不会改用 9593 等随机端口。
+- 支持 `GET /v1/models`、Responses、Responses compact、Chat Completions、SSE 和 Responses WebSocket，并可在 Responses / Chat Completions 之间转换常用的文本、图片、工具调用和流式事件。
+- 支持多枚项目访问密钥、模型白名单、多个第三方 API 上游，以及 Codex / Grok / CPA 凭据上游。路由可选固定、优先级故障转移或轮询，也可限定 API、凭据或混合来源。
+- 公开模型名与客户端看到的名称完全一致；一键设置 Codex 后，Codex 只保存本地项目地址与专用密钥，第三方 URL、Key 和账号 token 不进入 Codex 配置。
+- API 上游可粘贴 URL + Key、JSON、键值对、Base64 或 URL-safe Base64；检测会尝试带 `/v1` 和不带 `/v1` 的常见路径，并在真实请求成功后同步模型。
+- 项目密钥和上游 Key 使用 Windows DPAPI 加密保存；账号 token 在请求时从主进程凭据库动态解析，不进入 Renderer、API 服务配置或日志。
+
 ## 主要功能
 
 - 统一导入入口可选择单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.json.无用量`、`.json.无权限`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、Codex/Grok 混合文件、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录。
@@ -25,7 +34,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 原子切换 `auth.json`，只管理 `config.toml` 指定顶层键，保留 custom provider 定义。
 - 完整 OAuth 与只有 access token 的 CPA Team/K12 账号都写入标准 `auth_mode: "chatgpt"`。access-only 账号会保留 workspace ID、以 access JWT 填充 ID token，并写入空的 refresh token；切换后必须重启 Codex，且 token 过期后不能自动刷新。
 - 支持 SubAPI `accounts[].credentials` 中的 ChatGPT Personal Access Token（`at-...` / `personalAccessToken`）。检测时先调用官方 `whoami` 校验并补齐邮箱、workspace 和 Team 等级，再查询额度与发送真实 Codex 请求；切换时写入官方持久格式 `personal_access_token`，不再错误转换为 OAuth `tokens.access_token`。
-- 顶部提供 Codex 账号库、Grok 账号库、CPA 账号管理、定时切换四个独立页面，并可在浅色和深色工作台主题之间切换；窄窗口下导航保持单行，选择保存在本机并在下次启动时恢复。页面切换和操作完成后只读取当前板块的数据，不再重复扫描其他账号库；账号超过 80 条时表格启用虚拟滚动，只渲染可视区域及少量缓冲行。
+- 顶部提供 Codex 账号库、Grok 账号库、CPA 账号管理、API 服务、定时切换等独立页面，并可在浅色和深色工作台主题之间切换；窄窗口下导航保持单行，选择保存在本机并在下次启动时恢复。页面切换和操作完成后只读取当前板块的数据，不再重复扫描其他账号库；账号超过 80 条时表格启用虚拟滚动，只渲染可视区域及少量缓冲行。
 - 恢复上一个配置或备份中的 API/代理模式；也可保存自定义 API 地址、模型和 Key 并一键切换。地址、当前模型和用户编辑后的模型目录会记忆，应用自己的 Key 副本使用 Windows DPAPI 加密且不会回显到 renderer；Codex 运行所需的 `auth.json` 与 provider `experimental_bearer_token` 按 Cockpit 兼容格式写入明文，请按凭据文件保护 `.codex`。可从上游 `/models` 获取目录后逐行删除或增加模型，并单独选择是否导入 Codex。切换前会向选中模型真实发送 `hi`，要求 HTTP 200 与非空回复；失败会显示错误信息，可在第二次风险确认后强制保存，强制保存不重启。成功保存后会询问是否“修复并重启”；仅在确认重启时自动修复对话。旧的 `model-catalogs/account-switcher.json` 简化目录引用会自动迁移且不会进入恢复快照。
 - “账号库体检”会扫描 aa Codex、aa Grok、CPA 和本地状态/标签记录，报告重复身份、非标准文件、多账号文件、Codex/Grok 混合文件、损坏文件及孤立缓存；修复前二次确认，凭证先解析并写入正确分类目录，确认成功后才清理旧文件，损坏文件移入应用隔离目录。
 - 可按秒设置定时检测当前账号，并自定义候选账号池；仅在凭据失效、无权限、不可刷新或 Codex 额度明确耗尽时自动切换，不会因普通网络错误或模型拥堵误切。可选择切换后自动重启 Codex。

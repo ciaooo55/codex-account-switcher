@@ -247,6 +247,8 @@ export function applyCustomApiConfig(
     /** Absolute path to the catalog written beside config.toml. */
     modelCatalogPath: string
     syncModelCatalog?: boolean
+    /** The managed local API server supports Codex Responses WebSockets. */
+    supportsWebsockets?: boolean
   }
 ): { text: string; snapshot: ManagedConfigSnapshot } {
   const snapshot = snapshotManagedConfig(text)
@@ -270,7 +272,34 @@ export function applyCustomApiConfig(
     'wire_api = "responses"',
     'requires_openai_auth = true',
     `experimental_bearer_token = ${tomlString(input.apiKey)}`,
-    'supports_websockets = false'
+    `supports_websockets = ${input.supportsWebsockets === true ? 'true' : 'false'}`
   ].join(newline)
   return { snapshot, text: `${managed}${newline}${newline}${provider}${newline}` }
+}
+
+/**
+ * Projects the switcher's stable loopback API server into Codex. Unlike a
+ * direct third-party provider, the local client key is safe to persist in the
+ * Codex provider while upstream secrets stay inside the application vault.
+ */
+export function applyLocalApiServerConfig(
+  text: string,
+  input: {
+    port: number
+    model: string
+    clientApiKey: string
+    modelCatalogPath: string
+  }
+): { text: string; snapshot: ManagedConfigSnapshot } {
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) {
+    throw new Error('本地 API 服务端口无效')
+  }
+  return applyCustomApiConfig(text, {
+    baseUrl: `http://127.0.0.1:${input.port}/v1`,
+    model: input.model,
+    apiKey: input.clientApiKey,
+    modelCatalogPath: input.modelCatalogPath,
+    syncModelCatalog: true,
+    supportsWebsockets: true
+  })
 }

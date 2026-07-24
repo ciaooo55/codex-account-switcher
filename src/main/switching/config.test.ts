@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyChatGptConfig,
   applyCustomApiConfig,
+  applyLocalApiServerConfig,
   readActiveOwnedProviderConfig,
   replaceOwnedProviderBaseUrl,
   restoreManagedConfig
@@ -28,6 +29,31 @@ const managedCatalogPath = 'C:\\Users\\tester\\.codex\\account-switcher-model-ca
 const managedCatalogLine = `model_catalog_json = ${JSON.stringify(managedCatalogPath)}`
 
 describe('managed Codex config patching', () => {
+  it('projects the fixed local API server and enables Responses WebSockets', () => {
+    const applied = applyLocalApiServerConfig(customConfig, {
+      port: 8888,
+      model: 'xxx',
+      clientApiKey: 'sk-local-project',
+      modelCatalogPath: managedCatalogPath
+    })
+
+    expect(applied.text).toContain('model_provider = "codex_account_switcher"')
+    expect(applied.text).toContain('model = "xxx"')
+    expect(applied.text).toContain('base_url = "http://127.0.0.1:8888/v1"')
+    expect(applied.text).toContain('experimental_bearer_token = "sk-local-project"')
+    expect(applied.text).toContain('supports_websockets = true')
+    expect(applied.text).toContain(managedCatalogLine)
+  })
+
+  it('rejects an invalid local API server port before changing Codex config', () => {
+    expect(() => applyLocalApiServerConfig(customConfig, {
+      port: 0,
+      model: 'xxx',
+      clientApiKey: 'sk-local-project',
+      modelCatalogPath: managedCatalogPath
+    })).toThrow('本地 API 服务端口无效')
+  })
+
   it('uses a dedicated Responses provider and installs the managed Cockpit-style catalog', () => {
     const applied = applyCustomApiConfig(customConfig, {
       baseUrl: 'http://127.0.0.1:18317',

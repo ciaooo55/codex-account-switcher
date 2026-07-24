@@ -363,6 +363,22 @@ function responsesOutputText(body: unknown): string {
   return parts.join('\n').trim()
 }
 
+function chatCompletionsOutputText(body: unknown): string {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return ''
+  const choices = (body as Record<string, unknown>).choices
+  if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== 'object') return ''
+  const message = (choices[0] as Record<string, unknown>).message
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return ''
+  const content = (message as Record<string, unknown>).content
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content.flatMap((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return []
+    const text = (part as Record<string, unknown>).text
+    return typeof text === 'string' && text.trim() ? [text.trim()] : []
+  }).join('\n')
+}
+
 async function postJson(input: {
   url: string
   apiKey: string
@@ -403,13 +419,38 @@ async function postJson(input: {
   }
 }
 
-export async function probeCustomApiModel(input: {
+interface CustomApiProbeInput {
   baseUrl: string
   apiKey: string
   model: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
-}): Promise<{ endpoint: 'responses'; baseUrl: string; probeUrl: string; output: string }> {
+  allowChatCompletions?: boolean
+}
+
+interface CustomApiResponsesProbeResult {
+  endpoint: 'responses'
+  baseUrl: string
+  probeUrl: string
+  output: string
+}
+
+interface CustomApiChatProbeResult {
+  endpoint: 'chat_completions'
+  baseUrl: string
+  probeUrl: string
+  output: string
+}
+
+export function probeCustomApiModel(
+  input: CustomApiProbeInput & { allowChatCompletions: true }
+): Promise<CustomApiResponsesProbeResult | CustomApiChatProbeResult>
+export function probeCustomApiModel(
+  input: CustomApiProbeInput
+): Promise<CustomApiResponsesProbeResult>
+export async function probeCustomApiModel(
+  input: CustomApiProbeInput
+): Promise<CustomApiResponsesProbeResult | CustomApiChatProbeResult> {
   const model = normalizeModelId(input.model)
   if (!model) throw new Error('模型名称无效')
   const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 12_000))
@@ -419,14 +460,21 @@ export async function probeCustomApiModel(input: {
   let hardError: Error | null = null
 
   for (const target of targets) {
-    if (target.endpoint !== 'responses') continue
-    const body = {
-      model,
-      input: 'hi',
-      max_output_tokens: 64,
-      store: false,
-      stream: false
-    }
+    if (target.endpoint === 'chat_completions' && input.allowChatCompletions !== true) continue
+    const body = target.endpoint === 'responses'
+      ? {
+          model,
+          input: 'hi',
+          max_output_tokens: 64,
+          store: false,
+          stream: false
+        }
+      : {
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 64,
+          stream: false
+        }
 
     try {
       const result = await postJson({
@@ -436,8 +484,13 @@ export async function probeCustomApiModel(input: {
         fetchImpl,
         body
       })
-      const output = responsesOutputText(result.body)
-      if (result.ok && isResponsesProbeResult(result.body) && output) {
+      const output = target.endpoint === 'responses'
+        ? responsesOutputText(result.body)
+        : chatCompletionsOutputText(result.body)
+      const validShape = target.endpoint === 'responses'
+        ? isResponsesProbeResult(result.body)
+        : output.length > 0
+      if (result.ok && validShape && output) {
         return {
           endpoint: target.endpoint,
           baseUrl: target.baseUrl,
@@ -446,7 +499,7 @@ export async function probeCustomApiModel(input: {
         }
       }
       if (result.ok) {
-        softErrors.push(`${target.url} → Responses 返回成功，但没有可读的模型回复`)
+        softErrors.push(`${target.url} → ${target.endpoint === 'responses' ? 'Responses' : 'Chat Completions'} 返回成功，但没有可读的模型回复`)
         continue
       }
       if (result.status === 404 || result.status === 405) {
@@ -474,7 +527,9 @@ export async function probeCustomApiModel(input: {
 
   if (hardError) throw hardError
   throw new Error(
-    `模型测试失败：Codex 直连第三方 API 需要有效的 Responses 响应（已尝试 /v1、/api/v1、/openai/v1）。仅支持 chat/completions 的服务需要本地转换网关。${softErrors.slice(0, 5).join('；')}`
+    input.allowChatCompletions === true
+      ? `模型测试失败：已尝试 Responses 与 Chat Completions 的常见路径。${softErrors.slice(0, 6).join('；')}`
+      : `模型测试失败：Codex 直连第三方 API 需要有效的 Responses 响应（已尝试 /v1、/api/v1、/openai/v1）。仅支持 chat/completions 的服务需要本地 API 服务转换。${softErrors.slice(0, 5).join('；')}`
   )
 }
 

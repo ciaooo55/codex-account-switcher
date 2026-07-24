@@ -21,11 +21,14 @@ export interface EnsureDirectCustomApiProviderInput {
   apiKey: string
   /** Real model IDs saved by the custom-API editor. */
   models: readonly string[]
+  /** Distinguishes the stable local project server from direct upstream mode. */
+  projectionMode?: 'direct' | 'local-api-server'
+  supportsWebsockets?: boolean
 }
 
 export interface EnsureDirectCustomApiProviderResult {
   active: boolean
-  mode: 'inactive' | 'direct' | 'migrated-legacy-gateway' | 'unrecognized'
+  mode: 'inactive' | 'direct' | 'local-api-server' | 'migrated-legacy-gateway' | 'unrecognized'
   baseUrl: string | null
   model: string | null
   configChanged: boolean
@@ -127,7 +130,7 @@ export async function ensureDirectCustomApiProvider(
   // Desktop can replace model_catalog_json with its own value. The managed
   // file is therefore also a durable marker for the user's sync choice.
   const syncModelCatalog = usesManagedCatalog(current.modelCatalogJson) || managedCatalogExists
-  const baseUrl = legacyGateway
+  const baseUrl = legacyGateway || input.projectionMode === 'local-api-server'
     ? normalizeCustomApiBaseUrl(input.storedBaseUrl)
     : current.baseUrl
   const model = input.storedModel.trim() || current.model
@@ -140,7 +143,8 @@ export async function ensureDirectCustomApiProvider(
     model,
     apiKey,
     modelCatalogPath: modelCatalogConfigPath(dirname(input.configPath)),
-    syncModelCatalog
+    syncModelCatalog,
+    supportsWebsockets: input.supportsWebsockets
   }).text
   const configChanged = nextConfig !== configText
 
@@ -154,7 +158,11 @@ export async function ensureDirectCustomApiProvider(
 
   return {
     active: true,
-    mode: legacyGateway ? 'migrated-legacy-gateway' : 'direct',
+    mode: legacyGateway
+      ? 'migrated-legacy-gateway'
+      : input.projectionMode === 'local-api-server'
+        ? 'local-api-server'
+        : 'direct',
     baseUrl,
     model,
     configChanged,

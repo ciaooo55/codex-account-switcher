@@ -4,6 +4,7 @@ import {
   ListChecks,
   Moon,
   PackageOpen,
+  Server,
   Settings,
   Sun,
   TimerReset,
@@ -38,6 +39,7 @@ const tabs: Array<{
   { id: 'accounts', label: 'Codex 账号库', icon: ListChecks, countKey: 'accounts', countVariant: 'accent' },
   { id: 'grok', label: 'Grok 账号库', icon: Zap, countKey: 'grok', countVariant: 'grok' },
   { id: 'cpa', label: 'CPA 账号管理', icon: PackageOpen, countKey: 'cpa' },
+  { id: 'api-server', label: 'API 服务', icon: Server },
   { id: 'automation', label: '定时切换', icon: TimerReset }
 ]
 
@@ -94,7 +96,7 @@ export function AppHeader({
               aria-pressed={active}
               onClick={() => onViewChange(tab.id)}
               className={cn(
-                'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] px-2.5 text-[12.5px] font-medium transition-colors',
+                'inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-md)] px-2.5 text-[12.5px] font-medium transition-colors',
                 active
                   ? 'bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
                   : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'

@@ -176,6 +176,34 @@ describe('model catalog helpers', () => {
     )
   })
 
+  it('accepts and identifies a chat-completions-only provider for the local API server', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: string) => {
+      if (url === 'http://127.0.0.1:18317/v1/chat/completions') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ choices: [{ message: { content: 'chat works' } }] })
+        }
+      }
+      return { ok: false, status: 404, text: async () => 'not found' }
+    })
+
+    const result = await probeCustomApiModel({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-custom',
+      allowChatCompletions: true,
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+
+    expect(result).toEqual({
+      endpoint: 'chat_completions',
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      probeUrl: 'http://127.0.0.1:18317/v1/chat/completions',
+      output: 'chat works'
+    })
+  })
+
   it('accepts pasted full chat completions URLs and still probes', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,

@@ -44,6 +44,10 @@ import type {
   SwitchResult,
   TestResult
 } from './types'
+import type {
+  LocalApiServerConfigInput,
+  LocalApiServerState
+} from './api-server'
 
 export interface TestProgress {
   active: boolean
@@ -171,6 +175,14 @@ export interface CodexSwitcherApi {
   switchToCustomApi(profile: CustomApiProfileInput, restart: boolean): Promise<SwitchResult>
   getCustomApiProfile(): Promise<CustomApiProfileSummary>
   listCustomApiModels(input: { baseUrl: string; apiKey?: string }): Promise<CustomApiListModelsResult>
+  getLocalApiServerState(): Promise<LocalApiServerState>
+  saveLocalApiServerConfig(input: LocalApiServerConfigInput): Promise<LocalApiServerState>
+  startLocalApiServer(): Promise<LocalApiServerState>
+  stopLocalApiServer(): Promise<LocalApiServerState>
+  restartLocalApiServer(): Promise<LocalApiServerState>
+  generateLocalApiAccessKey(): Promise<string>
+  revealLocalApiAccessKey(id: string): Promise<string>
+  applyLocalApiServerToCodex(input: { accessKeyId: string; model: string; restart: boolean }): Promise<SwitchResult>
   scanGrokDirectory(): Promise<GrokScanResult>
   importGrokFiles(): Promise<GrokScanResult | null>
   importGrokDirectory(): Promise<GrokScanResult | null>
@@ -261,6 +273,14 @@ export const ipcChannels = {
   customApiSwitch: 'custom-api:switch',
   customApiProfile: 'custom-api:profile',
   customApiListModels: 'custom-api:list-models',
+  localApiServerState: 'local-api-server:state',
+  localApiServerSave: 'local-api-server:save',
+  localApiServerStart: 'local-api-server:start',
+  localApiServerStop: 'local-api-server:stop',
+  localApiServerRestart: 'local-api-server:restart',
+  localApiServerGenerateKey: 'local-api-server:generate-key',
+  localApiServerRevealKey: 'local-api-server:reveal-key',
+  localApiServerApplyCodex: 'local-api-server:apply-codex',
   grokScan: 'grok:scan',
   grokImport: 'grok:import',
   grokImportDirectory: 'grok:import-directory',

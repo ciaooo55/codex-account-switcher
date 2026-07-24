@@ -58,11 +58,16 @@ import { DeletedCredentialStore } from './storage/deleted-credentials'
 import { CredentialVault } from './storage/vault'
 import { normalizeCustomApiBaseUrl } from '../shared/custom-api'
 import { CustomApiStore } from './storage/custom-api-store'
+import { ApiServerStore } from './storage/api-server-store'
 import { AccountMetadataStore } from './storage/account-metadata'
 import { GrokStatusStore } from './storage/grok-status-store'
 import { fetchOpenAiCompatibleModelIds, MODEL_CATALOG_RELATIVE_PATH, probeCustomApiModel } from './services/model-catalog'
 import { atomicWriteFile } from './storage/atomic-file'
+import { LocalApiServer, generateLocalApiAccessKey } from './services/local-api-server'
+import { CredentialUpstreamRegistry } from './services/credential-upstream-resolver'
+import { normalizeLocalApiServerConfig, type LocalApiServerConfigInput, type LocalApiServerState } from '../shared/api-server'
 import { CredentialSwitcher } from './switching/switcher'
+import { readActiveOwnedProviderConfig } from './switching/config'
 import {
   ensureDirectCustomApiProvider,
   reassertDirectCustomApiProviderAfterStart
@@ -277,6 +282,7 @@ async function main(): Promise<void> {
   }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
   const customApiStore = new CustomApiStore(join(userData, 'custom-api.json'), cipher)
+  const apiServerStore = new ApiServerStore(join(userData, 'api-server.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
   const cpaCodexStatusStore = new StatusStore(join(userData, 'cpa-codex-status.json'))
   const grokStatusStore = new GrokStatusStore(join(userData, 'grok-library-status.json'))
@@ -408,6 +414,7 @@ async function main(): Promise<void> {
       apiKey: string
       models?: string[]
       syncModelCatalog?: boolean
+      supportsWebsockets?: boolean
       verifiedProbe?: {
         endpoint: 'responses'
         baseUrl: string
@@ -426,27 +433,173 @@ async function main(): Promise<void> {
       }).switchToCustomApi(input)
     }
   }
-  // Migrate the removed 0.13.13 gateway before Codex reads its stale ephemeral
-  // port/model shells. Direct configurations are only inspected, never rebuilt
-  // from potentially stale settings.
-  const reconcileDirectCustomApiProvider = async () => {
+
+  // One-time, non-destructive migration: the former single direct upstream
+  // becomes the first local API upstream. Codex is not switched automatically;
+  // the user can verify the server and apply it from the dedicated page.
+  const migrateCustomApiToLocalServer = async (): Promise<void> => {
+    const current = await apiServerStore.summary()
+    if (current.accessKeys.length > 0 || current.upstreams.length > 0 || current.routes.length > 0) return
     const settings = await settingsStore.get()
-    const apiKey = await customApiStore.getKey()
-    if (!apiKey) return null
+    const upstreamKey = await customApiStore.getKey()
+    if (!upstreamKey || !settings.customApiBaseUrl.trim()) return
     const profile = await customApiStore.summary({
       baseUrl: settings.customApiBaseUrl,
       model: settings.customApiModel
     })
-    const reconciled = await ensureDirectCustomApiProvider({
+    const models = [...new Set([
+      settings.customApiModel.trim(),
+      ...profile.models
+    ].filter(Boolean))]
+    if (models.length === 0) return
+    await apiServerStore.save({
+      port: 8888,
+      autoStart: false,
+      accessKeys: [{
+        id: 'codex',
+        label: 'Codex 专用密钥',
+        key: generateLocalApiAccessKey(),
+        enabled: true,
+        allowedModels: []
+      }],
+      upstreams: [{
+        id: 'migrated-custom-api',
+        name: '迁移的自定义 API',
+        baseUrl: settings.customApiBaseUrl,
+        apiKey: upstreamKey,
+        protocol: 'auto',
+        models,
+        priority: 0,
+        enabled: true
+      }],
+      routes: models.map((model) => ({
+        publicModel: model,
+        strategy: 'priority' as const,
+        sourceMode: 'api_only' as const,
+        targets: [{ sourceId: 'migrated-custom-api', upstreamModel: model, priority: 0, enabled: true }]
+      }))
+    })
+  }
+  await migrateCustomApiToLocalServer().catch((error: unknown) => {
+    console.error('Failed to migrate custom API into local API server', error)
+  })
+  let credentialUpstreamRegistry: CredentialUpstreamRegistry | null = null
+  const localApiServer = new LocalApiServer(
+    await apiServerStore.runtimeConfig(),
+    fetch,
+    (request) => credentialUpstreamRegistry?.resolve(request) ?? Promise.resolve(null)
+  )
+  const localApiServerState = async (): Promise<LocalApiServerState> => {
+    const config = await apiServerStore.summary()
+    return {
+      config: {
+        ...config,
+        credentialSources: credentialUpstreamRegistry
+          ? await credentialUpstreamRegistry.discover(config.credentialSources)
+          : config.credentialSources
+      },
+      status: localApiServer.status()
+    }
+  }
+  const initialApiServerConfig = await apiServerStore.runtimeConfig()
+  if (initialApiServerConfig.autoStart) {
+    await localApiServer.start().catch((error: unknown) => {
+      console.error('Failed to auto-start local API server', error)
+    })
+  }
+  const migrateLegacyGatewayProjection = async (): Promise<boolean> => {
+    const settings = await settingsStore.get()
+    let active: ReturnType<typeof readActiveOwnedProviderConfig>
+    try {
+      active = readActiveOwnedProviderConfig(await readFile(settings.configPath, 'utf8'))
+    } catch {
+      return false
+    }
+    if (!active?.bearerToken?.startsWith('cas-gateway-')) return false
+    const runtime = await apiServerStore.runtimeConfig()
+    const accessKey = runtime.accessKeys.find((entry) => entry.enabled)
+    if (!accessKey) return false
+    const models = accessKey.allowedModels.length > 0
+      ? runtime.routes.map((route) => route.publicModel).filter((model) => accessKey.allowedModels.includes(model))
+      : runtime.routes.map((route) => route.publicModel)
+    const model = active.model && models.includes(active.model) ? active.model : models[0]
+    if (!model) return false
+    const wasRunning = localApiServer.status().running
+    try {
+      // Exact-port bind is the health gate. The stale random gateway remains in
+      // Codex until the fixed listener has successfully started.
+      await localApiServer.start()
+      const switched = await switcher.switchToCustomApi({
+        baseUrl: `http://127.0.0.1:${runtime.port}/v1`,
+        model,
+        apiKey: accessKey.key,
+        models,
+        syncModelCatalog: true,
+        supportsWebsockets: true
+      })
+      if (!switched.ok) throw new Error(switched.message)
+      return true
+    } catch (error) {
+      if (!wasRunning) await localApiServer.stop().catch(() => undefined)
+      throw error
+    }
+  }
+  await migrateLegacyGatewayProjection().catch((error: unknown) => {
+    console.error('Failed to migrate legacy local gateway projection', error)
+  })
+  // Keep direct third-party mode intact. This is also a conservative fallback
+  // for legacy installs whose local-server migration could not be completed.
+  const resolveManagedProviderInput = async () => {
+    const settings = await settingsStore.get()
+    let active: ReturnType<typeof readActiveOwnedProviderConfig> = null
+    try {
+      active = readActiveOwnedProviderConfig(await readFile(settings.configPath, 'utf8'))
+    } catch {
+      // The reconciler below owns the missing-file behavior.
+    }
+    const runtime = await apiServerStore.runtimeConfig()
+    const localAccessKey = runtime.accessKeys.find((entry) =>
+      entry.enabled && entry.key === active?.bearerToken
+    )
+    if (localAccessKey) {
+      const models = localAccessKey.allowedModels.length > 0
+        ? runtime.routes.map((route) => route.publicModel).filter((model) => localAccessKey.allowedModels.includes(model))
+        : runtime.routes.map((route) => route.publicModel)
+      const model = active?.model && models.includes(active.model) ? active.model : models[0] ?? ''
+      if (!localApiServer.status().running) await localApiServer.start()
+      return {
+        authPath: settings.authPath,
+        configPath: settings.configPath,
+        storedBaseUrl: `http://127.0.0.1:${runtime.port}/v1`,
+        storedModel: model,
+        apiKey: localAccessKey.key,
+        models,
+        projectionMode: 'local-api-server' as const,
+        supportsWebsockets: true
+      }
+    }
+    const apiKey = await customApiStore.getKey()
+    const profile = await customApiStore.summary({
+      baseUrl: settings.customApiBaseUrl,
+      model: settings.customApiModel
+    })
+    return {
       authPath: settings.authPath,
       configPath: settings.configPath,
       storedBaseUrl: settings.customApiBaseUrl,
       storedModel: settings.customApiModel,
-      apiKey,
-      models: profile.models
-    })
+      apiKey: apiKey ?? '',
+      models: profile.models,
+      projectionMode: 'direct' as const,
+      supportsWebsockets: false
+    }
+  }
+  const reconcileDirectCustomApiProvider = async () => {
+    const settings = await settingsStore.get()
+    const reconciled = await ensureDirectCustomApiProvider(await resolveManagedProviderInput())
     if (
       reconciled.active &&
+      reconciled.mode !== 'local-api-server' &&
       reconciled.mode !== 'unrecognized' &&
       reconciled.baseUrl &&
       reconciled.model &&
@@ -471,25 +624,10 @@ async function main(): Promise<void> {
   const startDirectCustomApiWatcher = (): void => {
     if (directCustomApiWatcher) return
     directCustomApiWatcher = watchConfigAndReassert(
-      async () => {
-        const settings = await settingsStore.get()
-        const apiKey = await customApiStore.getKey()
-        const profile = await customApiStore.summary({
-          baseUrl: settings.customApiBaseUrl,
-          model: settings.customApiModel
-        })
-        return {
-          authPath: settings.authPath,
-          configPath: settings.configPath,
-          storedBaseUrl: settings.customApiBaseUrl,
-          storedModel: settings.customApiModel,
-          apiKey: apiKey ?? '',
-          models: profile.models
-        }
-      },
+      resolveManagedProviderInput,
       {
         onReasserted: (result) => {
-          if (result.baseUrl && result.model) {
+          if (result.mode !== 'local-api-server' && result.baseUrl && result.model) {
             settingsStore.update({
               customApiBaseUrl: result.baseUrl,
               customApiModel: result.model
@@ -602,6 +740,34 @@ async function main(): Promise<void> {
     },
     onCredentialsChanged: () => reconcileGrokStatusStores(),
     onStatusesChanged: () => reconcileGrokStatusStores()
+  })
+
+  credentialUpstreamRegistry = new CredentialUpstreamRegistry({
+    codex: () => manager.listCredentials(),
+    cpaCodex: async () => {
+      const [credentials, accounts] = await Promise.all([
+        cpaCodexManager.listCredentials(),
+        cpaCodexManager.listAccounts()
+      ])
+      const enabled = new Set(accounts.filter((account) => !account.disabled).map((account) => account.id))
+      return credentials.filter((credential) => enabled.has(credential.id))
+    },
+    grok: async () => {
+      const [credentials, accounts] = await Promise.all([
+        grokManager.listCredentials(),
+        grokManager.listAccounts()
+      ])
+      const enabled = new Set(accounts.filter((account) => !account.disabled).map((account) => account.id))
+      return credentials.filter((credential) => enabled.has(credential.id))
+    },
+    cpaGrok: async () => {
+      const [credentials, accounts] = await Promise.all([
+        cpaGrokManager.listCredentials(),
+        cpaGrokManager.listAccounts()
+      ])
+      const enabled = new Set(accounts.filter((account) => !account.disabled).map((account) => account.id))
+      return credentials.filter((credential) => enabled.has(credential.id))
+    }
   })
 
   const importPreviewService = new ImportPreviewService(manager, grokManager, {
@@ -1591,15 +1757,21 @@ async function main(): Promise<void> {
           modelsUrl: listed.modelsUrl
         }
       }
+      const probe = await probeCustomApiModel({
+        baseUrl: listed.baseUrl,
+        apiKey,
+        model: listed.models[0],
+        timeoutMs: settings.timeoutMs,
+        allowChatCompletions: true
+      })
       return {
         ok: true as const,
-        message:
-          listed.models.length > 0
-            ? `已从 ${listed.modelsUrl} 获取 ${listed.models.length} 个模型`
-            : `已尝试多路径，但 ${listed.baseUrl} 未返回模型`,
+        message: `已从 ${listed.modelsUrl} 获取 ${listed.models.length} 个模型，并通过 ${probe.endpoint === 'responses' ? 'Responses' : 'Chat Completions'} 真实对话测试`,
         models: listed.models,
-        baseUrl: listed.baseUrl,
-        modelsUrl: listed.modelsUrl
+        baseUrl: probe.baseUrl,
+        modelsUrl: listed.modelsUrl,
+        protocol: probe.endpoint,
+        probeUrl: probe.probeUrl
       }
     } catch (error) {
       return {
@@ -1689,6 +1861,182 @@ async function main(): Promise<void> {
         ? (payload.profile.models ?? [])
         : (result.catalogModels ?? [savedModel]))
       return result
+    } finally {
+      switchOperationActive = false
+    }
+  })
+
+  const localApiConfigSchema = z.object({
+    port: z.number().int().min(1).max(65_535),
+    autoStart: z.boolean(),
+    accessKeys: z.array(z.object({
+      id: z.string().min(1).max(128),
+      label: z.string().min(1).max(128),
+      key: z.string().max(16_384).optional(),
+      enabled: z.boolean(),
+      allowedModels: z.array(z.string().max(128)).max(500)
+    })).max(100),
+    upstreams: z.array(z.object({
+      id: z.string().min(1).max(128),
+      name: z.string().min(1).max(128),
+      baseUrl: z.string().min(1).max(2048),
+      apiKey: z.string().max(16_384).optional(),
+      protocol: z.enum(['auto', 'responses', 'chat_completions']),
+      models: z.array(z.string().max(128)).max(500),
+      priority: z.number().finite(),
+      enabled: z.boolean()
+    })).max(200),
+    credentialSources: z.array(z.object({
+      id: z.string().min(1).max(128),
+      provider: z.enum(['codex', 'cpa-codex', 'grok', 'cpa-grok']),
+      credentialId: z.string().min(1).max(128),
+      label: z.string().min(1).max(128),
+      models: z.array(z.string().max(128)).max(500),
+      priority: z.number().finite(),
+      enabled: z.boolean()
+    })).max(20_000).default([]),
+    routes: z.array(z.object({
+      publicModel: z.string().min(1).max(128),
+      strategy: z.enum(['single', 'priority', 'round_robin']),
+      sourceMode: z.enum(['api_only', 'credential_only', 'mixed']),
+      targets: z.array(z.object({
+        sourceId: z.string().min(1).max(128),
+        upstreamModel: z.string().min(1).max(128),
+        priority: z.number().finite(),
+        enabled: z.boolean()
+      })).max(500)
+    })).max(500)
+  })
+
+  ipcMain.handle(ipcChannels.localApiServerState, () => localApiServerState())
+  ipcMain.handle(ipcChannels.localApiServerGenerateKey, () => generateLocalApiAccessKey())
+  ipcMain.handle(ipcChannels.localApiServerRevealKey, async (_event, input: unknown) => {
+    const id = z.string().min(1).max(128).parse(input)
+    const key = await apiServerStore.getAccessKey(id)
+    if (!key) throw new Error('访问密钥不存在或无法解密')
+    return key
+  })
+  ipcMain.handle(ipcChannels.localApiServerSave, async (_event, input: unknown) => {
+    const nextInput = normalizeLocalApiServerConfig(
+      localApiConfigSchema.parse(input) as LocalApiServerConfigInput
+    )
+    const previousRuntime = await apiServerStore.runtimeConfig()
+    const wasRunning = localApiServer.status().running
+    let activeLocalProjection: ReturnType<typeof readActiveOwnedProviderConfig> = null
+    try {
+      const settings = await settingsStore.get()
+      const active = readActiveOwnedProviderConfig(await readFile(settings.configPath, 'utf8'))
+      const previousBase = `http://127.0.0.1:${previousRuntime.port}/v1`
+      const ownsBearer = previousRuntime.accessKeys.some((entry) =>
+        entry.enabled && entry.key === active?.bearerToken
+      )
+      if (active?.baseUrl?.replace(/\/$/, '') === previousBase && ownsBearer) {
+        activeLocalProjection = active
+      }
+    } catch {
+      // Missing or externally edited Codex config does not block saving the API service.
+    }
+    try {
+      await apiServerStore.save(nextInput)
+      const nextRuntime = await apiServerStore.runtimeConfig()
+      await localApiServer.updateConfiguration(nextRuntime)
+      if (activeLocalProjection) {
+        if (!localApiServer.status().running) await localApiServer.start()
+        const previousKey = previousRuntime.accessKeys.find((entry) =>
+          entry.key === activeLocalProjection?.bearerToken
+        )
+        const accessKey = nextRuntime.accessKeys.find((entry) =>
+          entry.id === previousKey?.id && entry.enabled
+        ) ?? nextRuntime.accessKeys.find((entry) => entry.enabled)
+        if (!accessKey) throw new Error('当前 Codex 正在使用 API 服务，请至少保留一枚已启用的项目密钥')
+        const allowedModels = accessKey.allowedModels.length > 0
+          ? nextRuntime.routes
+              .map((route) => route.publicModel)
+              .filter((model) => accessKey.allowedModels.includes(model))
+          : nextRuntime.routes.map((route) => route.publicModel)
+        const selectedModel = activeLocalProjection.model && allowedModels.includes(activeLocalProjection.model)
+          ? activeLocalProjection.model
+          : allowedModels[0]
+        if (!selectedModel) throw new Error('当前 Codex 正在使用 API 服务，请至少保留一个当前密钥可访问的公开模型')
+        const switched = await switcher.switchToCustomApi({
+          baseUrl: `http://127.0.0.1:${nextRuntime.port}/v1`,
+          model: selectedModel,
+          apiKey: accessKey.key,
+          models: allowedModels,
+          syncModelCatalog: true,
+          supportsWebsockets: true
+        })
+        if (!switched.ok) throw new Error(switched.message)
+      }
+    } catch (error) {
+      await apiServerStore.save(previousRuntime).catch(() => undefined)
+      await localApiServer.updateConfiguration(previousRuntime).catch(() => undefined)
+      if (!wasRunning) await localApiServer.stop().catch(() => undefined)
+      throw error
+    }
+    return localApiServerState()
+  })
+  ipcMain.handle(ipcChannels.localApiServerStart, async () => {
+    await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
+    await localApiServer.start()
+    return localApiServerState()
+  })
+  ipcMain.handle(ipcChannels.localApiServerStop, async () => {
+    await localApiServer.stop()
+    return localApiServerState()
+  })
+  ipcMain.handle(ipcChannels.localApiServerRestart, async () => {
+    await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
+    await localApiServer.restart()
+    return localApiServerState()
+  })
+  ipcMain.handle(ipcChannels.localApiServerApplyCodex, async (_event, input: unknown) => {
+    const payload = z.object({
+      accessKeyId: z.string().min(1).max(128),
+      model: z.string().min(1).max(128),
+      restart: z.boolean()
+    }).parse(input)
+    const task = switchBlockingTask()
+    if (task) return { ok: false, message: `${task}，暂时不能设置 Codex API 服务`, backupPath: null }
+    const runtime = await apiServerStore.runtimeConfig()
+    const accessKey = runtime.accessKeys.find((entry) => entry.id === payload.accessKeyId && entry.enabled)
+    if (!accessKey) return { ok: false, message: '请选择已启用的项目访问密钥', backupPath: null }
+    const allowedModels = accessKey.allowedModels.length > 0
+      ? runtime.routes.filter((route) => accessKey.allowedModels.includes(route.publicModel)).map((route) => route.publicModel)
+      : runtime.routes.map((route) => route.publicModel)
+    if (!allowedModels.includes(payload.model)) {
+      return { ok: false, message: '所选模型不存在或当前密钥无权访问', backupPath: null }
+    }
+    await localApiServer.updateConfiguration(runtime)
+    await localApiServer.start()
+    switchOperationActive = true
+    try {
+      const operation: {
+        result?: Awaited<ReturnType<typeof switcher.switchToCustomApi>>
+      } = {}
+      const apply = async (): Promise<void> => {
+        operation.result = await switcher.switchToCustomApi({
+          baseUrl: `http://127.0.0.1:${runtime.port}/v1`,
+          model: payload.model,
+          apiKey: accessKey.key,
+          models: allowedModels,
+          syncModelCatalog: true,
+          supportsWebsockets: true
+        })
+        if (!operation.result.ok) throw new Error(operation.result.message)
+      }
+      if (!payload.restart) {
+        await apply()
+        return operation.result
+      }
+      const restartResult = await restartCodexAfterSessionSync(apply)
+      const switched = operation.result
+      if (!switched) return { ok: false, message: restartResult.message, backupPath: null, restartResult }
+      return {
+        ...switched,
+        restartResult,
+        message: `${switched.message}；${restartResult.message}`
+      }
     } finally {
       switchOperationActive = false
     }
@@ -2316,6 +2664,7 @@ async function main(): Promise<void> {
     cpaCodexTestController?.abort()
     importPreviewTestController?.abort()
     autoSwitchScheduler.stop()
+    void localApiServer.stop().catch(() => undefined)
     tray?.destroy()
     tray = null
   })

@@ -133,6 +133,8 @@ export interface CustomApiListModelsResult {
   models: string[]
   baseUrl: string
   modelsUrl?: string
+  protocol?: 'responses' | 'chat_completions'
+  probeUrl?: string
 }
 
 export type AccountStatus =

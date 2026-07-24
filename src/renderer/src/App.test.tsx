@@ -374,6 +374,29 @@ function api(): CodexSwitcherApi {
     switchToCustomApi: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     getCustomApiProfile: vi.fn().mockResolvedValue(snapshot.customApi),
     listCustomApiModels: vi.fn().mockResolvedValue({ ok: true, message: 'ok', models: ['gpt-custom'], baseUrl: 'https://api.openai.com/v1' }),
+    getLocalApiServerState: vi.fn().mockResolvedValue({
+      config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
+      status: { running: false, host: '127.0.0.1', port: 8888, pid: null, startedAt: null, error: null }
+    }),
+    saveLocalApiServerConfig: vi.fn().mockResolvedValue({
+      config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
+      status: { running: false, host: '127.0.0.1', port: 8888, pid: null, startedAt: null, error: null }
+    }),
+    startLocalApiServer: vi.fn().mockResolvedValue({
+      config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
+      status: { running: true, host: '127.0.0.1', port: 8888, pid: 1234, startedAt: '2026-07-24T12:00:00.000Z', error: null }
+    }),
+    stopLocalApiServer: vi.fn().mockResolvedValue({
+      config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
+      status: { running: false, host: '127.0.0.1', port: 8888, pid: null, startedAt: null, error: null }
+    }),
+    restartLocalApiServer: vi.fn().mockResolvedValue({
+      config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
+      status: { running: true, host: '127.0.0.1', port: 8888, pid: 1234, startedAt: '2026-07-24T12:00:00.000Z', error: null }
+    }),
+    generateLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
+    revealLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
+    applyLocalApiServerToCodex: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     scanGrokDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
     importGrokFiles: vi.fn().mockResolvedValue(null),
     importGrokDirectory: vi.fn().mockResolvedValue(null),
@@ -547,6 +570,10 @@ describe('App', () => {
     await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('grok'))
     fireEvent.click(screen.getByRole('button', { name: /^CPA 账号管理/ }))
     await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('cpa'))
+    fireEvent.click(screen.getByRole('button', { name: 'API 服务' }))
+    await waitFor(() => expect(bridge.getLocalApiServerState).toHaveBeenCalled())
+    await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('accounts'))
+    expect(await screen.findByText('本地 API 服务')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '定时切换' }))
     await waitFor(() => expect(bridge.getPageSnapshot).toHaveBeenCalledWith('automation'))
 

@@ -77,7 +77,7 @@ import { ImportPreviewDialog } from './components/ImportPreviewDialog'
 import { LibraryHealthDialog } from './components/LibraryHealthDialog'
 import { CurrentAccountOverview } from './components/CurrentAccountOverview'
 import { StatusFilterStrip, type StatusCategoryAction } from './components/StatusFilterStrip'
-import { AccountsPage, AutomationPage, CpaPage, GrokLibraryPage } from './pages'
+import { AccountsPage, ApiServerPage, AutomationPage, CpaPage, GrokLibraryPage } from './pages'
 import { AccountMetadataChips } from './components/accounts/AccountMetadataChips'
 import { Quota } from './components/accounts/Quota'
 import { AppHeader } from './components/layout/AppHeader'
@@ -102,6 +102,10 @@ import {
 import { CodexAccountContextMenu } from './components/CodexAccountContextMenu'
 
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
+
+function snapshotScopeForView(view: AppView): AppSnapshotScope {
+  return view === 'api-server' ? 'accounts' : view
+}
 
 export function App(): React.JSX.Element {
   const [theme, setTheme] = useState<ThemeMode>(() => {
@@ -208,7 +212,7 @@ export function App(): React.JSX.Element {
 
   const reload = async (
     preserveSettingsDraft = false,
-    scope: AppSnapshotScope = activeView
+    scope: AppSnapshotScope = snapshotScopeForView(activeView)
   ): Promise<void> => {
     applySnapshotPatch(await codexApi().getPageSnapshot(scope), preserveSettingsDraft)
   }
@@ -324,7 +328,7 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (previousViewRef.current === activeView) return
     previousViewRef.current = activeView
-    if (snapshot) void reload(true, activeView)
+    if (snapshot) void reload(true, snapshotScopeForView(activeView))
   }, [activeView])
 
   useEffect(() => {
@@ -689,7 +693,7 @@ export function App(): React.JSX.Element {
     try {
       const result = await codexApi().repairLibraries(healthReport.snapshotId, issueIds)
       setHealthReport(result.report)
-      await reload(true, activeView)
+      await reload(true, snapshotScopeForView(activeView))
       setMessage({ kind: result.errors.length ? 'warn' : 'ok', text: result.message })
     } catch (error) {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
@@ -1109,6 +1113,8 @@ export function App(): React.JSX.Element {
           onBusyChange={setBusy}
           requestConfirmation={requestConfirmation}
         />
+      ) : activeView === 'api-server' ? (
+        <ApiServerPage />
       ) : (
         <AutomationPage
           snapshot={snapshot}

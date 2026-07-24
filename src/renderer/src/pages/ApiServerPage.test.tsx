@@ -1,0 +1,222 @@
+import '@testing-library/jest-dom/vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { LocalApiServerState } from '../../../shared/api-server'
+import { ApiServerPage } from './ApiServerPage'
+
+const api = vi.hoisted(() => ({
+  getLocalApiServerState: vi.fn(),
+  saveLocalApiServerConfig: vi.fn(),
+  startLocalApiServer: vi.fn(),
+  stopLocalApiServer: vi.fn(),
+  restartLocalApiServer: vi.fn(),
+  generateLocalApiAccessKey: vi.fn(),
+  revealLocalApiAccessKey: vi.fn(),
+  applyLocalApiServerToCodex: vi.fn(),
+  listCustomApiModels: vi.fn()
+}))
+
+vi.mock('../services/codexApi', () => ({ codexApi: () => api }))
+
+function localApiState(running = true): LocalApiServerState {
+  return {
+    config: {
+      port: 8888,
+      autoStart: false,
+      accessKeys: [{
+        id: 'codex-key',
+        label: 'Codex 专用',
+        enabled: true,
+        allowedModels: [],
+        hasKey: true,
+        keyPreview: 'sk-cas-…abcd',
+        isShort: false
+      }],
+      upstreams: [{
+        id: 'upstream-a',
+        name: '上游 A',
+        baseUrl: 'https://api.example.com/v1',
+        protocol: 'responses',
+        models: ['gpt-5.4'],
+        priority: 1,
+        enabled: true,
+        hasApiKey: true,
+        keyPreview: 'sk-up…wxyz'
+      }],
+      credentialSources: [{
+        id: 'codex:credential-1',
+        provider: 'codex',
+        credentialId: 'credential-1',
+        label: 'user@example.com',
+        models: ['gpt-5.4'],
+        priority: 2,
+        enabled: false
+      }],
+      routes: [{
+        publicModel: 'xxx',
+        strategy: 'priority',
+        sourceMode: 'api_only',
+        targets: [{ sourceId: 'upstream-a', upstreamModel: 'gpt-5.4', priority: 1, enabled: true }]
+      }]
+    },
+    status: {
+      running,
+      host: '127.0.0.1',
+      port: 8888,
+      pid: running ? 4321 : null,
+      startedAt: running ? '2026-07-24T10:00:00.000Z' : null,
+      error: null
+    }
+  }
+}
+
+describe('ApiServerPage', () => {
+  afterEach(cleanup)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.getLocalApiServerState.mockResolvedValue(localApiState())
+    api.saveLocalApiServerConfig.mockResolvedValue(localApiState())
+    api.startLocalApiServer.mockResolvedValue(localApiState())
+    api.stopLocalApiServer.mockResolvedValue(localApiState(false))
+    api.restartLocalApiServer.mockResolvedValue(localApiState())
+    api.generateLocalApiAccessKey.mockResolvedValue('sk-cas-generated-secure-value')
+    api.revealLocalApiAccessKey.mockResolvedValue('sk-cas-saved-secret-value')
+    api.applyLocalApiServerToCodex.mockResolvedValue({ ok: true, message: 'Codex 已切换', backupPath: 'backup.toml' })
+    api.listCustomApiModels.mockResolvedValue({
+      ok: true,
+      message: '获取成功',
+      models: ['gpt-5.4', 'gpt-5.4-mini'],
+      baseUrl: 'https://api.example.com/v1',
+      modelsUrl: 'https://api.example.com/v1/models'
+    })
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+  })
+
+  it('展示固定地址、运行状态和脱敏配置', async () => {
+    render(<ApiServerPage />)
+
+    expect(await screen.findByText('运行中')).toBeInTheDocument()
+    expect(screen.getByText(/http:\/\/127\.0\.0\.1:8888\/v1/)).toBeInTheDocument()
+    expect(screen.getByText('4321')).toBeInTheDocument()
+    expect(screen.getByText('项目访问密钥')).toBeInTheDocument()
+    expect(screen.queryByText('real-upstream-secret')).not.toBeInTheDocument()
+  })
+
+  it('保存端口和自启设置时不将已保存秘密回传 Renderer', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('项目访问密钥')
+
+    fireEvent.change(screen.getByLabelText('监听端口'), { target: { value: '18317' } })
+    fireEvent.click(screen.getByLabelText('随应用自动启动'))
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalledOnce())
+    expect(api.saveLocalApiServerConfig).toHaveBeenCalledWith(expect.objectContaining({ port: 18317, autoStart: true }))
+    const saved = api.saveLocalApiServerConfig.mock.calls[0][0]
+    expect(saved.accessKeys[0]).not.toHaveProperty('key')
+    expect(saved.upstreams[0]).not.toHaveProperty('apiKey')
+    expect(saved.credentialSources).toEqual([expect.objectContaining({ id: 'codex:credential-1' })])
+  })
+
+  it('生成、编辑和保存新的项目密钥', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('项目访问密钥')
+
+    fireEvent.click(screen.getByRole('button', { name: '生成安全密钥' }))
+    expect(await screen.findByDisplayValue('sk-cas-generated-secure-value')).toBeInTheDocument()
+    const whitelist = screen.getByLabelText('项目密钥 2 模型白名单')
+    fireEvent.change(whitelist, { target: { value: 'xxx, model-b' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    const saved = api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0]
+    expect(saved.accessKeys.at(-1)).toMatchObject({
+      key: 'sk-cas-generated-secure-value',
+      allowedModels: ['xxx', 'model-b'],
+      enabled: true
+    })
+  })
+
+  it('重新加载后仍对已保存的短密钥显示安全警告', async () => {
+    const state = localApiState()
+    state.config.accessKeys[0].isShort = true
+    api.getLocalApiServerState.mockResolvedValue(state)
+    render(<ApiServerPage />)
+
+    expect(await screen.findByText(/1 个短密钥/)).toBeInTheDocument()
+  })
+
+  it('通过主进程安全复制已保存密钥，不将明文写入页面状态', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('项目访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: '复制 Codex 专用' }))
+
+    await waitFor(() => expect(api.revealLocalApiAccessKey).toHaveBeenCalledWith('codex-key'))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-cas-saved-secret-value')
+    expect(screen.queryByDisplayValue('sk-cas-saved-secret-value')).not.toBeInTheDocument()
+  })
+
+  it('测试上游并同步模型列表', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('项目访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
+
+    fireEvent.click(screen.getByRole('button', { name: '测试并获取模型' }))
+    await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({ baseUrl: 'https://api.example.com/v1' }))
+    expect(await screen.findByText(/可用 · \d+ ms/)).toBeInTheDocument()
+  })
+
+  it('识别 URL-safe Base64 中的 URL 和 Key 并立即真实测试', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('项目访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
+    fireEvent.click(screen.getByRole('button', { name: '粘贴识别' }))
+
+    const encoded = btoa(JSON.stringify({
+      base_url: 'https://encoded.example.com/v1',
+      api_key: 'sk-encoded-1234567890'
+    })).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '')
+    fireEvent.change(screen.getByLabelText('上游粘贴内容'), { target: { value: encoded } })
+    fireEvent.click(screen.getByRole('button', { name: '识别并测试' }))
+
+    await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({
+      baseUrl: 'https://encoded.example.com/v1',
+      apiKey: 'sk-encoded-1234567890'
+    }))
+    expect(screen.getByText('encoded.example.com')).toBeInTheDocument()
+  })
+
+  it('可以将脱敏的账号凭证引用加入 API 上游池', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('项目访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /账号凭证源/ }))
+
+    expect(screen.getByText('user@example.com')).toBeInTheDocument()
+    expect(screen.getByText('credential-1')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('仅账号切换'))
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].credentialSources[0]).toMatchObject({
+      id: 'codex:credential-1',
+      enabled: true
+    })
+  })
+
+  it('用相同的本地服务地址将公开模型应用到 Codex', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('一键设置 Codex')
+
+    expect(screen.getByLabelText('Codex 专用密钥')).toHaveValue('codex-key')
+    expect(screen.getByLabelText('默认公开模型')).toHaveValue('xxx')
+    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+
+    await waitFor(() => expect(api.applyLocalApiServerToCodex).toHaveBeenCalledWith({
+      accessKeyId: 'codex-key',
+      model: 'xxx',
+      restart: true
+    }))
+    expect(await screen.findByText('Codex 已切换')).toBeInTheDocument()
+  })
+})

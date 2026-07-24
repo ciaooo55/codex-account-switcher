@@ -233,6 +233,24 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         response.end('data: {"type":"response.completed","response":{"id":"grok-response-e2e","status":"completed","output":[]}}\n\n')
         return
       }
+      if (request.url === '/v1/models' || request.url === '/models') {
+        response.end(JSON.stringify({ object: 'list', data: [{ id: 'e2e-upstream-model', object: 'model' }] }))
+        return
+      }
+      if (request.url === '/v1/responses' || request.url === '/responses') {
+        response.end(JSON.stringify({
+          id: 'response-e2e-local-api',
+          object: 'response',
+          status: 'completed',
+          output_text: 'local api works',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'local api works' }]
+          }]
+        }))
+        return
+      }
       response.end(JSON.stringify({ output: [] }))
     })
     await new Promise<void>((resolve, reject) => {
@@ -607,14 +625,14 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.setViewportSize({ width: 980, height: 640 })
     const compactHeader = await page.locator('.app-header').evaluate((header) => ({
       height: header.getBoundingClientRect().height,
-      tabs: [...header.querySelectorAll<HTMLButtonElement>('.view-tabs button')].map((button) => ({
+      tabs: [...header.querySelectorAll<HTMLButtonElement>('nav[aria-label="主页面"] button')].map((button) => ({
         height: button.getBoundingClientRect().height,
         scrollHeight: button.scrollHeight,
         whiteSpace: getComputedStyle(button).whiteSpace
       }))
     }))
     expect(compactHeader.height).toBeLessThanOrEqual(60)
-    expect(compactHeader.tabs).toHaveLength(4)
+    expect(compactHeader.tabs).toHaveLength(5)
     expect(compactHeader.tabs.every((tab) => tab.whiteSpace === 'nowrap' && tab.scrollHeight <= tab.height + 1)).toBe(true)
     const compactTable = await page.locator('.accounts-view .table-wrap').first().evaluate((element) => ({
       clientWidth: element.clientWidth,
@@ -674,6 +692,48 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '定时切换' }).click()
     await expect(page.getByLabel('启用定时自动切换')).not.toBeChecked()
     await expect(page.getByText('候选 0 / 1')).toBeVisible()
+
+    await page.getByRole('button', { name: 'API 服务' }).click()
+    await expect(page.getByText('http://127.0.0.1:8888/v1')).toBeVisible()
+    await page.getByRole('button', { name: '手动添加' }).first().click()
+    await page.getByLabel(/密钥值$/).fill('sk-e2e-local')
+    await page.getByLabel('监听端口').fill('18888')
+    await page.getByRole('button', { name: /第三方上游/ }).click()
+    await page.getByRole('button', { name: '粘贴识别' }).click()
+    await page.getByLabel('上游粘贴内容').fill(
+      `url=${baseUrl} key=sk-e2e-upstream-123456`
+    )
+    await page.getByRole('button', { name: '识别并测试' }).click()
+    await expect(page.getByText(/测试成功，获取到 1 个模型/)).toBeVisible()
+    await page.getByRole('button', { name: /公开模型路由/ }).click()
+    await page.getByRole('button', { name: '添加公开模型' }).click()
+    await page.getByLabel('公开模型名').fill('e2e-public-model')
+    await page.getByRole('button', { name: '保存并热更新' }).click()
+    await expect(page.getByText('配置已安全保存并热更新。')).toBeVisible()
+    await page.getByRole('button', { name: '启动', exact: true }).click()
+    await expect(page.getByText('http://127.0.0.1:18888/v1')).toBeVisible()
+
+    const localModels = await fetch('http://127.0.0.1:18888/v1/models', {
+      headers: { authorization: 'Bearer sk-e2e-local' }
+    })
+    expect(localModels.status).toBe(200)
+    expect(await localModels.json()).toMatchObject({
+      data: [{ id: 'e2e-public-model' }]
+    })
+    const localResponse = await fetch('http://127.0.0.1:18888/v1/responses', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer sk-e2e-local',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ model: 'e2e-public-model', input: 'hello' })
+    })
+    expect(localResponse.status).toBe(200)
+    expect(await localResponse.json()).toMatchObject({
+      id: 'response-e2e-local-api',
+      output_text: 'local api works'
+    })
+    await page.getByRole('button', { name: '停止', exact: true }).click()
 
     await electronApp.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]

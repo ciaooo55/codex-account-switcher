@@ -117,6 +117,41 @@ experimental_bearer_token = "real-upstream-key"
     expect(config).not.toContain('29999')
   })
 
+  it('reasserts the configured fixed local-server port and WebSocket capability', async () => {
+    const paths = await fixture(`model_provider = "openai"
+model = "official-model"
+
+[model_providers.codex_account_switcher]
+base_url = "http://127.0.0.1:9593/v1"
+wire_api = "responses"
+experimental_bearer_token = "sk-cas-local"
+supports_websockets = false
+`)
+
+    const result = await ensureDirectCustomApiProvider({
+      ...paths,
+      storedBaseUrl: 'http://127.0.0.1:8888/v1',
+      storedModel: 'xxx',
+      apiKey: 'sk-cas-local',
+      models: ['xxx', 'yyy'],
+      projectionMode: 'local-api-server',
+      supportsWebsockets: true
+    })
+
+    expect(result).toMatchObject({
+      mode: 'local-api-server',
+      baseUrl: 'http://127.0.0.1:8888/v1',
+      model: 'xxx',
+      configChanged: true
+    })
+    const config = await readFile(paths.configPath, 'utf8')
+    expect(config).toContain('model_provider = "codex_account_switcher"')
+    expect(config).toContain('model = "xxx"')
+    expect(config).toContain('base_url = "http://127.0.0.1:8888/v1"')
+    expect(config).toContain('supports_websockets = true')
+    expect(config).not.toContain('9593')
+  })
+
   it('does not overwrite an owned section whose token is neither direct nor a legacy gateway token', async () => {
     const original = `model_provider = "openai"
 
