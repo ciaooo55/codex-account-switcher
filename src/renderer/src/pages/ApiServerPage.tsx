@@ -63,7 +63,8 @@ type ApiServerDraft = Omit<LocalApiServerConfigInput, 'accessKeys' | 'upstreams'
 
 type UpstreamProbe = {
   loading: boolean
-  ok?: boolean
+  catalogOk?: boolean
+  probeOk?: boolean | null
   message?: string
   latencyMs?: number
 }
@@ -110,6 +111,11 @@ function configFromDraft(draft: ApiServerDraft): LocalApiServerConfigInput {
     credentialSources: draft.credentialSources,
     routes: draft.routes
   }
+}
+
+function upstreamInputFromDraft(entry: UpstreamDraft): ApiUpstreamInput {
+  const { hasApiKey: _hasApiKey, keyPreview: _keyPreview, expanded: _expanded, ...upstream } = entry
+  return upstream
 }
 
 function Toggle({
@@ -388,41 +394,76 @@ export function ApiServerPage(): React.JSX.Element {
     updateDraft((current) => ({ ...current, upstreams: [...current.upstreams, entry] }))
   }
 
-  const testUpstream = async (upstream: UpstreamDraft): Promise<void> => {
-    const startedAt = performance.now()
-    setProbes((current) => ({ ...current, [upstream.id]: { loading: true } }))
+  const refreshModels = async ({
+    upstreams,
+    testUpstreams,
+    refreshCredentials
+  }: {
+    upstreams: UpstreamDraft[]
+    testUpstreams: boolean
+    refreshCredentials: boolean
+  }): Promise<void> => {
+    if (!draft) return
+    const actionName = upstreams.length === 1
+      ? `test-${upstreams[0].id}`
+      : refreshCredentials ? 'refresh-all-models' : 'refresh-models'
+    setAction(actionName)
+    setNotice(null)
+    setProbes((current) => ({
+      ...current,
+      ...Object.fromEntries(upstreams.map((upstream) => [upstream.id, { loading: true }]))
+    }))
     try {
-      const result = await codexApi().listCustomApiModels({
-        baseUrl: upstream.baseUrl,
-        ...(upstream.apiKey ? { apiKey: upstream.apiKey } : {}),
-        useSavedKey: false
+      const result = await codexApi().refreshLocalApiServerModels({
+        upstreams: upstreams.map(upstreamInputFromDraft),
+        testUpstreams,
+        refreshCredentials
       })
-      const probe = { loading: false, ok: result.ok, message: result.message, latencyMs: Math.round(performance.now() - startedAt) }
-      setProbes((current) => ({ ...current, [upstream.id]: probe }))
-      if (result.ok) {
-        updateDraft((current) => ({
-          ...current,
-          upstreams: current.upstreams.map((entry) => entry.id === upstream.id
-            ? {
-                ...entry,
-                baseUrl: result.baseUrl,
-                models: result.models,
-                protocol: result.protocol ?? entry.protocol
-              }
-            : entry)
-        }))
-        setNotice({ kind: 'ok', text: `${upstream.name} 测试成功，获取到 ${result.models.length} 个模型。` })
-      } else {
-        setNotice({ kind: 'error', text: result.message })
-      }
+      setProbes((current) => ({
+        ...current,
+        ...Object.fromEntries(result.upstreams.map((upstream) => [upstream.id, {
+          loading: false,
+          catalogOk: upstream.catalogOk,
+          probeOk: upstream.probeOk,
+          message: upstream.message,
+          latencyMs: upstream.latencyMs
+        }]))
+      }))
+      updateDraft((current) => ({
+        ...current,
+        upstreams: current.upstreams.map((entry) => {
+          const discovered = result.upstreams.find((item) => item.id === entry.id)
+          return discovered?.catalogOk
+            ? { ...entry, baseUrl: discovered.baseUrl, protocol: discovered.protocol, models: discovered.models }
+            : entry
+        }),
+        credentialSources: refreshCredentials
+          ? result.credentialSources.map((source) => ({ ...source, models: [...source.models] }))
+          : current.credentialSources
+      }))
+      const catalogCount = result.upstreams.filter((upstream) => upstream.catalogOk).length
+      const failedCount = result.upstreams.filter((upstream) => !upstream.catalogOk || upstream.probeOk === false).length
+      const credentialText = refreshCredentials ? `；已刷新 ${result.credentialSources.length} 个凭证来源的模型映射` : ''
+      setNotice({
+        kind: failedCount > 0 ? 'warn' : 'ok',
+        text: upstreams.length > 0
+          ? `已获取 ${catalogCount}/${upstreams.length} 个上游的模型${failedCount > 0 ? `，${failedCount} 个需要检查测试结果` : ''}${credentialText}。请保存后应用到路由。`
+          : `已刷新 ${result.credentialSources.length} 个凭证来源的模型映射；请保存后应用到路由。`
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setProbes((current) => ({
         ...current,
-        [upstream.id]: { loading: false, ok: false, message, latencyMs: Math.round(performance.now() - startedAt) }
+        ...Object.fromEntries(upstreams.map((upstream) => [upstream.id, { loading: false, catalogOk: false, message }]))
       }))
       setNotice({ kind: 'error', text: message })
+    } finally {
+      setAction(null)
     }
+  }
+
+  const testUpstream = async (upstream: UpstreamDraft): Promise<void> => {
+    await refreshModels({ upstreams: [upstream], testUpstreams: true, refreshCredentials: false })
   }
 
   const applyUpstreamPaste = async (andTest: boolean): Promise<void> => {
@@ -481,6 +522,45 @@ export function ApiServerPage(): React.JSX.Element {
       targets: source ? [{ sourceId: source.id, upstreamModel: source.models[0] ?? publicModel, priority: 1, enabled: true }] : []
     }
     updateDraft((current) => ({ ...current, routes: [...current.routes, route] }))
+  }
+
+  const importDiscoveredModelsToRoutes = (): void => {
+    if (!draft) return
+    setNotice({ kind: 'ok', text: '已将已发现模型加入公开路由；保存后会出现在 /v1/models，并可应用到 Codex。' })
+    updateDraft((current) => {
+      const discovered = [
+        ...current.upstreams
+          .filter((source) => source.enabled)
+          .flatMap((source) => source.models.map((model) => ({ sourceId: source.id, model, kind: 'api' as const }))),
+        ...current.credentialSources
+          .filter((source) => source.enabled)
+          .flatMap((source) => source.models.map((model) => ({ sourceId: source.id, model, kind: 'credential' as const })))
+      ]
+      const routes = current.routes.map((route) => ({ ...route, targets: route.targets.map((target) => ({ ...target })) }))
+      for (const item of discovered) {
+        const existing = routes.find((route) => route.publicModel === item.model)
+        if (!existing) {
+          routes.push({
+            publicModel: item.model,
+            strategy: 'priority',
+            sourceMode: item.kind === 'api' ? 'api_only' : 'credential_only',
+            targets: [{ sourceId: item.sourceId, upstreamModel: item.model, priority: 1, enabled: true }]
+          })
+          continue
+        }
+        const targetExists = existing.targets.some((target) => target.sourceId === item.sourceId && target.upstreamModel === item.model)
+        if (targetExists) continue
+        if (item.kind === 'api' && existing.sourceMode === 'credential_only') existing.sourceMode = 'mixed'
+        if (item.kind === 'credential' && existing.sourceMode === 'api_only') existing.sourceMode = 'mixed'
+        existing.targets.push({
+          sourceId: item.sourceId,
+          upstreamModel: item.model,
+          priority: existing.targets.length + 1,
+          enabled: true
+        })
+      }
+      return { ...current, routes }
+    })
   }
 
   const routeSources = (route: ModelRoute): Array<{ id: string; label: string; models: string[]; kind: 'api' | 'credential' }> => [
@@ -746,6 +826,7 @@ export function ApiServerPage(): React.JSX.Element {
                 <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
                   <div><h2 id="upstreams-title" className="text-[13px] font-semibold">第三方 API 上游</h2><p className="mt-0.5 max-w-[72ch] text-[11px] text-[var(--color-text-muted)]">这里填写第三方服务自己的 URL 和 Key。本软件仅在转发请求时使用；测试会自动尝试带 /v1 与不带 /v1。</p></div>
                   <div className="flex items-center gap-1.5">
+                    <Button variant="soft" disabled={isBusy || draft.upstreams.filter((entry) => entry.enabled).length === 0} onClick={() => void refreshModels({ upstreams: draft.upstreams.filter((entry) => entry.enabled), testUpstreams: true, refreshCredentials: true })}>{action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新全部模型并检查</Button>
                     <Button onClick={() => setPasteOpen((open) => !open)} aria-expanded={pasteOpen}><Clipboard size={15} />粘贴识别</Button>
                     <Button variant="soft" onClick={addUpstream}><Plus size={15} />添加上游</Button>
                   </div>
@@ -789,7 +870,7 @@ export function ApiServerPage(): React.JSX.Element {
                               <span className="truncate text-[12.5px] font-semibold">{entry.name}</span>
                               <span className="truncate font-[var(--font-mono)] text-[10.5px] text-[var(--color-text-muted)]">{entry.baseUrl}</span>
                             </button>
-                            {probe ? <span className={cn('inline-flex items-center gap-1 text-[11px]', probe.loading ? 'text-[var(--color-info)]' : probe.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-danger)]')}>{probe.loading ? <LoaderCircle className="spin" size={13} /> : probe.ok ? <Check size={13} /> : <CircleAlert size={13} />}{probe.loading ? '测试中' : `${probe.ok ? '可用' : '失败'} · ${probe.latencyMs ?? 0} ms`}</span> : <span className="text-[11px] text-[var(--color-text-muted)]">未测试</span>}
+                            {probe ? <span className={cn('inline-flex items-center gap-1 text-[11px]', probe.loading ? 'text-[var(--color-info)]' : !probe.catalogOk ? 'text-[var(--color-danger)]' : probe.probeOk === false ? 'text-[var(--color-warn)]' : 'text-[var(--color-accent)]')}>{probe.loading ? <LoaderCircle className="spin" size={13} /> : probe.catalogOk ? <Check size={13} /> : <CircleAlert size={13} />}{probe.loading ? '测试中' : `${probe.catalogOk ? probe.probeOk === false ? '已获取模型，测试失败' : '已验证' : '获取失败'} · ${probe.latencyMs ?? 0} ms`}</span> : <span className="text-[11px] text-[var(--color-text-muted)]">未测试</span>}
                             <Toggle checked={entry.enabled} onChange={(enabled) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, enabled } : item) }))} label={entry.enabled ? '启用' : '停用'} />
                             <Button size="sm" onClick={() => void testUpstream(entry)} disabled={probe?.loading}>{probe?.loading ? <LoaderCircle className="spin" size={14} /> : <Activity size={14} />}测试并获取模型</Button>
                             <Button size="icon" variant="danger" aria-label={`删除上游 ${entry.name}`} onClick={() => updateDraft((current) => ({ ...current, upstreams: current.upstreams.filter((item) => item.id !== entry.id), routes: current.routes.map((route) => ({ ...route, targets: route.targets.filter((target) => target.sourceId !== entry.id) })) }))}><Trash2 size={15} /></Button>
@@ -812,7 +893,7 @@ export function ApiServerPage(): React.JSX.Element {
                               <Field label={`模型列表 · ${entry.models.length}`} hint="测试成功后自动填充，也可手动编辑" className="col-span-2">
                                 <textarea className={textareaClass} value={entry.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, models: parseModelList(event.target.value) } : item) }))} />
                               </Field>
-                              {probe?.message ? <p className={cn('col-span-2 text-[11px]', probe.ok ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-danger)]')}>{probe.message}</p> : null}
+                              {probe?.message ? <p className={cn('col-span-2 text-[11px]', probe.catalogOk ? probe.probeOk === false ? 'text-[var(--color-warn)]' : 'text-[var(--color-text-muted)]' : 'text-[var(--color-danger)]')}>{probe.message}</p> : null}
                             </div>
                           ) : null}
                         </article>
@@ -830,10 +911,13 @@ export function ApiServerPage(): React.JSX.Element {
                     <h2 id="credential-sources-title" className="text-[13px] font-semibold">账号凭证上游</h2>
                     <p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">来自 Codex、Grok 与 CPA 账号库的安全引用；Token 不会进入 Renderer 或 API 服务配置。</p>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-accent)]"><ShieldCheck size={13} />已隔离秘密</span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-accent)]"><ShieldCheck size={13} />已隔离秘密</span>
+                    <Button variant="soft" disabled={isBusy} onClick={() => void refreshModels({ upstreams: [], testUpstreams: false, refreshCredentials: true })}>{action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新凭证模型</Button>
+                  </div>
                 </header>
                 {draft.credentialSources.length === 0 ? (
-                  <EmptyState icon={ShieldCheck} title="账号库中没有可用凭证" detail="先在 Codex、Grok 或 CPA 账号页导入凭证，再回到此处启用它作为 API 服务上游。" action={<Button onClick={() => void load()}><RefreshCw size={14} />刷新凭证源</Button>} />
+                  <EmptyState icon={ShieldCheck} title="账号库中没有可用凭证" detail="先在 Codex、Grok 或 CPA 账号页导入凭证，再回到此处启用它作为 API 服务上游。" action={<Button onClick={() => void refreshModels({ upstreams: [], testUpstreams: false, refreshCredentials: true })}><RefreshCw size={14} />刷新凭证源</Button>} />
                 ) : (
                   <div className="divide-y divide-[var(--color-border)]">
                     {draft.credentialSources.map((source) => {
@@ -856,8 +940,16 @@ export function ApiServerPage(): React.JSX.Element {
                           <Field label="优先级">
                             <Input aria-label={`${source.label} 优先级`} type="number" value={source.priority} onChange={(event) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, priority: Number(event.target.value) } : entry) }))} />
                           </Field>
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--color-text-muted)]" title={source.models.join(', ')}>{source.models.length > 0 ? `${source.models.length} 个模型 · ${source.models.slice(0, 3).join(', ')}` : '未声明模型，路由时手动填写'}</span>
+                          <div className="grid min-w-0 gap-2">
+                            <Field label={`可用模型 · ${source.models.length}`} hint="凭证映射会自动发现；也可手动补充，逗号或换行分隔">
+                              <Input
+                                aria-label={`${source.label} 可用模型`}
+                                className="font-[var(--font-mono)] text-[11px]"
+                                value={source.models.join(', ')}
+                                placeholder="未声明模型，路由时手动填写"
+                                onChange={(event) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, models: parseModelList(event.target.value) } : entry) }))}
+                              />
+                            </Field>
                             <Toggle checked={source.enabled} onChange={(enabled) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, enabled } : entry) }))} label={source.enabled ? '已加入 API 池' : '仅账号切换'} />
                           </div>
                         </article>
@@ -872,7 +964,10 @@ export function ApiServerPage(): React.JSX.Element {
               <section aria-labelledby="routes-title">
                 <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
                   <div><h2 id="routes-title" className="text-[13px] font-semibold">公开模型与路由</h2><p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">客户端只看到公开模型名；每个目标映射到真实的上游模型。</p></div>
-                  <Button variant="soft" onClick={addRoute}><Plus size={15} />添加公开模型</Button>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button variant="soft" disabled={!draft.upstreams.some((source) => source.enabled && source.models.length > 0) && !draft.credentialSources.some((source) => source.enabled && source.models.length > 0)} onClick={importDiscoveredModelsToRoutes}><WandSparkles size={15} />导入已发现模型</Button>
+                    <Button variant="soft" onClick={addRoute}><Plus size={15} />添加公开模型</Button>
+                  </div>
                 </header>
                 {draft.routes.length === 0 ? (
                   <EmptyState icon={Route} title="还没有公开模型" detail="创建公开模型后，/v1/models 与 Codex 模型目录才会显示它。没有路由的模型会返回 model_not_found。" action={<Button variant="default" onClick={addRoute}><Plus size={15} />添加第一个模型</Button>} />

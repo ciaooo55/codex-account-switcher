@@ -132,10 +132,11 @@ export class CredentialUpstreamRegistry {
         result.push(previous
           ? {
               ...previous,
-              // Refresh only provider identity and newly discovered models.
+              // Preserve any manual entries while incorporating newly imported
+              // Sub2API/CPA mappings on every refresh.
               provider,
               credentialId: credential.id,
-              models: previous.models.length > 0 ? [...previous.models] : sourceModels(credential)
+              models: normalizeModelIds([...previous.models, ...sourceModels(credential)])
             }
           : {
               id,

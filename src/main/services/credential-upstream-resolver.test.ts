@@ -83,9 +83,9 @@ describe('CredentialUpstreamRegistry', () => {
     expect(JSON.stringify(discovered)).not.toContain('at-super-secret')
     expect(JSON.stringify(discovered)).not.toContain('should_not_leak')
 
-    const configured = [{ ...discovered[0], enabled: true, priority: 2, label: 'Primary' }]
+    const configured = [{ ...discovered[0], models: ['manual-model'], enabled: true, priority: 2, label: 'Primary' }]
     await expect(registry.discover(configured)).resolves.toEqual([
-      { ...configured[0], models: ['public', 'gpt-real'] }
+      { ...configured[0], models: ['manual-model', 'public', 'gpt-real'] }
     ])
   })
 

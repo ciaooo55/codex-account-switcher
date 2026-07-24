@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   generateLocalApiAccessKey: vi.fn(),
   revealLocalApiAccessKey: vi.fn(),
   revealLocalApiUpstreamKey: vi.fn(),
+  refreshLocalApiServerModels: vi.fn(),
   applyLocalApiServerToCodex: vi.fn(),
   listCustomApiModels: vi.fn()
 }))
@@ -91,6 +92,19 @@ describe('ApiServerPage', () => {
       models: ['gpt-5.4', 'gpt-5.4-mini'],
       baseUrl: 'https://api.example.com/v1',
       modelsUrl: 'https://api.example.com/v1/models'
+    })
+    api.refreshLocalApiServerModels.mockResolvedValue({
+      upstreams: [{
+        id: 'upstream-a',
+        catalogOk: true,
+        probeOk: true,
+        baseUrl: 'https://api.example.com/v1',
+        protocol: 'responses',
+        models: ['gpt-5.4', 'gpt-5.4-mini'],
+        latencyMs: 25,
+        message: '已获取模型并完成真实请求测试'
+      }],
+      credentialSources: localApiState().config.credentialSources
     })
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
   })
@@ -183,8 +197,12 @@ describe('ApiServerPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
 
     fireEvent.click(screen.getByRole('button', { name: '测试并获取模型' }))
-    await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({ baseUrl: 'https://api.example.com/v1', useSavedKey: false }))
-    expect(await screen.findByText(/可用 · \d+ ms/)).toBeInTheDocument()
+    await waitFor(() => expect(api.refreshLocalApiServerModels).toHaveBeenCalledWith({
+      upstreams: [expect.objectContaining({ id: 'upstream-a', baseUrl: 'https://api.example.com/v1' })],
+      testUpstreams: true,
+      refreshCredentials: false
+    }))
+    expect(await screen.findByText(/已验证 · \d+ ms/)).toBeInTheDocument()
   })
 
   it('识别 URL-safe Base64 中的 URL 和 Key 并立即真实测试', async () => {
@@ -200,12 +218,52 @@ describe('ApiServerPage', () => {
     fireEvent.change(screen.getByLabelText('上游粘贴内容'), { target: { value: encoded } })
     fireEvent.click(screen.getByRole('button', { name: '识别并测试' }))
 
-    await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({
-      baseUrl: 'https://encoded.example.com/v1',
-      apiKey: 'sk-encoded-1234567890',
-      useSavedKey: false
+    await waitFor(() => expect(api.refreshLocalApiServerModels).toHaveBeenCalledWith({
+      upstreams: [expect.objectContaining({
+        baseUrl: 'https://encoded.example.com/v1',
+        apiKey: 'sk-encoded-1234567890'
+      })],
+      testUpstreams: true,
+      refreshCredentials: false
     }))
     expect(screen.getByText('encoded.example.com')).toBeInTheDocument()
+  })
+
+  it('一键刷新全部上游并允许编辑凭证的可用模型', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('本软件访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新全部模型并检查' }))
+
+    await waitFor(() => expect(api.refreshLocalApiServerModels).toHaveBeenCalledWith({
+      upstreams: [expect.objectContaining({ id: 'upstream-a' })],
+      testUpstreams: true,
+      refreshCredentials: true
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: /账号凭证源/ }))
+    const models = await screen.findByLabelText('user@example.com 可用模型')
+    fireEvent.change(models, { target: { value: 'gpt-5.4, gpt-5.5' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].credentialSources[0].models).toEqual(['gpt-5.4', 'gpt-5.5'])
+  })
+
+  it('将已发现的上游模型一键导入公开路由，供 Codex 选择', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('本软件访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /公开模型路由/ }))
+    fireEvent.click(screen.getByRole('button', { name: '导入已发现模型' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        publicModel: 'gpt-5.4',
+        targets: [expect.objectContaining({ sourceId: 'upstream-a', upstreamModel: 'gpt-5.4' })]
+      })
+    ]))
   })
 
   it('可以将脱敏的账号凭证引用加入 API 上游池', async () => {

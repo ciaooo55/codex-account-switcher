@@ -116,6 +116,28 @@ export interface LocalApiServerState {
   status: LocalApiServerStatus
 }
 
+/**
+ * A secret-free result from a real upstream discovery and lightweight model
+ * request.  `catalogOk` and `probeOk` are kept separate: a provider may
+ * expose a useful model list even when its first model cannot answer a test
+ * prompt (for example an image-only model).
+ */
+export interface LocalApiUpstreamCheckResult {
+  id: string
+  catalogOk: boolean
+  probeOk: boolean | null
+  baseUrl: string
+  protocol: ApiUpstreamProtocol
+  models: string[]
+  latencyMs: number
+  message: string
+}
+
+export interface LocalApiModelRefreshResult {
+  upstreams: LocalApiUpstreamCheckResult[]
+  credentialSources: CredentialSourceInput[]
+}
+
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
 const MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/
 

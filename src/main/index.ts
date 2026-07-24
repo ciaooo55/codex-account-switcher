@@ -71,7 +71,13 @@ import {
 import { atomicWriteFile } from './storage/atomic-file'
 import { LocalApiServer, generateLocalApiAccessKey } from './services/local-api-server'
 import { CredentialUpstreamRegistry } from './services/credential-upstream-resolver'
-import { normalizeLocalApiServerConfig, type LocalApiServerConfigInput, type LocalApiServerState } from '../shared/api-server'
+import {
+  normalizeLocalApiServerConfig,
+  type ApiUpstreamInput,
+  type LocalApiModelRefreshResult,
+  type LocalApiServerConfigInput,
+  type LocalApiServerState
+} from '../shared/api-server'
 import { CredentialSwitcher } from './switching/switcher'
 import { readActiveOwnedProviderConfig } from './switching/config'
 import {
@@ -1927,6 +1933,126 @@ async function main(): Promise<void> {
     const key = await apiServerStore.getUpstreamKey(id)
     if (!key) throw new Error('上游 API Key 不存在或无法解密')
     return key
+  })
+  ipcMain.handle(ipcChannels.localApiServerRefreshModels, async (_event, input: unknown) => {
+    const payload = z.object({
+      upstreams: z.array(z.object({
+        id: z.string().min(1).max(128),
+        name: z.string().min(1).max(128),
+        baseUrl: z.string().min(1).max(2048),
+        apiKey: z.string().max(16_384).optional(),
+        protocol: z.enum(['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama']),
+        models: z.array(z.string().max(128)).max(500),
+        priority: z.number().finite(),
+        enabled: z.boolean()
+      })).max(200),
+      testUpstreams: z.boolean().optional(),
+      refreshCredentials: z.boolean().optional()
+    }).parse(input) as {
+      upstreams: ApiUpstreamInput[]
+      testUpstreams?: boolean
+      refreshCredentials?: boolean
+    }
+
+    const runtime = await apiServerStore.runtimeConfig()
+    const savedKeys = new Map(runtime.upstreams.map((upstream) => [upstream.id, upstream.apiKey]))
+    const timeoutMs = (await settingsStore.get()).timeoutMs
+    const upstreams = payload.upstreams.filter((upstream) => upstream.enabled)
+    const results: LocalApiModelRefreshResult['upstreams'] = new Array(upstreams.length)
+    let cursor = 0
+
+    // A bounded pool prevents a bulk refresh from flooding a shared provider
+    // while retaining enough parallelism for a responsive UI.
+    await Promise.all(Array.from({ length: Math.min(4, upstreams.length) }, async () => {
+      while (true) {
+        const index = cursor++
+        if (index >= upstreams.length) return
+        const upstream = upstreams[index]
+        const startedAt = Date.now()
+        const apiKey = upstream.apiKey?.trim() || savedKeys.get(upstream.id) || ''
+        try {
+          const discovered = await discoverApiUpstream({
+            baseUrl: upstream.baseUrl,
+            apiKey,
+            timeoutMs
+          })
+          const latencyMs = Date.now() - startedAt
+          if (discovered.models.length === 0) {
+            const detail = discovered.errors.slice(0, 3).join('；')
+            results[index] = {
+              id: upstream.id,
+              catalogOk: false,
+              probeOk: null,
+              baseUrl: discovered.baseUrl,
+              protocol: discovered.protocol,
+              models: [],
+              latencyMs,
+              message: detail ? `未获取到模型：${detail}` : '未获取到模型列表'
+            }
+            continue
+          }
+          if (!payload.testUpstreams) {
+            results[index] = {
+              id: upstream.id,
+              catalogOk: true,
+              probeOk: null,
+              baseUrl: discovered.baseUrl,
+              protocol: discovered.protocol,
+              models: discovered.models,
+              latencyMs,
+              message: `已获取 ${discovered.models.length} 个模型`
+            }
+            continue
+          }
+          try {
+            const probe = await probeApiUpstreamModel({
+              protocol: discovered.protocol,
+              baseUrl: discovered.baseUrl,
+              apiKey,
+              model: discovered.models[0],
+              timeoutMs
+            })
+            results[index] = {
+              id: upstream.id,
+              catalogOk: true,
+              probeOk: true,
+              baseUrl: discovered.baseUrl,
+              protocol: discovered.protocol,
+              models: discovered.models,
+              latencyMs: Date.now() - startedAt,
+              message: `已获取 ${discovered.models.length} 个模型，并完成真实请求测试（${probe.probeUrl}）`
+            }
+          } catch (error) {
+            results[index] = {
+              id: upstream.id,
+              catalogOk: true,
+              probeOk: false,
+              baseUrl: discovered.baseUrl,
+              protocol: discovered.protocol,
+              models: discovered.models,
+              latencyMs: Date.now() - startedAt,
+              message: `已获取 ${discovered.models.length} 个模型，但真实请求测试未通过：${error instanceof Error ? error.message : String(error)}`
+            }
+          }
+        } catch (error) {
+          results[index] = {
+            id: upstream.id,
+            catalogOk: false,
+            probeOk: null,
+            baseUrl: upstream.baseUrl,
+            protocol: upstream.protocol,
+            models: [],
+            latencyMs: Date.now() - startedAt,
+            message: error instanceof Error ? error.message : '上游模型发现失败'
+          }
+        }
+      }
+    }))
+
+    const credentialSources = payload.refreshCredentials && credentialUpstreamRegistry
+      ? await credentialUpstreamRegistry.discover(runtime.credentialSources)
+      : (await localApiServerState()).config.credentialSources
+    return { upstreams: results, credentialSources } satisfies LocalApiModelRefreshResult
   })
   ipcMain.handle(ipcChannels.localApiServerSave, async (_event, input: unknown) => {
     const nextInput = normalizeLocalApiServerConfig(

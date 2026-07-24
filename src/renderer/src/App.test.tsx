@@ -397,6 +397,7 @@ function api(): CodexSwitcherApi {
     generateLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
     revealLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
     revealLocalApiUpstreamKey: vi.fn().mockResolvedValue('sk-upstream-test'),
+    refreshLocalApiServerModels: vi.fn().mockResolvedValue({ upstreams: [], credentialSources: [] }),
     applyLocalApiServerToCodex: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     scanGrokDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
     importGrokFiles: vi.fn().mockResolvedValue(null),
