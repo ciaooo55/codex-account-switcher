@@ -171,8 +171,8 @@ function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
     height: 880,
-    minWidth: 980,
-    minHeight: 640,
+    minWidth: 720,
+    minHeight: 560,
     autoHideMenuBar: true,
     show: false,
     backgroundColor: '#edf1f3',
@@ -2013,6 +2013,10 @@ async function main(): Promise<void> {
       baseUrl: z.string().min(1).max(2048),
       apiKey: z.string().max(16_384).optional(),
       protocol: z.enum(['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama']),
+      authMode: z.enum(['auto', 'bearer', 'x_api_key', 'api_key', 'x_goog_api_key', 'query', 'custom', 'none']).optional(),
+      authHeaderName: z.string().max(128).optional(),
+      authHeaderPrefix: z.string().max(200).optional(),
+      authQueryParam: z.string().max(128).optional(),
       models: z.array(z.string().max(128)).max(500),
       priority: z.number().finite(),
       enabled: z.boolean()
@@ -2066,6 +2070,10 @@ async function main(): Promise<void> {
         baseUrl: z.string().min(1).max(2048),
         apiKey: z.string().max(16_384).optional(),
         protocol: z.enum(['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama']),
+        authMode: z.enum(['auto', 'bearer', 'x_api_key', 'api_key', 'x_goog_api_key', 'query', 'custom', 'none']).optional(),
+        authHeaderName: z.string().max(128).optional(),
+        authHeaderPrefix: z.string().max(200).optional(),
+        authQueryParam: z.string().max(128).optional(),
         models: z.array(z.string().max(128)).max(500),
         priority: z.number().finite(),
         enabled: z.boolean()
@@ -2098,6 +2106,10 @@ async function main(): Promise<void> {
           const discovered = await discoverApiUpstream({
             baseUrl: upstream.baseUrl,
             apiKey,
+            authMode: upstream.authMode,
+            authHeaderName: upstream.authHeaderName,
+            authHeaderPrefix: upstream.authHeaderPrefix,
+            authQueryParam: upstream.authQueryParam,
             timeoutMs
           })
           const latencyMs = Date.now() - startedAt
@@ -2133,6 +2145,10 @@ async function main(): Promise<void> {
               protocol: discovered.protocol,
               baseUrl: discovered.baseUrl,
               apiKey,
+              authMode: upstream.authMode,
+              authHeaderName: upstream.authHeaderName,
+              authHeaderPrefix: upstream.authHeaderPrefix,
+              authQueryParam: upstream.authQueryParam,
               model: discovered.models[0],
               timeoutMs
             })

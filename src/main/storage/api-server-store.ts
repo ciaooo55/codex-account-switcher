@@ -29,6 +29,10 @@ interface StoredUpstream {
   priority: number
   enabled: boolean
   encryptedApiKey?: string
+  authMode?: import('../../shared/api-server').ApiUpstreamAuthMode
+  authHeaderName?: string
+  authHeaderPrefix?: string
+  authQueryParam?: string
 }
 
 interface ApiServerFile {
@@ -101,7 +105,11 @@ export class ApiServerStore {
           models: entry.models,
           priority: entry.priority,
           enabled: entry.enabled,
-          ...(encryptedApiKey ? { encryptedApiKey } : {})
+          ...(encryptedApiKey ? { encryptedApiKey } : {}),
+          authMode: entry.authMode ?? 'auto',
+          ...(entry.authHeaderName ? { authHeaderName: entry.authHeaderName } : {}),
+          ...(entry.authHeaderPrefix ? { authHeaderPrefix: entry.authHeaderPrefix } : {}),
+          ...(entry.authQueryParam ? { authQueryParam: entry.authQueryParam } : {})
         }
       })
 
@@ -147,6 +155,10 @@ export class ApiServerStore {
           baseUrl: entry.baseUrl,
           apiKey: entry.encryptedApiKey ? this.cipher.decrypt(entry.encryptedApiKey) : '',
           protocol: entry.protocol,
+          authMode: entry.authMode ?? 'auto',
+          authHeaderName: entry.authHeaderName ?? '',
+          authHeaderPrefix: entry.authHeaderPrefix ?? '',
+          authQueryParam: entry.authQueryParam ?? 'api_key',
           models: [...entry.models],
           priority: entry.priority,
           enabled: entry.enabled
@@ -212,6 +224,10 @@ export class ApiServerStore {
         name: entry.name,
         baseUrl: entry.baseUrl,
         protocol: entry.protocol,
+        authMode: entry.authMode ?? 'auto',
+        ...(entry.authHeaderName ? { authHeaderName: entry.authHeaderName } : {}),
+        ...(entry.authHeaderPrefix ? { authHeaderPrefix: entry.authHeaderPrefix } : {}),
+        ...(entry.authQueryParam ? { authQueryParam: entry.authQueryParam } : {}),
         models: [...entry.models],
         priority: entry.priority,
         enabled: entry.enabled,

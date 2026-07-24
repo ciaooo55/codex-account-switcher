@@ -14,6 +14,22 @@ export type ApiUpstreamProtocol =
   | 'anthropic_messages'
   | 'gemini'
   | 'ollama'
+/**
+ * Authentication variants used by third-party gateways. `auto` chooses the
+ * native convention for the selected protocol (for example x-api-key for
+ * Anthropic and x-goog-api-key for Gemini) and Bearer for OpenAI-compatible
+ * upstreams. The explicit modes cover common OpenAI-compatible relays without
+ * forcing users to put a client key into the wrong header.
+ */
+export type ApiUpstreamAuthMode =
+  | 'auto'
+  | 'bearer'
+  | 'x_api_key'
+  | 'api_key'
+  | 'x_goog_api_key'
+  | 'query'
+  | 'custom'
+  | 'none'
 export type ModelRouteStrategy = 'single' | 'priority' | 'round_robin'
 export type ModelRouteSourceMode = 'api_only' | 'credential_only' | 'mixed'
 export type CredentialSourceProvider = 'codex' | 'cpa-codex' | 'grok' | 'cpa-grok'
@@ -38,6 +54,14 @@ export interface ApiUpstreamInput {
   baseUrl: string
   apiKey?: string
   protocol: ApiUpstreamProtocol
+  /** Optional for migration from 0.14.0 configurations. */
+  authMode?: ApiUpstreamAuthMode
+  /** Used only by `custom`; the API key remains separately encrypted. */
+  authHeaderName?: string
+  /** Optional literal prefix for `custom`, for example `Token `. */
+  authHeaderPrefix?: string
+  /** Used only by `query`; defaults to `api_key`. */
+  authQueryParam?: string
   models: string[]
   priority: number
   enabled: boolean
@@ -172,6 +196,82 @@ export interface LocalApiModelRefreshResult {
 
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
 const MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/
+const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/
+const FORBIDDEN_AUTH_HEADERS = new Set([
+  'content-length', 'connection', 'host', 'transfer-encoding', 'upgrade'
+])
+
+export interface ApiUpstreamAuthConfig {
+  protocol: ApiUpstreamProtocol
+  apiKey?: string
+  authMode?: ApiUpstreamAuthMode
+  authHeaderName?: string
+  authHeaderPrefix?: string
+  authQueryParam?: string
+}
+
+function normalizeAuthMode(value: ApiUpstreamAuthMode | undefined): ApiUpstreamAuthMode {
+  const mode = value ?? 'auto'
+  if (!['auto', 'bearer', 'x_api_key', 'api_key', 'x_goog_api_key', 'query', 'custom', 'none'].includes(mode)) {
+    throw new Error('上游鉴权方式无效')
+  }
+  return mode
+}
+
+function normalizeAuthHeaderName(value: string | undefined): string {
+  const name = value?.trim() ?? ''
+  if (!name) return ''
+  if (!HEADER_NAME_PATTERN.test(name) || FORBIDDEN_AUTH_HEADERS.has(name.toLowerCase())) {
+    throw new Error('自定义鉴权请求头无效')
+  }
+  return name
+}
+
+function normalizeAuthPrefix(value: string | undefined): string {
+  const prefix = value ?? ''
+  if (prefix.length > 200 || /[\r\n]/.test(prefix)) throw new Error('自定义鉴权前缀无效')
+  return prefix
+}
+
+function normalizeAuthQueryParam(value: string | undefined): string {
+  const parameter = (value?.trim() || 'api_key')
+  if (!HEADER_NAME_PATTERN.test(parameter)) throw new Error('鉴权查询参数名无效')
+  return parameter
+}
+
+/** Resolves automatic provider authentication into a concrete safe mode. */
+export function resolvedApiUpstreamAuthMode(input: ApiUpstreamAuthConfig): ApiUpstreamAuthMode {
+  if ((input.authMode ?? 'auto') !== 'auto') return input.authMode ?? 'auto'
+  if (input.protocol === 'anthropic_messages') return 'x_api_key'
+  if (input.protocol === 'gemini') return 'x_goog_api_key'
+  return 'bearer'
+}
+
+/** Builds only the credential header. Callers add protocol/content headers. */
+export function apiUpstreamAuthHeaders(input: ApiUpstreamAuthConfig): Record<string, string> {
+  const apiKey = input.apiKey?.trim() ?? ''
+  if (!apiKey) return {}
+  switch (resolvedApiUpstreamAuthMode(input)) {
+    case 'bearer': return { authorization: `Bearer ${apiKey}` }
+    case 'x_api_key': return { 'x-api-key': apiKey }
+    case 'api_key': return { 'api-key': apiKey }
+    case 'x_goog_api_key': return { 'x-goog-api-key': apiKey }
+    case 'custom': {
+      const name = normalizeAuthHeaderName(input.authHeaderName)
+      return name ? { [name]: `${normalizeAuthPrefix(input.authHeaderPrefix)}${apiKey}` } : {}
+    }
+    default: return {}
+  }
+}
+
+/** Applies query authentication without ever serialising the secret into logs. */
+export function applyApiUpstreamAuthQuery(url: string, input: ApiUpstreamAuthConfig): string {
+  const apiKey = input.apiKey?.trim() ?? ''
+  if (!apiKey || resolvedApiUpstreamAuthMode(input) !== 'query') return url
+  const parsed = new URL(url)
+  parsed.searchParams.set(normalizeAuthQueryParam(input.authQueryParam), apiKey)
+  return parsed.toString()
+}
 
 export function isValidLocalApiServerPort(port: number): boolean {
   return Number.isInteger(port) && port >= 1 && port <= 65_535
@@ -227,17 +327,27 @@ export function normalizeLocalApiServerConfig(
     // access still always requires one of this application's local keys.
     if (apiKey !== undefined && apiKey.length > 16_384) throw new Error('上游 API Key 过长')
     const priority = Number.isFinite(entry.priority) ? Math.trunc(entry.priority) : 0
+    const protocol = (() => {
+      if (!['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama'].includes(entry.protocol)) {
+        throw new Error('上游协议类型无效')
+      }
+      return entry.protocol
+    })()
+    const authMode = normalizeAuthMode(entry.authMode)
+    const authHeaderName = normalizeAuthHeaderName(entry.authHeaderName)
+    const authHeaderPrefix = normalizeAuthPrefix(entry.authHeaderPrefix)
+    const authQueryParam = normalizeAuthQueryParam(entry.authQueryParam)
+    if (authMode === 'custom' && !authHeaderName) throw new Error('自定义鉴权必须填写请求头名称')
     return {
       id,
       name,
       baseUrl,
       ...(apiKey === undefined ? {} : { apiKey }),
-    protocol: (() => {
-      if (!['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama'].includes(entry.protocol)) {
-        throw new Error('上游协议类型无效')
-      }
-      return entry.protocol
-    })(),
+      protocol,
+      authMode,
+      ...(authHeaderName ? { authHeaderName } : {}),
+      ...(authHeaderPrefix ? { authHeaderPrefix } : {}),
+      ...(authMode === 'query' || entry.authQueryParam ? { authQueryParam } : {}),
       models: normalizeModelIds(entry.models),
       priority,
       enabled: Boolean(entry.enabled)

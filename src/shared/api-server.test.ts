@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  apiUpstreamAuthHeaders,
+  applyApiUpstreamAuthQuery,
   buildOpenAiUpstreamUrl,
   normalizeLocalApiServerConfig,
   normalizeModelIds
@@ -103,5 +105,29 @@ describe('api server shared configuration', () => {
       ...input,
       codexBinding: { accessKeyId: 'bad id', model: 'xxx', enforce: true }
     })).toThrow('Codex API 服务绑定无效')
+  })
+
+  it('normalizes common third-party gateway authentication without storing the key in a header field', () => {
+    const input = {
+      port: 8888,
+      autoStart: false,
+      accessKeys: [],
+      upstreams: [{
+        id: 'gateway', name: 'Gateway', baseUrl: 'https://gateway.example/v1', apiKey: 'secret-key',
+        protocol: 'auto' as const, authMode: 'custom' as const, authHeaderName: 'X-Provider-Key', authHeaderPrefix: 'Token ',
+        models: ['real-model'], priority: 1, enabled: true
+      }],
+      routes: [{ publicModel: 'public-model', strategy: 'single' as const, sourceMode: 'api_only' as const, targets: [{ sourceId: 'gateway', upstreamModel: 'real-model', priority: 1, enabled: true }] }]
+    }
+    const normalized = normalizeLocalApiServerConfig(input)
+    expect(normalized.upstreams[0]).toMatchObject({ authMode: 'custom', authHeaderName: 'X-Provider-Key', authHeaderPrefix: 'Token ' })
+    expect(apiUpstreamAuthHeaders(normalized.upstreams[0])).toEqual({ 'X-Provider-Key': 'Token secret-key' })
+    expect(applyApiUpstreamAuthQuery('https://gateway.example/v1/models', {
+      protocol: 'auto', apiKey: 'secret-key', authMode: 'query', authQueryParam: 'token'
+    })).toBe('https://gateway.example/v1/models?token=secret-key')
+    expect(() => normalizeLocalApiServerConfig({
+      ...input,
+      upstreams: [{ ...input.upstreams[0], authHeaderName: 'Host' }]
+    })).toThrow('自定义鉴权请求头无效')
   })
 })

@@ -4,6 +4,8 @@ import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
 import {
   LOCAL_API_SERVER_HOST,
+  apiUpstreamAuthHeaders,
+  applyApiUpstreamAuthQuery,
   buildOpenAiUpstreamUrl,
   normalizeLocalApiServerConfig,
   type ApiUpstreamInput,
@@ -99,7 +101,14 @@ function cloneRuntimeConfig(config: LocalApiServerRuntimeConfig): LocalApiServer
       return { ...entry, key: entry.key }
     }),
     upstreams: normalized.upstreams.map((entry) => {
-      return { ...entry, apiKey: entry.apiKey ?? '' }
+      return {
+        ...entry,
+        apiKey: entry.apiKey ?? '',
+        authMode: entry.authMode ?? 'auto',
+        authHeaderName: entry.authHeaderName ?? '',
+        authHeaderPrefix: entry.authHeaderPrefix ?? '',
+        authQueryParam: entry.authQueryParam ?? 'api_key'
+      }
     }),
     credentialSources: (normalized.credentialSources ?? []).map((entry) => ({
       ...entry,
@@ -367,18 +376,19 @@ function apiUpstreamHeaders(
     'content-type': 'application/json',
     accept: incoming.headers.accept ?? '*/*'
   }
+  const auth = apiUpstreamAuthHeaders(upstream)
   if (upstream.protocol === 'anthropic_messages') {
     return {
       ...common,
-      ...(upstream.apiKey ? { 'x-api-key': upstream.apiKey } : {}),
+      ...auth,
       'anthropic-version': '2023-06-01',
       ...(incoming.headers['anthropic-version'] ? { 'anthropic-version': String(incoming.headers['anthropic-version']) } : {})
     }
   }
-  if (upstream.protocol === 'gemini') return { ...common, ...(upstream.apiKey ? { 'x-goog-api-key': upstream.apiKey } : {}) }
+  if (upstream.protocol === 'gemini') return { ...common, ...auth }
   return {
     ...common,
-    ...(upstream.apiKey ? { authorization: `Bearer ${upstream.apiKey}` } : {}),
+    ...auth,
     ...(incoming.headers['openai-beta'] ? { 'openai-beta': String(incoming.headers['openai-beta']) } : {})
   }
 }
@@ -835,12 +845,15 @@ export class LocalApiServer {
           ? await this.resolveCredentialUpstream?.({ source: candidate.source, endpoint: '/v1/responses' })
           : null
         if (candidate.kind === 'credential' && !credentialResolution) continue
-        const url = candidate.kind === 'api'
+        const rawUrl = candidate.kind === 'api'
           ? buildOpenAiUpstreamUrl(candidate.upstream.baseUrl, '/v1/responses')
           : credentialResolution!.url
+        const url = candidate.kind === 'api'
+          ? applyApiUpstreamAuthQuery(rawUrl, candidate.upstream)
+          : rawUrl
         const headers = candidate.kind === 'api'
           ? {
-              authorization: `Bearer ${candidate.upstream.apiKey}`,
+              ...apiUpstreamAuthHeaders(candidate.upstream),
               ...(request.headers['openai-beta']
                 ? { 'openai-beta': String(request.headers['openai-beta']) }
                 : {})
@@ -1231,9 +1244,12 @@ export class LocalApiServer {
               ? {}
               : { model: candidate.target.upstreamModel })
           }))
-          const upstreamUrl = candidate.kind === 'api'
+          const rawUpstreamUrl = candidate.kind === 'api'
             ? buildProviderUpstreamUrl(candidate.upstream, plan.endpoint, plan.query)
             : credentialResolution!.url
+          const upstreamUrl = candidate.kind === 'api'
+            ? applyApiUpstreamAuthQuery(rawUpstreamUrl, candidate.upstream)
+            : rawUpstreamUrl
           const upstream = await this.fetchImpl(upstreamUrl, {
             method: 'POST',
             headers: upstreamHeaders,

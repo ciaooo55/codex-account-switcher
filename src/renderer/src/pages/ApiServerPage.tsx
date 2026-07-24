@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type {
   ApiUpstreamInput,
+  ApiUpstreamAuthMode,
   ApiUpstreamProtocol,
   CredentialSourceInput,
   LocalApiAccessKeyInput,
@@ -259,6 +260,10 @@ export function ApiServerPage(): React.JSX.Element {
     baseUrl: 'https://api.example.com/v1',
     apiKey: undefined,
     protocol: 'auto',
+    authMode: 'auto',
+    authHeaderName: '',
+    authHeaderPrefix: '',
+    authQueryParam: 'api_key',
     models: [],
     priority: (draft?.upstreams.length ?? 0) + 1,
     enabled: true,
@@ -285,6 +290,23 @@ export function ApiServerPage(): React.JSX.Element {
   const openManualUpstream = (): void => {
     setManualUpstream(createUpstreamDraft())
     setUpstreamDialogMode('manual')
+  }
+
+  const pasteFromClipboard = async (): Promise<void> => {
+    setAction('paste-upstream')
+    try {
+      const value = await navigator.clipboard.readText()
+      if (!value.trim()) {
+        setPasteNote('剪贴板没有可识别的文本，请直接粘贴 URL、Key 或 JSON。')
+        return
+      }
+      setPasteText(value)
+      setPasteNote(parseCustomApiPaste(value).note)
+    } catch {
+      setPasteNote('无法读取剪贴板；请在输入框中按 Ctrl + V 粘贴。')
+    } finally {
+      setAction(null)
+    }
   }
 
   const load = async (): Promise<void> => {
@@ -633,6 +655,10 @@ export function ApiServerPage(): React.JSX.Element {
         baseUrl: parsed.baseUrl ?? '',
         ...(parsed.apiKey ? { apiKey: parsed.apiKey } : {}),
         protocol: 'auto',
+        authMode: 'auto',
+        authHeaderName: '',
+        authHeaderPrefix: '',
+        authQueryParam: 'api_key',
         models: [],
         priority: draft.upstreams.length + 1,
         enabled: true,
@@ -730,6 +756,7 @@ export function ApiServerPage(): React.JSX.Element {
       ? models.filter((model) => selectedCodexKey.allowedModels.includes(model))
       : models
   }, [draft, selectedCodexKey])
+  const pasteAnalysis = useMemo(() => pasteText.trim() ? parseCustomApiPaste(pasteText) : null, [pasteText])
 
   const applyToCodex = async (): Promise<void> => {
     if (!codexKeyId || !codexModel) return
@@ -738,8 +765,20 @@ export function ApiServerPage(): React.JSX.Element {
     setNotice(null)
     try {
       const result = await codexApi().applyLocalApiServerToCodex({ accessKeyId: codexKeyId, model: codexModel, restart: restartCodex })
-      if (result.ok) acceptState(await codexApi().getLocalApiServerState())
-      setNotice({ kind: result.ok ? 'ok' : 'error', text: result.message })
+      if (!result.ok) {
+        setNotice({ kind: 'error', text: result.message })
+        return
+      }
+      const refreshed = await codexApi().getLocalApiServerState()
+      acceptState(refreshed)
+      const integration = refreshed.codexIntegration
+      const stillOverridden = integration && integration.state !== 'active'
+      setNotice(stillOverridden
+        ? {
+            kind: 'warn',
+            text: `${result.message}；但 Codex 当前仍由 ${integration.configuredProvider ?? '其他配置'} 接管，模型目录尚未切回本项目。请关闭外部工具的 Codex API 接管后，再点击“重新应用到 Codex”。`
+          }
+        : { kind: 'ok', text: result.message })
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -1014,10 +1053,13 @@ export function ApiServerPage(): React.JSX.Element {
                                   {storedUpstreamKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: '', hasApiKey: false, keyPreview: '', reveal: true } : item) }))}>更换</Button> : null}
                                 </div>
                               </Field>
-                              <div className="grid grid-cols-[1fr_120px] gap-3">
+                              <div className="api-upstream-settings grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_100px] gap-3">
                                 <Field label="协议能力" hint="原生协议会在本地转换为公开 OpenAI 模型路由"><Select className="w-full" value={entry.protocol} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, protocol: event.target.value as ApiUpstreamProtocol } : item) }))}><option value="auto">自动识别（OpenAI）</option><option value="responses">OpenAI Responses</option><option value="chat_completions">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini v1beta</option><option value="ollama">Ollama</option></Select></Field>
+                                <Field label="上游鉴权" hint="自动会随协议选择标准请求头"><Select className="w-full" value={entry.authMode ?? 'auto'} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, authMode: event.target.value as ApiUpstreamAuthMode } : item) }))}><option value="auto">自动识别</option><option value="bearer">Bearer Token</option><option value="x_api_key">x-api-key</option><option value="api_key">api-key</option><option value="x_goog_api_key">x-goog-api-key</option><option value="query">URL 查询参数</option><option value="custom">自定义请求头</option><option value="none">无鉴权</option></Select></Field>
                                 <Field label="优先级"><Input type="number" value={entry.priority} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, priority: Number(event.target.value) } : item) }))} /></Field>
                               </div>
+                              {entry.authMode === 'custom' ? <div className="api-upstream-auth-detail col-span-2 grid grid-cols-2 gap-3"><Field label="自定义鉴权头名称" hint="例如 Authorization、x-provider-key"><Input value={entry.authHeaderName ?? ''} placeholder="x-provider-key" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, authHeaderName: event.target.value } : item) }))} /></Field><Field label="鉴权值前缀" hint="可选，例如 Token 或 Bearer"><Input value={entry.authHeaderPrefix ?? ''} placeholder="Token " onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, authHeaderPrefix: event.target.value } : item) }))} /></Field></div> : null}
+                              {entry.authMode === 'query' ? <Field label="URL 鉴权参数名" hint="会将上游 Key 写入请求 URL；默认 api_key" className="col-span-2"><Input value={entry.authQueryParam ?? 'api_key'} placeholder="api_key" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, authQueryParam: event.target.value } : item) }))} /></Field> : null}
                               <Field label={`模型列表 · ${entry.models.length}`} hint="测试成功后自动填充，也可手动编辑" className="col-span-2">
                                 <textarea className={cn(textareaClass, 'api-model-editor')} value={entry.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, models: parseModelList(event.target.value) } : item) }))} />
                               </Field>
@@ -1157,7 +1199,7 @@ export function ApiServerPage(): React.JSX.Element {
           </div>
         </div>
 
-        <section className="api-codex-panel grid grid-cols-[minmax(240px,1.2fr)_minmax(150px,.8fr)_minmax(180px,1fr)_auto_auto] items-end gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-3" aria-labelledby="codex-api-title">
+        <section className="api-codex-panel rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-3" aria-labelledby="codex-api-title">
           <div className="self-center">
             <h2 id="codex-api-title" className="flex items-center gap-2 text-[13px] font-semibold"><Clipboard size={16} className="text-[var(--color-accent)]" />一键设置 Codex</h2>
             <p className="mt-1 max-w-[60ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">Codex 只保存本地地址与本软件密钥，不会拿到第三方上游 Key。切换上游或路由时地址保持不变。</p>
@@ -1165,14 +1207,20 @@ export function ApiServerPage(): React.JSX.Element {
               <div className={cn('api-codex-integration mt-2', codexIntegrationTone)} role="status">
                 <span className="font-medium">{codexIntegration.state === 'active' ? '本项目正在控制 Codex' : codexIntegration.state === 'external_override' ? '检测到外部配置覆盖' : 'Codex 尚未完成本地 API 绑定'}</span>
                 <span>{codexIntegration.message}</span>
-                {codexIntegration.state === 'external_override' && codexIntegration.configuredProvider ? <span className="font-[var(--font-mono)]">当前：{codexIntegration.configuredProvider} / {codexIntegration.configuredModel ?? '未设置模型'}</span> : null}
+                {codexIntegration.state === 'external_override' && codexIntegration.configuredProvider ? (
+                  <span className="api-codex-conflict font-[var(--font-mono)]">
+                    实际使用：{codexIntegration.configuredProvider} / {codexIntegration.configuredModel ?? '未设置模型'}。因此 Codex 正在读取其他 provider 的模型目录，而不是本页的公开模型。
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </div>
-          <Field label="Codex 使用的本软件密钥"><Select className="w-full" value={codexKeyId} onChange={(event) => { setCodexKeyId(event.target.value); setCodexModel('') }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</Select></Field>
-          <Field label="默认公开模型"><Select className="w-full" value={codexModel} onChange={(event) => setCodexModel(event.target.value)}><option value="">选择模型</option>{codexModels.map((model) => <option key={model} value={model}>{model}</option>)}</Select></Field>
-          <Toggle checked={restartCodex} onChange={setRestartCodex} label="重启并修复会话" />
-          <Button variant="default" size="lg" disabled={isBusy || !codexKeyId || !codexModel} onClick={() => void applyToCodex()}>{action === 'codex' ? <LoaderCircle className="spin" size={15} /> : <ClipboardPasteIcon />}{codexActionLabel}</Button>
+          <div className="api-codex-controls">
+            <Field label="Codex 使用的本软件密钥"><Select className="w-full" value={codexKeyId} onChange={(event) => { setCodexKeyId(event.target.value); setCodexModel('') }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</Select></Field>
+            <Field label="默认公开模型"><Select className="w-full" value={codexModel} onChange={(event) => setCodexModel(event.target.value)}><option value="">选择模型</option>{codexModels.map((model) => <option key={model} value={model}>{model}</option>)}</Select></Field>
+            <Toggle checked={restartCodex} onChange={setRestartCodex} label="重启并修复会话" />
+            <Button variant="default" size="lg" disabled={isBusy || !codexKeyId || !codexModel} onClick={() => void applyToCodex()}>{action === 'codex' ? <LoaderCircle className="spin" size={15} /> : <ClipboardPasteIcon />}{codexActionLabel}</Button>
+          </div>
         </section>
 
         {upstreamDialogMode ? createPortal(
@@ -1191,7 +1239,7 @@ export function ApiServerPage(): React.JSX.Element {
                 <Button size="icon" variant="ghost" aria-label="关闭添加上游窗口" title="关闭" onClick={closeUpstreamDialog}><span aria-hidden="true" className="text-lg leading-none">×</span></Button>
               </DialogHeader>
 
-              <div className="border-b border-[var(--color-border)] px-4 py-2.5">
+              <div className="api-upstream-dialog-modes border-b border-[var(--color-border)] px-4 py-2.5">
                 <SegmentedControl aria-label="添加上游方式">
                   <SegmentedButton selected={upstreamDialogMode === 'quick'} onClick={() => setUpstreamDialogMode('quick')}><WandSparkles size={14} />快速导入</SegmentedButton>
                   <SegmentedButton selected={upstreamDialogMode === 'manual'} onClick={() => { if (!manualUpstream) setManualUpstream(createUpstreamDraft()); setUpstreamDialogMode('manual') }}><Plus size={14} />手动填写</SegmentedButton>
@@ -1199,21 +1247,39 @@ export function ApiServerPage(): React.JSX.Element {
               </div>
 
               {upstreamDialogMode === 'quick' ? (
-                <div className="grid gap-4 px-4 py-4">
+                <div className="api-upstream-dialog-body api-quick-import-body">
                   <div className="api-import-guide">
                     <ShieldCheck size={16} />
                     <span>支持 URL + Key、JSON、<code>url=… key=…</code>、Base64 与 URL-safe Base64。会智能尝试根路径和 <code>/v1</code>，真实获取模型并可继续发送轻量测试。</span>
                   </div>
-                  <Field label="粘贴内容" hint="原始内容仅用于本次识别与测试，不写入日志。">
-                    <textarea
-                      aria-label="上游粘贴内容"
-                      className={cn(textareaClass, 'api-import-textarea')}
-                      value={pasteText}
-                      placeholder={'https://api.example.com/v1\nsk-...\n\n或粘贴 JSON / Base64 文本'}
-                      autoFocus
-                      onChange={(event) => { setPasteText(event.target.value); setPasteNote('') }}
-                    />
-                  </Field>
+                  <div className="api-quick-import-grid">
+                    <Field label="粘贴内容" hint="原始内容只用于本次识别与测试，不写入日志。">
+                      <div className="api-import-textarea-wrap">
+                        <textarea
+                          aria-label="上游粘贴内容"
+                          className={cn(textareaClass, 'api-import-textarea')}
+                          value={pasteText}
+                          placeholder={'https://api.example.com/v1\nsk-...\n\n或粘贴 JSON / Base64 文本'}
+                          autoFocus
+                          onChange={(event) => { setPasteText(event.target.value); setPasteNote('') }}
+                        />
+                        <Button size="sm" variant="secondary" className="api-import-clipboard" disabled={isBusy} onClick={() => void pasteFromClipboard()}>{action === 'paste-upstream' ? <LoaderCircle className="spin" size={14} /> : <Clipboard size={14} />}从剪贴板粘贴</Button>
+                      </div>
+                    </Field>
+                    <aside className="api-import-preview" aria-live="polite">
+                      <strong>识别预览</strong>
+                      {pasteAnalysis ? (
+                        <>
+                          <span className={pasteAnalysis.baseUrl ? 'is-ready' : undefined}>{pasteAnalysis.baseUrl ? '✓ 已识别 API 地址' : '○ 等待 API 地址'}</span>
+                          <code title={pasteAnalysis.baseUrl ?? ''}>{pasteAnalysis.baseUrl ?? 'https://…'}</code>
+                          <span className={pasteAnalysis.apiKey ? 'is-ready' : undefined}>{pasteAnalysis.apiKey ? '✓ 已识别 API Key' : '○ 可选：API Key'}</span>
+                          <small>{pasteAnalysis.note}</small>
+                        </>
+                      ) : (
+                        <span>粘贴后会在此预览识别结果；识别并测试会自动尝试根路径、<code>/v1</code> 与常见兼容路径。</span>
+                      )}
+                    </aside>
+                  </div>
                   <Field label="导入位置" hint={pasteNote || '默认创建新上游；也可以更新已有上游。'}>
                     <Select className="w-full" value={pasteTargetId} onChange={(event) => setPasteTargetId(event.target.value)}>
                       <option value="new">创建新上游</option>
@@ -1222,7 +1288,7 @@ export function ApiServerPage(): React.JSX.Element {
                   </Field>
                 </div>
               ) : (
-                <div className="grid gap-4 px-4 py-4">
+                <div className="api-upstream-dialog-body grid gap-4">
                   <div className="api-import-guide">
                     <Network size={16} />
                     <span>手动填写后可先添加，或立即测试上游并自动填充模型。上游 Key 只用于本软件转发，不会写进 Codex 配置。</span>
@@ -1232,10 +1298,11 @@ export function ApiServerPage(): React.JSX.Element {
                       <Field label="名称"><Input autoFocus value={manualUpstream.name} onChange={(event) => setManualUpstream((current) => current ? { ...current, name: event.target.value } : current)} /></Field>
                       <Field label="API Base URL" hint="可填域名或 /v1；测试会智能探测"><Input className="font-[var(--font-mono)]" value={manualUpstream.baseUrl} onChange={(event) => setManualUpstream((current) => current ? { ...current, baseUrl: event.target.value } : current)} /></Field>
                       <Field label="上游 API Key" hint="可留空，例如本地 Ollama"><Input type={manualUpstream.reveal ? 'text' : 'password'} autoComplete="off" value={manualUpstream.apiKey ?? ''} placeholder="sk-…" onChange={(event) => setManualUpstream((current) => current ? { ...current, apiKey: event.target.value || undefined, hasApiKey: Boolean(event.target.value), keyPreview: event.target.value, reveal: true } : current)} /></Field>
-                      <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-3">
-                        <Field label="协议能力"><Select className="w-full" value={manualUpstream.protocol} onChange={(event) => setManualUpstream((current) => current ? { ...current, protocol: event.target.value as ApiUpstreamProtocol } : current)}><option value="auto">自动识别（OpenAI）</option><option value="responses">OpenAI Responses</option><option value="chat_completions">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini v1beta</option><option value="ollama">Ollama</option></Select></Field>
-                        <Field label="优先级"><Input type="number" value={manualUpstream.priority} onChange={(event) => setManualUpstream((current) => current ? { ...current, priority: Number(event.target.value) } : current)} /></Field>
-                      </div>
+                      <Field label="协议能力"><Select className="w-full" value={manualUpstream.protocol} onChange={(event) => setManualUpstream((current) => current ? { ...current, protocol: event.target.value as ApiUpstreamProtocol } : current)}><option value="auto">自动识别（OpenAI）</option><option value="responses">OpenAI Responses</option><option value="chat_completions">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini v1beta</option><option value="ollama">Ollama</option></Select></Field>
+                      <Field label="上游鉴权" hint="自动会按协议使用标准请求头"><Select className="w-full" value={manualUpstream.authMode ?? 'auto'} onChange={(event) => setManualUpstream((current) => current ? { ...current, authMode: event.target.value as ApiUpstreamAuthMode } : current)}><option value="auto">自动识别</option><option value="bearer">Bearer Token</option><option value="x_api_key">x-api-key</option><option value="api_key">api-key</option><option value="x_goog_api_key">x-goog-api-key</option><option value="query">URL 查询参数</option><option value="custom">自定义请求头</option><option value="none">无鉴权</option></Select></Field>
+                      <Field label="优先级"><Input type="number" value={manualUpstream.priority} onChange={(event) => setManualUpstream((current) => current ? { ...current, priority: Number(event.target.value) } : current)} /></Field>
+                      {manualUpstream.authMode === 'custom' ? <><Field label="自定义鉴权头名称"><Input value={manualUpstream.authHeaderName ?? ''} placeholder="x-provider-key" onChange={(event) => setManualUpstream((current) => current ? { ...current, authHeaderName: event.target.value } : current)} /></Field><Field label="鉴权值前缀" hint="可选，例如 Token "><Input value={manualUpstream.authHeaderPrefix ?? ''} placeholder="Token " onChange={(event) => setManualUpstream((current) => current ? { ...current, authHeaderPrefix: event.target.value } : current)} /></Field></> : null}
+                      {manualUpstream.authMode === 'query' ? <Field label="URL 鉴权参数名" hint="默认 api_key；会用于上游请求 URL"><Input value={manualUpstream.authQueryParam ?? 'api_key'} placeholder="api_key" onChange={(event) => setManualUpstream((current) => current ? { ...current, authQueryParam: event.target.value } : current)} /></Field> : null}
                     </div>
                   ) : null}
                 </div>

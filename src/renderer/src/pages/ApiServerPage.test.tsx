@@ -216,6 +216,26 @@ describe('ApiServerPage', () => {
     expect(await screen.findByText(/已验证 · \d+ ms/)).toBeInTheDocument()
   })
 
+  it('保存第三方上游的自定义鉴权头而不把密钥重复写进配置', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('本软件访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
+    const upstreamToggle = screen.getAllByRole('button', { name: /上游 A/ })
+      .find((button) => button.getAttribute('aria-expanded') === 'false')
+    fireEvent.click(upstreamToggle!)
+
+    fireEvent.change(screen.getByRole('combobox', { name: /上游鉴权/ }), { target: { value: 'custom' } })
+    fireEvent.change(screen.getByLabelText(/自定义鉴权头名称/), { target: { value: 'x-provider-key' } })
+    fireEvent.change(screen.getByLabelText(/鉴权值前缀/), { target: { value: 'Token ' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].upstreams[0]).toMatchObject({
+      authMode: 'custom', authHeaderName: 'x-provider-key', authHeaderPrefix: 'Token '
+    })
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].upstreams[0]).not.toHaveProperty('apiKey')
+  })
+
   it('识别 URL-safe Base64 中的 URL 和 Key 并立即真实测试', async () => {
     render(<ApiServerPage />)
     await screen.findByText('本软件访问密钥')
@@ -308,5 +328,28 @@ describe('ApiServerPage', () => {
       restart: true
     }))
     expect(await screen.findByText('Codex 已切换')).toBeInTheDocument()
+  })
+
+  it('明确提示其他工具覆盖了 Codex provider，避免误以为公开模型已生效', async () => {
+    api.getLocalApiServerState
+      .mockResolvedValueOnce(localApiState())
+      .mockResolvedValueOnce({
+        ...localApiState(),
+        codexIntegration: {
+          state: 'external_override',
+          message: '顶层 provider 已被其他工具写入。',
+          configuredProvider: 'codex_local_access',
+          configuredModel: 'grok-4.5',
+          expectedModel: 'xxx',
+          catalogPath: 'C:/Users/tester/.codex/cockpit-models.json'
+        }
+      })
+    render(<ApiServerPage />)
+    await screen.findByText('一键设置 Codex')
+
+    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+
+    expect(await screen.findByText(/Codex 当前仍由 codex_local_access 接管/)).toBeInTheDocument()
+    expect(screen.getByText(/实际使用：codex_local_access \/ grok-4\.5/)).toBeInTheDocument()
   })
 })

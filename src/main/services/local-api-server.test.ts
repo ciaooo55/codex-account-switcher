@@ -120,6 +120,10 @@ function upstream(
     baseUrl,
     apiKey: `sk-${id}`,
     protocol,
+    authMode: 'auto' as const,
+    authHeaderName: '',
+    authHeaderPrefix: '',
+    authQueryParam: 'api_key',
     models: ['real-1', 'real-2', 'other-real'],
     priority: 1,
     enabled: true
@@ -160,6 +164,47 @@ describe('LocalApiServer', () => {
 
     const health = await fetch(`http://127.0.0.1:${port}/health`)
     await expect(health.json()).resolves.toMatchObject({ status: 'ok', running: true, port })
+  })
+
+  it('forwards third-party gateway keys through configured custom headers or query parameters', async () => {
+    const seen: Array<{ url: string; headers: Record<string, string | string[] | undefined> }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      seen.push({ url: request.url ?? '', headers: request.headers })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'response-auth', object: 'response', status: 'completed', output_text: 'gateway works'
+      }))
+    })
+    const port = await reservePort()
+    const custom = {
+      ...upstream('gateway', mock.baseUrl),
+      authMode: 'custom' as const,
+      authHeaderName: 'x-provider-key',
+      authHeaderPrefix: 'Token '
+    }
+    const service = new LocalApiServer(config(port, [custom]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const invoke = async (): Promise<Response> => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hi' })
+    })
+    expect((await invoke()).status).toBe(200)
+    expect(seen.at(-1)?.headers['x-provider-key']).toBe('Token sk-gateway')
+    expect(seen.at(-1)?.headers.authorization).toBeUndefined()
+
+    await service.updateConfiguration(config(port, [{
+      ...upstream('gateway', mock.baseUrl),
+      authMode: 'query' as const,
+      authHeaderName: '',
+      authHeaderPrefix: '',
+      authQueryParam: 'token'
+    }]))
+    expect((await invoke()).status).toBe(200)
+    expect(seen.at(-1)?.url).toContain('token=sk-gateway')
+    expect(seen.at(-1)?.headers.authorization).toBeUndefined()
   })
 
   it('exposes the same configured public models through OpenAI, Gemini and Ollama catalogs', async () => {

@@ -178,6 +178,40 @@ describe('model catalog helpers', () => {
     )
   })
 
+  it('uses configured custom and query authentication while discovering a gateway catalog', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'custom-gateway-model' }] })
+    })
+
+    const custom = await fetchOpenAiCompatibleModelIds({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'secret-key',
+      authMode: 'custom',
+      authHeaderName: 'x-provider-key',
+      authHeaderPrefix: 'Token ',
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    expect(custom.models).toEqual(['custom-gateway-model'])
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://gateway.example/v1/models',
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-provider-key': 'Token secret-key' }) })
+    )
+
+    fetchImpl.mockClear()
+    await fetchOpenAiCompatibleModelIds({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'query-secret',
+      authMode: 'query',
+      authQueryParam: 'token',
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://gateway.example/v1/models?token=query-secret',
+      expect.objectContaining({ headers: expect.not.objectContaining({ Authorization: expect.anything() }) })
+    )
+  })
+
   it('accepts and identifies a chat-completions-only provider for the local API server', async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: string) => {
       if (url === 'http://127.0.0.1:18317/v1/chat/completions') {

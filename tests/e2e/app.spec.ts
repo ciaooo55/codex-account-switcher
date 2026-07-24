@@ -770,6 +770,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     )
     await page.getByRole('button', { name: '识别并测试' }).click()
     await expect(page.getByText(/已获取 1\/1 个上游的模型/)).toBeVisible()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-upstream-config.png'), fullPage: true })
+    const apiLayoutWidths = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(
+      '.api-server-view, .api-server-workbench, .api-codex-panel'
+    )).map((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })))
+    expect(apiLayoutWidths.every(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth + 1)).toBe(true)
     await page.getByRole('button', { name: /公开模型路由/ }).click()
     await page.getByRole('button', { name: '添加公开模型' }).click()
     await page.getByLabel('公开模型名').fill('e2e-public-model')
@@ -799,6 +804,23 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       output_text: 'local api works'
     })
     await page.getByRole('button', { name: '停止', exact: true }).click()
+
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      if (!window) throw new Error('主窗口不存在')
+      window.setSize(720, 600)
+    })
+    await page.waitForTimeout(150)
+    const compactApiLayoutWidths = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(
+      '.api-server-view, .api-server-workbench, .api-codex-panel'
+    )).map((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })))
+    expect(compactApiLayoutWidths.every(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth + 1)).toBe(true)
+    await page.getByRole('button', { name: /第三方上游/ }).click()
+    await page.getByRole('region', { name: '第三方 API 上游' }).getByRole('button', { name: '快速导入', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: '添加第三方 API 上游' })).toBeVisible()
+    await page.waitForTimeout(250)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-import-dialog-compact.png'), fullPage: true })
+    await page.getByRole('button', { name: '关闭添加上游窗口' }).click()
 
     await electronApp.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]

@@ -22,6 +22,9 @@ function configuration() {
       baseUrl: 'https://example.com/v1',
       apiKey: 'sk-upstream-secret',
       protocol: 'auto' as const,
+      authMode: 'custom' as const,
+      authHeaderName: 'x-provider-key',
+      authHeaderPrefix: 'Token ',
       models: ['real-model'],
       priority: 1,
       enabled: true
@@ -74,7 +77,7 @@ describe('ApiServerStore', () => {
     await expect(store.runtimeConfig()).resolves.toMatchObject({
       port: 8888,
       accessKeys: [{ key: 'sk-client-secret' }],
-      upstreams: [{ apiKey: 'sk-upstream-secret' }],
+      upstreams: [{ apiKey: 'sk-upstream-secret', authMode: 'custom', authHeaderName: 'x-provider-key', authHeaderPrefix: 'Token ' }],
       credentialSources: [{ id: 'codex:credential-id', credentialId: 'credential-id' }],
       codexBinding: { accessKeyId: 'client', model: 'xxx', enforce: true }
     })

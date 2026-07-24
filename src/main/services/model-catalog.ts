@@ -6,7 +6,12 @@ import {
   MANAGED_CUSTOM_API_MODEL_CATALOG,
   type CustomApiProbeEndpoint
 } from '../../shared/custom-api'
-import type { ApiUpstreamProtocol } from '../../shared/api-server'
+import {
+  apiUpstreamAuthHeaders,
+  applyApiUpstreamAuthQuery,
+  type ApiUpstreamAuthConfig,
+  type ApiUpstreamProtocol
+} from '../../shared/api-server'
 
 const DEFAULT_REASONING_LEVELS = [
   { effort: 'low', description: 'Fast responses with lighter reasoning' },
@@ -234,12 +239,34 @@ export function buildModelCatalog(
   }
 }
 
+interface UpstreamAuthenticationInput {
+  authMode?: ApiUpstreamAuthConfig['authMode']
+  authHeaderName?: string
+  authHeaderPrefix?: string
+  authQueryParam?: string
+}
+
+function upstreamAuthentication(
+  input: UpstreamAuthenticationInput & { apiKey: string },
+  protocol: ApiUpstreamProtocol
+): ApiUpstreamAuthConfig {
+  return {
+    protocol,
+    apiKey: input.apiKey,
+    ...(input.authMode ? { authMode: input.authMode } : {}),
+    ...(input.authHeaderName ? { authHeaderName: input.authHeaderName } : {}),
+    ...(input.authHeaderPrefix ? { authHeaderPrefix: input.authHeaderPrefix } : {}),
+    ...(input.authQueryParam ? { authQueryParam: input.authQueryParam } : {})
+  }
+}
+
 export async function fetchOpenAiCompatibleModelIds(input: {
   baseUrl: string
   apiKey: string
+  protocol?: ApiUpstreamProtocol
   timeoutMs?: number
   fetchImpl?: typeof fetch
-}): Promise<{ models: string[]; baseUrl: string; modelsUrl: string; errors: string[] }> {
+} & UpstreamAuthenticationInput): Promise<{ models: string[]; baseUrl: string; modelsUrl: string; errors: string[] }> {
   const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 8_000))
   const fetchImpl = input.fetchImpl ?? fetch
   const candidates = customApiModelsUrlCandidates(input.baseUrl)
@@ -249,10 +276,14 @@ export async function fetchOpenAiCompatibleModelIds(input: {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await fetchImpl(url, {
+      const auth = upstreamAuthentication(input, input.protocol ?? 'auto')
+      const authHeaders = apiUpstreamAuthHeaders(auth)
+      const { authorization, ...namedAuthHeaders } = authHeaders
+      const response = await fetchImpl(applyApiUpstreamAuthQuery(url, auth), {
         method: 'GET',
         headers: {
-          Authorization: `Bearer ${input.apiKey}`,
+          ...namedAuthHeaders,
+          ...(authorization ? { Authorization: authorization } : {}),
           Accept: 'application/json'
         },
         signal: controller.signal
@@ -447,10 +478,10 @@ export async function discoverApiUpstream(input: {
   apiKey: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
-}): Promise<DetectedApiUpstream> {
+} & UpstreamAuthenticationInput): Promise<DetectedApiUpstream> {
   const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 8_000))
   const fetchImpl = input.fetchImpl ?? fetch
-  const openai = await fetchOpenAiCompatibleModelIds({ ...input, timeoutMs, fetchImpl })
+  const openai = await fetchOpenAiCompatibleModelIds({ ...input, protocol: 'auto', timeoutMs, fetchImpl })
   if (openai.models.length) {
     return { protocol: 'auto', models: openai.models, baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors: openai.errors }
   }
@@ -459,7 +490,13 @@ export async function discoverApiUpstream(input: {
 
   const geminiUrl = `${root}/v1beta/models`
   try {
-    const result = await providerGetJson({ url: geminiUrl, headers: { 'x-goog-api-key': input.apiKey }, timeoutMs, fetchImpl })
+    const auth = upstreamAuthentication(input, 'gemini')
+    const result = await providerGetJson({
+      url: applyApiUpstreamAuthQuery(geminiUrl, auth),
+      headers: apiUpstreamAuthHeaders(auth),
+      timeoutMs,
+      fetchImpl
+    })
     const models = idsFromRows(optionalArrayRecord(result.body, 'models'), 'name')
     if (result.ok && models.length) return { protocol: 'gemini', models, baseUrl: root, modelsUrl: geminiUrl, errors }
     errors.push(`${geminiUrl} → ${result.ok ? '模型列表为空' : `HTTP ${result.status}`}`)
@@ -467,7 +504,13 @@ export async function discoverApiUpstream(input: {
 
   const ollamaUrl = `${root}/api/tags`
   try {
-    const result = await providerGetJson({ url: ollamaUrl, headers: { authorization: `Bearer ${input.apiKey}` }, timeoutMs, fetchImpl })
+    const auth = upstreamAuthentication(input, 'ollama')
+    const result = await providerGetJson({
+      url: applyApiUpstreamAuthQuery(ollamaUrl, auth),
+      headers: apiUpstreamAuthHeaders(auth),
+      timeoutMs,
+      fetchImpl
+    })
     const body = result.body && typeof result.body === 'object' ? result.body as Record<string, unknown> : {}
     const models = idsFromRows(body.models, 'name')
     if (result.ok && models.length) return { protocol: 'ollama', models, baseUrl: root, modelsUrl: ollamaUrl, errors }
@@ -476,7 +519,13 @@ export async function discoverApiUpstream(input: {
 
   const anthropicUrl = `${root}/v1/models`
   try {
-    const result = await providerGetJson({ url: anthropicUrl, headers: { 'x-api-key': input.apiKey, 'anthropic-version': '2023-06-01' }, timeoutMs, fetchImpl })
+    const auth = upstreamAuthentication(input, 'anthropic_messages')
+    const result = await providerGetJson({
+      url: applyApiUpstreamAuthQuery(anthropicUrl, auth),
+      headers: { ...apiUpstreamAuthHeaders(auth), 'anthropic-version': '2023-06-01' },
+      timeoutMs,
+      fetchImpl
+    })
     const body = result.body && typeof result.body === 'object' ? result.body as Record<string, unknown> : {}
     const models = idsFromRows(body.data, 'id')
     if (result.ok && models.length) return { protocol: 'anthropic_messages', models, baseUrl: root, modelsUrl: anthropicUrl, errors }
@@ -499,10 +548,12 @@ export async function probeApiUpstreamModel(input: {
   model: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
-}): Promise<{ output: string; probeUrl: string }> {
+} & UpstreamAuthenticationInput): Promise<{ output: string; probeUrl: string }> {
   if (input.protocol === 'auto' || input.protocol === 'responses' || input.protocol === 'chat_completions') {
     const result = await probeCustomApiModel({
       baseUrl: input.baseUrl, apiKey: input.apiKey, model: input.model,
+      authMode: input.authMode, authHeaderName: input.authHeaderName,
+      authHeaderPrefix: input.authHeaderPrefix, authQueryParam: input.authQueryParam,
       timeoutMs: input.timeoutMs, fetchImpl: input.fetchImpl, allowChatCompletions: true
     })
     return { output: result.output, probeUrl: result.probeUrl }
@@ -514,16 +565,19 @@ export async function probeApiUpstreamModel(input: {
   let headers: Record<string, string>
   let body: JsonSerializable
   if (input.protocol === 'anthropic_messages') {
-    url = `${root}/v1/messages`
-    headers = { 'x-api-key': input.apiKey, 'anthropic-version': '2023-06-01' }
+    const auth = upstreamAuthentication(input, 'anthropic_messages')
+    url = applyApiUpstreamAuthQuery(`${root}/v1/messages`, auth)
+    headers = { ...apiUpstreamAuthHeaders(auth), 'anthropic-version': '2023-06-01' }
     body = { model: input.model, max_tokens: 32, messages: [{ role: 'user', content: 'hi' }] }
   } else if (input.protocol === 'gemini') {
-    url = `${root}/v1beta/models/${encodeURIComponent(input.model)}:generateContent`
-    headers = { 'x-goog-api-key': input.apiKey }
+    const auth = upstreamAuthentication(input, 'gemini')
+    url = applyApiUpstreamAuthQuery(`${root}/v1beta/models/${encodeURIComponent(input.model)}:generateContent`, auth)
+    headers = apiUpstreamAuthHeaders(auth)
     body = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }], generationConfig: { maxOutputTokens: 32 } }
   } else {
-    url = `${root}/api/chat`
-    headers = { authorization: `Bearer ${input.apiKey}` }
+    const auth = upstreamAuthentication(input, 'ollama')
+    url = applyApiUpstreamAuthQuery(`${root}/api/chat`, auth)
+    headers = apiUpstreamAuthHeaders(auth)
     body = { model: input.model, messages: [{ role: 'user', content: 'hi' }], stream: false }
   }
   const result = await postJson({ url, apiKey: '', timeoutMs, fetchImpl, body, headers })
@@ -595,7 +649,7 @@ async function postJson(input: {
   }
 }
 
-interface CustomApiProbeInput {
+interface CustomApiProbeInput extends UpstreamAuthenticationInput {
   baseUrl: string
   apiKey: string
   model: string
@@ -653,12 +707,14 @@ export async function probeCustomApiModel(
         }
 
     try {
+      const auth = upstreamAuthentication(input, 'auto')
       const result = await postJson({
-        url: target.url,
-        apiKey: input.apiKey,
+        url: applyApiUpstreamAuthQuery(target.url, auth),
+        apiKey: '',
         timeoutMs,
         fetchImpl,
-        body
+        body,
+        headers: apiUpstreamAuthHeaders(auth)
       })
       const output = target.endpoint === 'responses'
         ? responsesOutputText(result.body)
