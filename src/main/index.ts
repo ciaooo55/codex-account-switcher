@@ -69,6 +69,7 @@ import {
 } from './switching/direct-custom-api'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
+import { watchConfigAndReassert } from './switching/direct-custom-api'
 const { autoUpdater } = electronUpdater
 const e2eMode = !app.isPackaged && process.env.CODEX_SWITCHER_E2E === '1'
 if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
@@ -463,6 +464,49 @@ async function main(): Promise<void> {
   await reconcileDirectCustomApiProvider().catch((error: unknown) => {
     console.error('Failed to ensure direct custom API provider', error)
   })
+  // Persistent file watcher: reassert custom-API provider whenever an external
+  // process (Cockpit Desktop) overwrites top-level provider/model/catalog while
+  // our owned section still exists.
+  let directCustomApiWatcher: { close: () => void } | null = null
+  const startDirectCustomApiWatcher = (): void => {
+    if (directCustomApiWatcher) return
+    directCustomApiWatcher = watchConfigAndReassert(
+      async () => {
+        const settings = await settingsStore.get()
+        const apiKey = await customApiStore.getKey()
+        const profile = await customApiStore.summary({
+          baseUrl: settings.customApiBaseUrl,
+          model: settings.customApiModel
+        })
+        return {
+          authPath: settings.authPath,
+          configPath: settings.configPath,
+          storedBaseUrl: settings.customApiBaseUrl,
+          storedModel: settings.customApiModel,
+          apiKey: apiKey ?? '',
+          models: profile.models
+        }
+      },
+      {
+        onReasserted: (result) => {
+          if (result.baseUrl && result.model) {
+            settingsStore.update({
+              customApiBaseUrl: result.baseUrl,
+              customApiModel: result.model
+            }).catch(() => undefined)
+          }
+        },
+        onError: (error) => {
+          console.error('Direct custom API config watcher error', error)
+        }
+      }
+    )
+  }
+  const stopDirectCustomApiWatcher = (): void => {
+    directCustomApiWatcher?.close()
+    directCustomApiWatcher = null
+  }
+  startDirectCustomApiWatcher()
   let reconcileCodexStatusStores = async (): Promise<void> => undefined
   let reconcileGrokStatusStores = async (): Promise<void> => undefined
   const manager = new AccountManager({
@@ -823,6 +867,8 @@ async function main(): Promise<void> {
         message: `${restartResult.message}；Codex 启动后重新确认自定义 API 配置失败：${detail}`
       }
     }
+    stopDirectCustomApiWatcher()
+    startDirectCustomApiWatcher()
     return restartResult
   }
   const conversationManager = async (): Promise<ConversationManager> => {
@@ -1866,6 +1912,10 @@ async function main(): Promise<void> {
       patch = { ...patch, autoSwitchAccountIds }
     }
     const updated = await settingsStore.update(patch)
+    if (patch.customApiBaseUrl !== undefined || patch.customApiModel !== undefined) {
+      stopDirectCustomApiWatcher()
+      startDirectCustomApiWatcher()
+    }
     await autoSwitchScheduler.settingsChanged()
     return updated
   })

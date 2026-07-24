@@ -203,3 +203,60 @@ export async function reassertDirectCustomApiProviderAfterStart(
     ? lastError
     : new Error('Codex 启动后无法重新确认自定义 API 配置')
 }
+
+/**
+ * Persistently watches config.toml for external overwrites (e.g. Cockpit Desktop
+ * projection). When the owned provider section still exists but top-level
+ * provider/model/catalog were replaced, the watcher reasserts the direct
+ * custom-API configuration within a short debounce window.
+ *
+ * The watcher stops automatically when the owned section is removed (account-mode switch).
+ */
+export function watchConfigAndReassert(
+  resolveInput: () => Promise<EnsureDirectCustomApiProviderInput>,
+  options: {
+    debounceMs?: number
+    onReasserted?: (result: EnsureDirectCustomApiProviderResult) => void
+    onError?: (error: unknown) => void
+  } = {}
+): { close: () => void } {
+  const { watch } = require('fs') as typeof import('fs')
+  const debounceMs = options.debounceMs ?? 800
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let closed = false
+  let configPath = ''
+
+  const run = async (): Promise<void> => {
+    try {
+      const input = await resolveInput()
+      configPath = input.configPath
+      const result = await ensureDirectCustomApiProvider(input)
+      if (!result.active) { close(); return }
+      if (result.configChanged || result.catalogChanged || result.authChanged) {
+        options.onReasserted?.(result)
+      }
+    } catch (error) { options.onError?.(error) }
+  }
+
+  const schedule = (): void => {
+    if (closed) return
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => { timer = null; run() }, debounceMs)
+  }
+
+  const close = (): void => {
+    closed = true
+    if (timer) { clearTimeout(timer); timer = null }
+    try { watcher.close() } catch { /* closed */ }
+  }
+
+  let watcher = { close: () => {} } as ReturnType<typeof watch>
+  run().then(() => {
+    if (configPath && !closed) {
+      watcher = watch(configPath, { persistent: false }, () => { schedule() })
+      watcher.on('error', () => { close() })
+    }
+  }).catch(() => { /* handled in run */ })
+
+  return { close }
+}
