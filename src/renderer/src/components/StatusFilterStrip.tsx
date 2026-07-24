@@ -97,11 +97,11 @@ export function StatusFilterStrip({
   const menuKind = menu?.target === 'group' ? '分组' : '分类'
   return (
     <>
-      <div className="status-filter-strip flex flex-wrap items-center gap-1.5 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-1.5" aria-label={label}>
+      <div className="status-filter-strip" aria-label={label}>
       <button
         type="button"
         className={cn(
-          'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+          'status-filter-button',
           value === ''
             ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
             : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
@@ -121,7 +121,7 @@ export function StatusFilterStrip({
           type="button"
           className={cn(
             'filter-' + status,
-            'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+            'status-filter-button',
             value === status
               ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
               : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
@@ -135,11 +135,11 @@ export function StatusFilterStrip({
         </button>
       ))}
       {onGroupChange && groups.length > 0 && (
-        <div className="group-filter-buttons ml-auto flex flex-wrap items-center gap-1 border-l border-[var(--color-border)] pl-1.5" role="group" aria-label={`${label}分组筛选`}>
+        <div className="group-filter-buttons" role="group" aria-label={`${label}分组筛选`}>
           <button
             type="button"
             className={cn(
-              'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+              'status-filter-button',
               groupValue === ''
                 ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
                 : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
@@ -156,7 +156,7 @@ export function StatusFilterStrip({
               key={group.value}
               type="button"
               className={cn(
-                'inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2.5 text-[12px] font-medium transition-colors',
+                'status-filter-button',
                 groupValue === group.value
                   ? 'active border-[var(--color-border)] bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
                   : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'

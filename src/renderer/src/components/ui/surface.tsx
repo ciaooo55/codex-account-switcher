@@ -10,7 +10,7 @@ export function Toolbar({ className, ...props }: HTMLAttributes<HTMLDivElement>)
   return (
     <div
       className={cn(
-        'toolbar flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2',
+        'toolbar',
         className
       )}
       {...props}
@@ -19,7 +19,7 @@ export function Toolbar({ className, ...props }: HTMLAttributes<HTMLDivElement>)
 }
 
 export function ToolbarGroup({ className, ...props }: HTMLAttributes<HTMLDivElement>): React.JSX.Element {
-  return <div className={cn('toolbar-group flex flex-wrap items-center gap-1.5', className)} {...props} />
+  return <div className={cn('toolbar-group', className)} {...props} />
 }
 
 export function SearchField({

@@ -665,6 +665,42 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     }))
     expect(compactTable.scrollWidth).toBeLessThanOrEqual(compactTable.clientWidth + 1)
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-compact.png'), fullPage: true })
+
+    // The app remains usable below the compact desktop breakpoint: page chrome
+    // may reflow or scroll within its own nav/table regions, but it must never
+    // create a document-level horizontal scrollbar or hide primary controls.
+    await page.setViewportSize({ width: 700, height: 760 })
+    await expect(page.getByRole('navigation', { name: '主页面' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '导入账号' })).toBeVisible()
+    const mediumLayout = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      shellWidth: document.querySelector('.app-shell')?.scrollWidth ?? 0,
+      navWidth: document.querySelector<HTMLElement>('.app-header__nav')?.getBoundingClientRect().width ?? 0,
+      navScrollWidth: document.querySelector<HTMLElement>('.app-header__nav')?.scrollWidth ?? 0
+    }))
+    expect(mediumLayout.documentWidth).toBeLessThanOrEqual(mediumLayout.viewport + 1)
+    expect(mediumLayout.shellWidth).toBeLessThanOrEqual(mediumLayout.viewport + 1)
+    expect(mediumLayout.navWidth).toBeGreaterThan(0)
+    expect(mediumLayout.navScrollWidth).toBeGreaterThanOrEqual(mediumLayout.navWidth - 2)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-medium.png'), fullPage: true })
+
+    await page.setViewportSize({ width: 390, height: 760 })
+    await expect(page.getByRole('button', { name: '测试选中' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '切换并重启' })).toBeVisible()
+    const narrowLayout = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      shellWidth: document.querySelector('.app-shell')?.scrollWidth ?? 0,
+      tableClientWidth: document.querySelector<HTMLElement>('.accounts-view .table-wrap')?.clientWidth ?? 0,
+      tableScrollWidth: document.querySelector<HTMLElement>('.accounts-view .table-wrap')?.scrollWidth ?? 0
+    }))
+    expect(narrowLayout.documentWidth).toBeLessThanOrEqual(narrowLayout.viewport + 1)
+    expect(narrowLayout.shellWidth).toBeLessThanOrEqual(narrowLayout.viewport + 1)
+    expect(narrowLayout.tableScrollWidth).toBeGreaterThanOrEqual(narrowLayout.tableClientWidth)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'accounts-ui-narrow.png'), fullPage: true })
+
+    await page.setViewportSize({ width: 980, height: 640 })
     await page.getByRole('button', { name: '切换到深色模式' }).click()
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
     const darkSurface = await page.locator('body').evaluate((element) => getComputedStyle(element).backgroundColor)

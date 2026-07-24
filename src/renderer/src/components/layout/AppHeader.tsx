@@ -63,8 +63,8 @@ export function AppHeader({
   } as const
 
   return (
-    <header className="app-header sticky top-0 z-40 flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] bg-[var(--glass-bg)] px-3 py-2 backdrop-blur-xl">
-      <div className="flex min-w-0 items-center gap-2.5">
+    <header className="app-header" data-busy={busy || undefined}>
+      <div className="app-header__identity">
         <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
           <Code2 size={17} />
         </span>
@@ -81,10 +81,7 @@ export function AppHeader({
         </div>
       </div>
 
-      <nav
-        className="flex min-w-0 flex-1 flex-wrap items-center gap-1 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-1"
-        aria-label="主页面"
-      >
+      <nav className="app-header__nav" aria-label="主页面">
         {tabs.map((tab) => {
           const Icon = tab.icon
           const active = activeView === tab.id
@@ -96,7 +93,7 @@ export function AppHeader({
               aria-pressed={active}
               onClick={() => onViewChange(tab.id)}
               className={cn(
-                'inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-md)] px-2.5 text-[12.5px] font-medium transition-colors',
+                'app-header__tab',
                 active
                   ? 'bg-[var(--color-surface-0)] text-[var(--color-text)] shadow-[var(--shadow-sm)]'
                   : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]'
@@ -112,10 +109,10 @@ export function AppHeader({
         })}
       </nav>
 
-      <div className="ml-auto flex items-center gap-1.5">
-        <Button variant="soft" onClick={onImport} disabled={busy} aria-label="导入账号">
+      <div className="app-header__actions">
+        <Button className="app-header__import" variant="soft" onClick={onImport} disabled={busy} aria-label="导入账号">
           <Import size={16} />
-          导入账号
+          <span className="app-header__import-label">导入账号</span>
         </Button>
         <Button
           variant="ghost"

@@ -47,7 +47,7 @@ export function CurrentAccountOverview({
 }): React.JSX.Element {
   if (!account) {
     return (
-      <div className="current-account-overview current-summary flex min-w-[320px] flex-1 flex-wrap items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-2">
+      <div className="current-account-overview current-summary">
         <div className="current-account-identity">
           <span>当前正在使用</span>
           <strong>未知 / API 模式</strong>
@@ -63,7 +63,7 @@ export function CurrentAccountOverview({
   const checkedAt = account.usage?.checkedAt ?? account.lastCheckedAt ?? new Date(now).toISOString()
 
   return (
-    <div className="current-account-overview current-summary flex min-w-[320px] flex-1 flex-wrap items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-2">
+    <div className="current-account-overview current-summary">
       <div className="current-account-identity">
         <span>当前正在使用</span>
         <strong title={account.email ?? account.sourcePath}>

@@ -134,7 +134,7 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
 
   return (
     <PageView className="accounts-view">
-      <section className="library-overview codex-overview flex flex-wrap items-stretch gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)] p-2">
+      <section className="library-overview codex-overview">
         <div><span>账号库</span><strong>{snapshot.accounts.length} 个账号</strong></div>
         <CurrentAccountOverview
           account={activeAccount}
@@ -219,7 +219,7 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
         </details>
       </Toolbar>
 
-      <div className={cn('selection-toolbar flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2', selected.size === 0 && 'is-idle')} aria-label="选中账号操作">
+      <div className={cn('selection-toolbar', selected.size === 0 && 'is-idle')} aria-label="选中账号操作">
         <div className="selection-summary">
           <CheckCircle2 size={15} />
           <strong>{selected.size > 0 ? `已选择 ${selected.size} 个账号` : '未选择账号'}</strong>
