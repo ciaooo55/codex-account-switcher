@@ -61,7 +61,13 @@ import { CustomApiStore } from './storage/custom-api-store'
 import { ApiServerStore } from './storage/api-server-store'
 import { AccountMetadataStore } from './storage/account-metadata'
 import { GrokStatusStore } from './storage/grok-status-store'
-import { fetchOpenAiCompatibleModelIds, MODEL_CATALOG_RELATIVE_PATH, probeCustomApiModel } from './services/model-catalog'
+import {
+  discoverApiUpstream,
+  fetchOpenAiCompatibleModelIds,
+  MODEL_CATALOG_RELATIVE_PATH,
+  probeApiUpstreamModel,
+  probeCustomApiModel
+} from './services/model-catalog'
 import { atomicWriteFile } from './storage/atomic-file'
 import { LocalApiServer, generateLocalApiAccessKey } from './services/local-api-server'
 import { CredentialUpstreamRegistry } from './services/credential-upstream-resolver'
@@ -1721,7 +1727,8 @@ async function main(): Promise<void> {
     const payload = z
       .object({
         baseUrl: z.string().max(2048),
-        apiKey: z.string().max(8192).optional()
+        apiKey: z.string().max(8192).optional(),
+        useSavedKey: z.boolean().optional()
       })
       .parse(input ?? {})
     let baseUrl: string
@@ -1736,13 +1743,12 @@ async function main(): Promise<void> {
       }
     }
     const providedKey = payload.apiKey?.trim() ?? ''
-    const apiKey = providedKey || (await customApiStore.getKey())
-    if (!apiKey) {
-      return { ok: false as const, message: '请填写 API Key 或先保存 Key', models: [] as string[], baseUrl }
-    }
+    // Upstream discovery is also used for local no-auth providers such as
+    // Ollama. Direct Codex custom-API mode keeps its own stricter key check.
+    const apiKey = providedKey || (payload.useSavedKey === false ? '' : (await customApiStore.getKey())) || ''
     try {
       const settings = await settingsStore.get()
-      const listed = await fetchOpenAiCompatibleModelIds({
+      const listed = await discoverApiUpstream({
         baseUrl,
         apiKey,
         timeoutMs: settings.timeoutMs
@@ -1751,26 +1757,26 @@ async function main(): Promise<void> {
         const detail = listed.errors.slice(0, 4).join('；')
         return {
           ok: false as const,
-          message: `未能从 ${listed.modelsUrl} 获取模型列表。请检查 API 地址、Key 权限，以及服务是否实现 GET /v1/models${detail ? `：${detail}` : ''}`,
+          message: `未能从 ${listed.modelsUrl} 获取模型列表。已依次尝试 OpenAI、Gemini、Ollama 与 Anthropic 目录；请检查 API 地址、Key 权限和协议类型${detail ? `：${detail}` : ''}`,
           models: [] as string[],
           baseUrl: listed.baseUrl,
           modelsUrl: listed.modelsUrl
         }
       }
-      const probe = await probeCustomApiModel({
+      const probe = await probeApiUpstreamModel({
+        protocol: listed.protocol,
         baseUrl: listed.baseUrl,
         apiKey,
         model: listed.models[0],
-        timeoutMs: settings.timeoutMs,
-        allowChatCompletions: true
+        timeoutMs: settings.timeoutMs
       })
       return {
         ok: true as const,
-        message: `已从 ${listed.modelsUrl} 获取 ${listed.models.length} 个模型，并通过 ${probe.endpoint === 'responses' ? 'Responses' : 'Chat Completions'} 真实对话测试`,
+        message: `已从 ${listed.modelsUrl} 获取 ${listed.models.length} 个模型，并通过 ${listed.protocol === 'auto' ? 'OpenAI 兼容协议' : listed.protocol} 真实对话测试`,
         models: listed.models,
-        baseUrl: probe.baseUrl,
+        baseUrl: listed.baseUrl,
         modelsUrl: listed.modelsUrl,
-        protocol: probe.endpoint,
+        protocol: listed.protocol,
         probeUrl: probe.probeUrl
       }
     } catch (error) {
@@ -1881,7 +1887,7 @@ async function main(): Promise<void> {
       name: z.string().min(1).max(128),
       baseUrl: z.string().min(1).max(2048),
       apiKey: z.string().max(16_384).optional(),
-      protocol: z.enum(['auto', 'responses', 'chat_completions']),
+      protocol: z.enum(['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama']),
       models: z.array(z.string().max(128)).max(500),
       priority: z.number().finite(),
       enabled: z.boolean()
@@ -1914,6 +1920,12 @@ async function main(): Promise<void> {
     const id = z.string().min(1).max(128).parse(input)
     const key = await apiServerStore.getAccessKey(id)
     if (!key) throw new Error('访问密钥不存在或无法解密')
+    return key
+  })
+  ipcMain.handle(ipcChannels.localApiServerRevealUpstreamKey, async (_event, input: unknown) => {
+    const id = z.string().min(1).max(128).parse(input)
+    const key = await apiServerStore.getUpstreamKey(id)
+    if (!key) throw new Error('上游 API Key 不存在或无法解密')
     return key
   })
   ipcMain.handle(ipcChannels.localApiServerSave, async (_event, input: unknown) => {

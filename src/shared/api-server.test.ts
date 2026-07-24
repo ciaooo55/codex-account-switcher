@@ -67,4 +67,23 @@ describe('api server shared configuration', () => {
       credentialSources: [{ ...input.credentialSources[0], id: 'codex:abc' }]
     })).toThrow('凭证来源 ID')
   })
+
+  it('accepts explicit native upstream protocols and a no-auth local upstream', () => {
+    const input = {
+      port: 8888,
+      autoStart: false,
+      accessKeys: [],
+      upstreams: [{
+        id: 'ollama', name: 'Local Ollama', baseUrl: 'http://127.0.0.1:11434', apiKey: '',
+        protocol: 'ollama' as const, models: ['llama-local'], priority: 1, enabled: true
+      }],
+      routes: [{
+        publicModel: 'local-model', strategy: 'single' as const, sourceMode: 'api_only' as const,
+        targets: [{ sourceId: 'ollama', upstreamModel: 'llama-local', priority: 1, enabled: true }]
+      }]
+    }
+    expect(normalizeLocalApiServerConfig(input)).toMatchObject({
+      upstreams: [{ protocol: 'ollama', apiKey: '' }]
+    })
+  })
 })

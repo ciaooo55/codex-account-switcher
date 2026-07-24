@@ -396,6 +396,7 @@ function api(): CodexSwitcherApi {
     }),
     generateLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
     revealLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
+    revealLocalApiUpstreamKey: vi.fn().mockResolvedValue('sk-upstream-test'),
     applyLocalApiServerToCodex: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     scanGrokDirectory: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] }),
     importGrokFiles: vi.fn().mockResolvedValue(null),
@@ -924,7 +925,7 @@ describe('App', () => {
     fireEvent.click(within(preview).getByRole('button', { name: '确认写入 aa' }))
 
     const result = await screen.findByText('导入完成：新增 3，更新 0，跳过 2；1 项存在问题')
-    expect(result.closest('.message')).toHaveClass('warn')
+    expect(result.closest('.app-toast')).toHaveClass('app-toast--warn')
   })
 
   it('blocks unrecognized sources until the user explicitly skips them', async () => {
@@ -1372,7 +1373,7 @@ describe('App', () => {
     fireEvent.click(within(confirmation).getByRole('button', { name: '继续切换并重启' }))
 
     const warning = await screen.findByText(/账号已完成切换，可手动重启 Codex/)
-    expect(warning.closest('.message')).toHaveClass('warn')
+    expect(warning.closest('.app-toast')).toHaveClass('app-toast--warn')
   })
 
   it('opens the source file location from the account context menu', async () => {

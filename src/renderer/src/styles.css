@@ -117,7 +117,7 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .action-menu summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 0 11px; color: #bdc7ce; background: #171e22; border: 1px solid #344049; border-radius: 5px; cursor: pointer; font-size: 12px; list-style: none; }
 .action-menu summary::-webkit-details-marker { display: none; }
 .action-menu[open] summary { color: #fff; background: #252e34; border-color: #53616b; }
-.action-menu-popover { position: absolute; z-index: 12; top: calc(100% + 6px); right: 0; width: 200px; padding: 5px; background: #1b1f21; border: 1px solid #454c50; border-radius: 6px; box-shadow: 0 14px 36px rgba(0,0,0,.45); transform-origin: top right; animation: popover-in .13s ease-out both; }
+.action-menu-popover { position: absolute; z-index: 50; top: calc(100% + 6px); right: 0; width: 200px; padding: 5px; background: #1b1f21; border: 1px solid #454c50; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,.28); transform-origin: top right; animation: popover-in .13s ease-out both; }
 .action-menu-popover button { width: 100%; justify-content: flex-start; background: transparent; border-color: transparent; }
 .toolbar-divider { display: none; }
 .primary-button { color: #fff; background: #247a49; border-color: #3aa568; }
@@ -129,10 +129,6 @@ input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; pa
 .task-progress > div { height: 100%; background: linear-gradient(90deg, #1d4f66 0%, #2a7a9a 55%, #3390b4 100%); transition: width var(--motion-standard) var(--ease-soft, ease); position: relative; }
 .task-progress > div::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,.14) 48%, transparent 100%); background-size: 200% 100%; animation: progress-shimmer 1.2s linear infinite; }
 .task-progress span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; font-weight: 600; letter-spacing: .01em; color: #e8f4fa; text-shadow: 0 1px 2px rgba(0,0,0,.45); z-index: 1; }
-.message { position: fixed; z-index: 40; right: var(--space-3); bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); width: min(520px, calc(100vw - 24px)); min-height: 40px; margin: 0; padding: var(--space-2) var(--space-2) var(--space-2) 11px; font-size: 12px; border: 1px solid; border-radius: 6px; box-shadow: 0 12px 32px rgba(0,0,0,.28); animation: notice-in var(--motion-standard) ease-out both; }
-.message > span { flex: 1; min-width: 0; line-height: 1.4; }
-.message.ok { color: #a2e6b0; background: #17271d; border-color: #366a43; }.message.warn { color: #f0d18a; background: #2b2518; border-color: #705c2d; }.message.error { color: #f4aaa4; background: #2b1a1c; border-color: #713a3e; }
-.message-close { width: 28px; min-height: 28px; padding: 0; color: inherit; background: transparent; border-color: transparent; }
 .filter-row { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-2); min-height: 42px; padding: var(--space-1) var(--space-3); overflow-x: auto; background: #101519; border-bottom: 1px solid #293239; scrollbar-width: thin; }
 .status-filter-strip { display: flex; align-items: center; gap: var(--space-1); min-height: 36px; padding: 3px var(--space-3); overflow-x: auto; background: #12171b; border-bottom: 1px solid #293239; scrollbar-width: thin; }
 .status-filter-strip button { position: relative; min-width: 0; min-height: 29px; justify-content: space-between; gap: 10px; padding: 0 9px; color: #8b98a1; background: #151b20; border: 1px solid #2b353d; border-radius: 5px; }
@@ -247,7 +243,7 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
   background:
     radial-gradient(ellipse 42% 55% at 50% 42%, color-mix(in srgb, var(--ui-accent, #5ecf8e) 7%, transparent), transparent 70%);
 }
-.account-context-menu { position: fixed; z-index: 40; width: 230px; padding: 5px; background: #1b1f21; border: 1px solid #454c50; border-radius: 6px; box-shadow: 0 16px 42px rgba(0,0,0,.52); transform-origin: top left; animation: popover-in .13s ease-out both; }
+.account-context-menu { position: fixed; z-index: 50; width: 230px; padding: 5px; background: #1b1f21; border: 1px solid #454c50; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,.32); transform-origin: top left; animation: popover-in .13s ease-out both; }
 .context-account { padding: 7px 9px 9px; color: #8e9aa7; border-bottom: 1px solid #303840; margin-bottom: 4px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .account-context-menu button { width: 100%; min-height: 32px; justify-content: flex-start; padding: 0 9px; color: #dce4ec; background: transparent; border: 0; }
 .account-context-menu button:hover:not(:disabled) { background: #2b3033; }
@@ -615,7 +611,6 @@ th:nth-child(1) { width: 40px; } th:nth-child(2) { width: 260px; } th:nth-child(
 
 @media (max-width: 900px) {
   .app-header { flex-wrap: wrap; gap: 8px; }.app-identity { flex-basis: calc(100% - 52px); }.view-tabs { order: 3; width: 100%; height: 38px; }.view-tabs button { flex: 1; }
-  .message { right: 12px; bottom: 12px; }
   .summary-band { grid-template-columns: repeat(3, 1fr); }.summary-band > div:nth-last-child(-n+2) { grid-column: span 1; }
   .toolbar-divider { display: none; }.search-field { min-width: 180px; }.settings-grid { grid-template-columns: 1fr; }
   .auto-switch-options { grid-template-columns: 1fr; }
@@ -693,7 +688,7 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .test-mode-control button.active { background: #5f8799; color: #fff; }
 .action-menu summary { color: #53616a; background: #f8fafb; border-color: #cbd4d9; }
 .action-menu[open] summary { color: #253039; background: #e8eef1; border-color: #adb9c0; }
-.action-menu-popover, .account-context-menu { background: #f9fbfc; border-color: #c6d0d5; box-shadow: 0 14px 34px rgba(37,52,61,.18); }
+.action-menu-popover, .account-context-menu { background: #f9fbfc; border-color: #c6d0d5; box-shadow: 0 4px 8px rgba(37,52,61,.14); }
 .action-menu-popover button, .account-context-menu button { color: #33414a; }
 .account-context-menu button:hover:not(:disabled) { background: #eaf0f2; }
 .context-account { color: #687680; border-color: #d9e0e3; }
@@ -715,10 +710,6 @@ input:focus, select:focus, textarea:focus { outline-color: rgba(42,113,151,.22);
 .task-progress > div { background: #5795b3; }
 .task-progress span { color: #26333b; }
 
-.message { box-shadow: 0 14px 34px rgba(38,52,61,.16); }
-.message.ok { color: #28623c; background: #edf7f0; border-color: #b4d8bf; }
-.message.warn { color: #795a16; background: #faf5e8; border-color: #ddcca0; }
-.message.error { color: #963d3b; background: #faeeee; border-color: #dfb5b3; }
 
 .status-filter-strip, .filter-row { background: #f3f6f7; border-color: #d5dde1; }
 .status-filter-strip button { color: #65737c; background: #f8fafb; border-color: #d1d9dd; box-shadow: none; }
@@ -1014,7 +1005,7 @@ td { color: #3b4851; border-color: #dce2e5; }
   --ui-purple: #b8a8d8;
   --ui-purple-soft: #262232;
   --ui-overlay: rgba(6, 8, 7, .68);
-  --ui-shadow-popover: 0 12px 28px rgba(0, 0, 0, .42);
+  --ui-shadow-popover: 0 4px 8px rgba(0, 0, 0, .28);
   --ui-shadow-dialog: 0 18px 48px rgba(0, 0, 0, .48);
   --ui-panel-tint: color-mix(in srgb, var(--ui-accent) 8%, var(--ui-surface-raised));
   --ui-radius-sm: 5px;
@@ -1051,7 +1042,7 @@ td { color: #3b4851; border-color: #dce2e5; }
   --ui-purple: #5f4f78;
   --ui-purple-soft: #f1edf6;
   --ui-overlay: rgba(22, 28, 25, .42);
-  --ui-shadow-popover: 0 10px 28px rgba(24, 36, 30, .12);
+  --ui-shadow-popover: 0 4px 8px rgba(24, 36, 30, .12);
   --ui-shadow-dialog: 0 20px 52px rgba(24, 36, 30, .16);
   --ui-panel-tint: color-mix(in srgb, var(--ui-accent) 6%, var(--ui-surface-raised));
   --ui-radius-sm: 5px;
@@ -1267,10 +1258,6 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
 .category-context-menu .context-disable { color: var(--ui-warning); }
 .account-context-menu .context-danger { color: var(--ui-danger); border-color: var(--ui-border); }
 
-.message { box-shadow: var(--ui-shadow-popover); }
-.message.ok { color: var(--ui-accent); background: var(--ui-accent-soft); border-color: var(--ui-accent-border); }
-.message.warn { color: var(--ui-warning); background: var(--ui-warning-soft); border-color: color-mix(in srgb, var(--ui-warning) 45%, var(--ui-border)); }
-.message.error { color: var(--ui-danger); background: var(--ui-danger-soft); border-color: color-mix(in srgb, var(--ui-danger) 45%, var(--ui-border)); }
 .task-progress { background: var(--ui-bg); border-color: var(--ui-border); }
 .task-progress > div { background: var(--ui-accent-strong); }
 
@@ -1367,8 +1354,7 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
 .view-tabs,
 .status-filter-strip button,
 .action-menu summary,
-.action-menu-popover,
-.message { border-radius: var(--ui-radius-sm); }
+.action-menu-popover { border-radius: var(--ui-radius-sm); }
 .conversation-row,
 .conversation-message,
 .health-issue,
@@ -1573,14 +1559,6 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
   to { opacity: 1; transform: translateX(0); }
 }
 
-/* toast: slightly richer enter from bottom-right */
-.message {
-  animation-name: toast-in;
-  animation-duration: var(--motion-standard);
-  animation-timing-function: var(--ease-out, ease-out);
-  animation-fill-mode: both;
-}
-
 /* health-check / testing status chips */
 .status-testing,
 .testing-inline {
@@ -1725,7 +1703,7 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .message,
+  .app-toast,
   .active-badge,
   .status-testing,
   .testing-inline,

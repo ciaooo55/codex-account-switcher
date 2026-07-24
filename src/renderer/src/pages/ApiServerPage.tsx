@@ -267,7 +267,7 @@ export function ApiServerPage(): React.JSX.Element {
       const key = await codexApi().generateLocalApiAccessKey()
       const entry: AccessKeyDraft = {
         id: uniqueId('key'),
-        label: `项目密钥 ${draft ? draft.accessKeys.length + 1 : 1}`,
+        label: `本软件密钥 ${draft ? draft.accessKeys.length + 1 : 1}`,
         key,
         enabled: true,
         allowedModels: [],
@@ -276,7 +276,7 @@ export function ApiServerPage(): React.JSX.Element {
         reveal: true
       }
       updateDraft((current) => ({ ...current, accessKeys: [...current.accessKeys, entry] }))
-      setNotice({ kind: 'warn', text: '新密钥只在保存前完整显示。请立即复制并妥善保管。' })
+      setNotice({ kind: 'ok', text: '已生成本软件客户端密钥。保存后仍可通过复制按钮安全取回。' })
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -287,7 +287,7 @@ export function ApiServerPage(): React.JSX.Element {
   const addManualAccessKey = (): void => {
     const entry: AccessKeyDraft = {
       id: uniqueId('key'),
-      label: `项目密钥 ${draft ? draft.accessKeys.length + 1 : 1}`,
+      label: `本软件密钥 ${draft ? draft.accessKeys.length + 1 : 1}`,
       key: '',
       enabled: true,
       allowedModels: [],
@@ -348,6 +348,29 @@ export function ApiServerPage(): React.JSX.Element {
     }
   }
 
+  const copyUpstreamKey = async (entry: UpstreamDraft): Promise<void> => {
+    if (entry.apiKey) {
+      await copyText(entry.apiKey, '上游 API Key')
+      return
+    }
+    const bridge = codexApi() as ReturnType<typeof codexApi> & {
+      revealLocalApiUpstreamKey?: (id: string) => Promise<string>
+    }
+    if (!bridge.revealLocalApiUpstreamKey) {
+      setNotice({ kind: 'warn', text: '当前主进程未提供上游 Key 复制能力；请重新填写后保存。' })
+      return
+    }
+    setAction(`copy-upstream-${entry.id}`)
+    try {
+      // The plaintext only crosses the bridge to be copied and is never stored in React state.
+      await copyText(await bridge.revealLocalApiUpstreamKey(entry.id), '上游 API Key')
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAction(null)
+    }
+  }
+
   const addUpstream = (): void => {
     const entry: UpstreamDraft = {
       id: uniqueId('api'),
@@ -371,7 +394,8 @@ export function ApiServerPage(): React.JSX.Element {
     try {
       const result = await codexApi().listCustomApiModels({
         baseUrl: upstream.baseUrl,
-        ...(upstream.apiKey ? { apiKey: upstream.apiKey } : {})
+        ...(upstream.apiKey ? { apiKey: upstream.apiKey } : {}),
+        useSavedKey: false
       })
       const probe = { loading: false, ok: result.ok, message: result.message, latencyMs: Math.round(performance.now() - startedAt) }
       setProbes((current) => ({ ...current, [upstream.id]: probe }))
@@ -630,7 +654,7 @@ export function ApiServerPage(): React.JSX.Element {
         <div className="api-server-layout grid min-h-[430px] grid-cols-[190px_minmax(0,1fr)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)]">
           <nav className="flex flex-col gap-1 border-r border-[var(--color-border)] bg-[var(--color-surface-1)] p-2" aria-label="API 服务配置">
             {([
-              ['access-keys', KeyRound, '访问密钥', draft.accessKeys.length],
+              ['access-keys', KeyRound, '客户端密钥', draft.accessKeys.length],
               ['upstreams', Network, '第三方上游', draft.upstreams.length],
               ['credentials', ShieldCheck, '账号凭证源', draft.credentialSources.length],
               ['routes', Route, '公开模型路由', draft.routes.length]
@@ -654,7 +678,7 @@ export function ApiServerPage(): React.JSX.Element {
             ))}
             <div className="mt-auto rounded-[var(--radius-md)] bg-[var(--color-surface-2)] p-2.5 text-[10.5px] leading-4 text-[var(--color-text-muted)]">
               <ShieldCheck size={14} className="mb-1.5 text-[var(--color-accent)]" />
-              上游 Key 仅经安全 IPC 交给主进程加密保存，不会在此页回显。
+              客户端使用本软件密钥访问本地 API；本软件转发请求时，再使用各上游自己的 Key。两者互不替代。
             </div>
           </nav>
 
@@ -662,7 +686,7 @@ export function ApiServerPage(): React.JSX.Element {
             {activeSection === 'access-keys' ? (
               <section aria-labelledby="access-keys-title">
                 <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
-                  <div><h2 id="access-keys-title" className="text-[13px] font-semibold">项目访问密钥</h2><p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">用于客户端访问本地 API，不是第三方上游密钥。</p></div>
+                  <div><h2 id="access-keys-title" className="text-[13px] font-semibold">本软件访问密钥</h2><p className="mt-0.5 max-w-[72ch] text-[11px] text-[var(--color-text-muted)]">Codex 或其他客户端请求本软件 API 时使用，相当于本软件的门禁密钥；它与第三方上游 Key 完全独立。</p></div>
                   <div className="flex items-center gap-1.5">
                     <Button onClick={addManualAccessKey} disabled={isBusy}><Plus size={15} />手动添加</Button>
                     <Button variant="soft" onClick={() => void addAccessKey()} disabled={isBusy}>{action === 'generate-key' ? <LoaderCircle className="spin" size={15} /> : <WandSparkles size={15} />}生成安全密钥</Button>
@@ -672,7 +696,9 @@ export function ApiServerPage(): React.JSX.Element {
                   <EmptyState icon={KeyRound} title="还没有访问密钥" detail="创建一枚项目密钥后，Codex 或其他客户端才能访问本地 API 服务。" action={<div className="flex gap-1.5"><Button onClick={addManualAccessKey}><Plus size={15} />手动添加</Button><Button variant="default" onClick={() => void addAccessKey()}><WandSparkles size={15} />生成安全密钥</Button></div>} />
                 ) : (
                   <div className="divide-y divide-[var(--color-border)]">
-                    {draft.accessKeys.map((entry) => (
+                    {draft.accessKeys.map((entry) => {
+                      const storedKey = !entry.key && entry.hasKey
+                      return (
                       <article key={entry.id} className="grid gap-2.5 px-3 py-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Input aria-label="密钥名称" className="max-w-[260px] font-medium" value={entry.label} onChange={(event) => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, label: event.target.value } : item) }))} />
@@ -683,17 +709,19 @@ export function ApiServerPage(): React.JSX.Element {
                           </div>
                         </div>
                         <div className="grid grid-cols-[minmax(210px,1fr)_minmax(220px,1.2fr)] gap-2.5">
-                          <Field label="密钥值" hint={entry.key ? '保存前可复制；保存后仅显示脱敏摘要' : '已加密保存，无法从界面恢复明文'}>
+                          <Field label="本软件客户端密钥" hint={storedKey ? '已安全保存：显示开头和结尾；点击复制可取回完整值' : '保存后将显示脱敏摘要，仍可点击复制按钮安全取回'}>
                             <div className="flex gap-1">
                               <Input
                                 aria-label={`${entry.label} 密钥值`}
-                                type={entry.reveal ? 'text' : 'password'}
+                                type={storedKey || entry.reveal ? 'text' : 'password'}
                                 className="font-[var(--font-mono)]"
                                 value={entry.key ?? entry.keyPreview}
+                                readOnly={storedKey}
                                 placeholder="sk-cas-… 或手动输入"
                                 onChange={(event) => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, key: event.target.value, keyPreview: event.target.value, reveal: true } : item) }))}
                               />
                               <Button size="icon" aria-label={`复制 ${entry.label}`} title="复制密钥" disabled={action === `copy-${entry.id}`} onClick={() => void copyAccessKey(entry)}>{action === `copy-${entry.id}` ? <LoaderCircle className="spin" size={14} /> : <Copy size={14} />}</Button>
+                              {storedKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, key: '', keyPreview: '', hasKey: false, reveal: true } : item) }))}>更换</Button> : null}
                             </div>
                           </Field>
                           <Field label="模型白名单" hint="逗号或换行分隔；留空允许访问全部公开模型">
@@ -706,7 +734,8 @@ export function ApiServerPage(): React.JSX.Element {
                           </Field>
                         </div>
                       </article>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </section>
@@ -715,7 +744,7 @@ export function ApiServerPage(): React.JSX.Element {
             {activeSection === 'upstreams' ? (
               <section aria-labelledby="upstreams-title">
                 <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
-                  <div><h2 id="upstreams-title" className="text-[13px] font-semibold">第三方 API 上游</h2><p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">每条上游独立保存协议、模型和优先级。测试会自动尝试带 /v1 与不带 /v1。</p></div>
+                  <div><h2 id="upstreams-title" className="text-[13px] font-semibold">第三方 API 上游</h2><p className="mt-0.5 max-w-[72ch] text-[11px] text-[var(--color-text-muted)]">这里填写第三方服务自己的 URL 和 Key。本软件仅在转发请求时使用；测试会自动尝试带 /v1 与不带 /v1。</p></div>
                   <div className="flex items-center gap-1.5">
                     <Button onClick={() => setPasteOpen((open) => !open)} aria-expanded={pasteOpen}><Clipboard size={15} />粘贴识别</Button>
                     <Button variant="soft" onClick={addUpstream}><Plus size={15} />添加上游</Button>
@@ -750,6 +779,7 @@ export function ApiServerPage(): React.JSX.Element {
                   <div className="divide-y divide-[var(--color-border)]">
                     {draft.upstreams.map((entry) => {
                       const probe = probes[entry.id]
+                      const storedUpstreamKey = !entry.apiKey && entry.hasApiKey
                       return (
                         <article key={entry.id}>
                           <div className="flex min-h-12 flex-wrap items-center gap-2 px-3 py-2">
@@ -768,11 +798,15 @@ export function ApiServerPage(): React.JSX.Element {
                             <div className="grid grid-cols-2 gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-3">
                               <Field label="名称"><Input value={entry.name} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, name: event.target.value } : item) }))} /></Field>
                               <Field label="API Base URL" hint="可填写到域名或 /v1"><Input className="font-[var(--font-mono)]" value={entry.baseUrl} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, baseUrl: event.target.value } : item) }))} /></Field>
-                              <Field label="上游 API Key" hint={entry.hasApiKey && !entry.apiKey ? `已安全保存：${entry.keyPreview}` : '留空不会覆盖已保存密钥'}>
-                                <Input type="password" value={entry.apiKey ?? ''} placeholder={entry.hasApiKey ? entry.keyPreview : 'sk-…'} autoComplete="off" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: event.target.value || undefined } : item) }))} />
+                              <Field label="上游 API Key" hint={storedUpstreamKey ? '已安全保存：显示开头和结尾；点击复制可取回完整值' : '留空不会覆盖已保存密钥；无鉴权上游（例如本地 Ollama）可保持为空'}>
+                                <div className="flex gap-1">
+                                  <Input type={storedUpstreamKey ? 'text' : 'password'} value={entry.apiKey ?? entry.keyPreview} readOnly={storedUpstreamKey} placeholder={entry.hasApiKey ? entry.keyPreview : 'sk-…'} autoComplete="off" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: event.target.value || undefined } : item) }))} />
+                                  <Button size="icon" aria-label={`复制 ${entry.name} 上游 API Key`} title="复制上游 API Key" disabled={action === `copy-upstream-${entry.id}` || (!entry.apiKey && !entry.hasApiKey)} onClick={() => void copyUpstreamKey(entry)}>{action === `copy-upstream-${entry.id}` ? <LoaderCircle className="spin" size={14} /> : <Copy size={14} />}</Button>
+                                  {storedUpstreamKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: '', hasApiKey: false, keyPreview: '' } : item) }))}>更换</Button> : null}
+                                </div>
                               </Field>
                               <div className="grid grid-cols-[1fr_120px] gap-3">
-                                <Field label="协议能力"><Select className="w-full" value={entry.protocol} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, protocol: event.target.value as ApiUpstreamProtocol } : item) }))}><option value="auto">自动识别</option><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></Select></Field>
+                                <Field label="协议能力" hint="原生协议会在本地转换为公开 OpenAI 模型路由"><Select className="w-full" value={entry.protocol} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, protocol: event.target.value as ApiUpstreamProtocol } : item) }))}><option value="auto">自动识别（OpenAI）</option><option value="responses">OpenAI Responses</option><option value="chat_completions">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini v1beta</option><option value="ollama">Ollama</option></Select></Field>
                                 <Field label="优先级"><Input type="number" value={entry.priority} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, priority: Number(event.target.value) } : item) }))} /></Field>
                               </div>
                               <Field label={`模型列表 · ${entry.models.length}`} hint="测试成功后自动填充，也可手动编辑" className="col-span-2">
@@ -903,9 +937,9 @@ export function ApiServerPage(): React.JSX.Element {
         <section className="api-codex-panel grid grid-cols-[minmax(240px,1.2fr)_minmax(150px,.8fr)_minmax(180px,1fr)_auto_auto] items-end gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-3" aria-labelledby="codex-api-title">
           <div className="self-center">
             <h2 id="codex-api-title" className="flex items-center gap-2 text-[13px] font-semibold"><Clipboard size={16} className="text-[var(--color-accent)]" />一键设置 Codex</h2>
-            <p className="mt-1 max-w-[60ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">Codex 只保存本地地址与专用项目密钥。切换上游或路由时地址保持不变。</p>
+            <p className="mt-1 max-w-[60ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">Codex 只保存本地地址与本软件密钥，不会拿到第三方上游 Key。切换上游或路由时地址保持不变。</p>
           </div>
-          <Field label="Codex 专用密钥"><Select className="w-full" value={codexKeyId} onChange={(event) => { setCodexKeyId(event.target.value); setCodexModel('') }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</Select></Field>
+          <Field label="Codex 使用的本软件密钥"><Select className="w-full" value={codexKeyId} onChange={(event) => { setCodexKeyId(event.target.value); setCodexModel('') }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</Select></Field>
           <Field label="默认公开模型"><Select className="w-full" value={codexModel} onChange={(event) => setCodexModel(event.target.value)}><option value="">选择模型</option>{codexModels.map((model) => <option key={model} value={model}>{model}</option>)}</Select></Field>
           <Toggle checked={restartCodex} onChange={setRestartCodex} label="重启并修复会话" />
           <Button variant="default" size="lg" disabled={isBusy || !codexKeyId || !codexModel} onClick={() => void applyToCodex()}>{action === 'codex' ? <LoaderCircle className="spin" size={15} /> : <ClipboardPasteIcon />}应用到 Codex</Button>

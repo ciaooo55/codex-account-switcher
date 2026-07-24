@@ -1,3 +1,5 @@
+import type { ApiUpstreamProtocol } from './api-server'
+
 export type CredentialSourceFormat = 'json' | 'jsonl' | 'txt' | 'js' | 'md' | 'zip' | 'paste'
 export type CredentialDialect = 'codex' | 'cpa' | 'sub2api' | 'cockpit' | 'generic'
 export type CredentialAuthKind =
@@ -133,7 +135,7 @@ export interface CustomApiListModelsResult {
   models: string[]
   baseUrl: string
   modelsUrl?: string
-  protocol?: 'responses' | 'chat_completions'
+  protocol?: ApiUpstreamProtocol
   probeUrl?: string
 }
 

@@ -437,6 +437,31 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '仅额度', exact: true }).click()
     await page.getByRole('button', { name: '测试选中' }).click()
     await expect(page.getByText('选中账号额度查询完成')).toBeVisible()
+    const toast = page.locator('.app-toast')
+    await expect(toast).toBeVisible()
+    const toastGeometry = await toast.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      const header = document.querySelector('.app-header')?.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      return {
+        top: bounds.top,
+        right: window.innerWidth - bounds.right,
+        width: bounds.width,
+        height: bounds.height,
+        headerBottom: header?.bottom ?? 0,
+        position: style.position,
+        overflowY: style.overflowY
+      }
+    })
+    expect(toastGeometry.position).toBe('fixed')
+    expect(toastGeometry.top).toBeGreaterThanOrEqual(toastGeometry.headerBottom)
+    expect(toastGeometry.right).toBeGreaterThanOrEqual(0)
+    expect(toastGeometry.right).toBeLessThanOrEqual(16)
+    expect(toastGeometry.width).toBeLessThanOrEqual(420)
+    expect(toastGeometry.height).toBeGreaterThanOrEqual(48)
+    expect(toastGeometry.height).toBeLessThanOrEqual(160)
+    expect(['auto', 'scroll']).toContain(toastGeometry.overflowY)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'toast-ui.png'), fullPage: true })
     expect(requests.slice(beforeUsageOnly)).toEqual(['/usage'])
     await page.getByRole('button', { name: '完整测试', exact: true }).click()
 

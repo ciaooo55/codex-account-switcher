@@ -21,6 +21,26 @@ import {
   translateResponsesResponseToChatCompletions,
   type OpenAiProtocolTranslationDirection
 } from './openai-protocol-translation'
+import {
+  clientResponseContentType,
+  translateAnthropicRequestToChat,
+  translateAnthropicResponseToChat,
+  translateAnthropicSseToChat,
+  translateChatRequestToAnthropic,
+  translateChatRequestToGemini,
+  translateChatRequestToOllama,
+  translateChatResponseForClient,
+  translateChatSseForClient,
+  translateGeminiRequestToChat,
+  translateGeminiResponseToChat,
+  translateGeminiSseToChat,
+  translateOllamaChatRequestToChat,
+  translateOllamaGenerateRequestToChat,
+  translateOllamaResponseToChat,
+  translateOllamaStreamToChat,
+  type NativeClientProtocol,
+  type UpstreamResponseProtocol
+} from './protocol-compatibility'
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 429])
@@ -29,9 +49,13 @@ const PROTOCOL_FALLBACK_STATUSES = new Set([400, 404, 405, 415, 422, 501])
 type SupportedEndpoint = '/v1/responses' | '/v1/responses/compact' | '/v1/chat/completions'
 
 interface ApiRequestPlan {
-  endpoint: SupportedEndpoint
+  /** Endpoint to call on the selected upstream (not necessarily OpenAI). */
+  endpoint: string
+  query?: string
   requestBody: Record<string, unknown>
   responseDirection?: OpenAiProtocolTranslationDirection
+  /** Set for native protocol upstreams; response is normalized before relay. */
+  responseProtocol?: UpstreamResponseProtocol
 }
 
 type FetchLike = typeof fetch
@@ -75,8 +99,7 @@ function cloneRuntimeConfig(config: LocalApiServerRuntimeConfig): LocalApiServer
       return { ...entry, key: entry.key }
     }),
     upstreams: normalized.upstreams.map((entry) => {
-      if (!entry.apiKey) throw new Error(`上游“${entry.name}”缺少 API Key`)
-      return { ...entry, apiKey: entry.apiKey }
+      return { ...entry, apiKey: entry.apiKey ?? '' }
     }),
     credentialSources: (normalized.credentialSources ?? []).map((entry) => ({
       ...entry,
@@ -161,6 +184,35 @@ function writeOpenAiError(
   writeJson(response, status, { error: { message, type, param: null, code } })
 }
 
+function writeClientProtocolError(
+  response: ServerResponse,
+  protocol: NativeClientProtocol,
+  status: number,
+  message: string,
+  code = 'invalid_request_error'
+): void {
+  if (protocol === 'anthropic') {
+    writeJson(response, status, { type: 'error', error: { type: code, message } })
+    return
+  }
+  if (protocol === 'gemini') {
+    writeJson(response, status, { error: { code: status, status: status === 404 ? 'NOT_FOUND' : 'INVALID_ARGUMENT', message } })
+    return
+  }
+  if (protocol === 'ollama_chat' || protocol === 'ollama_generate') {
+    writeJson(response, status, { error: message })
+    return
+  }
+  writeOpenAiError(response, status, message, code)
+}
+
+function roughTokenCount(value: unknown): number {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value ?? '')
+  // This is intentionally labelled as an estimate. It avoids pretending to
+  // know a provider-specific tokenizer while letting SDK preflight calls work.
+  return Math.max(1, Math.ceil(serialized.length / 4))
+}
+
 async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
@@ -176,12 +228,19 @@ async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
 function parseUpstreamError(body: string, status: number): string {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }
-    if (typeof parsed.error?.message === 'string') return parsed.error.message.slice(0, 1000)
-    if (typeof parsed.message === 'string') return parsed.message.slice(0, 1000)
+    if (typeof parsed.error?.message === 'string') return redactUpstreamMessage(parsed.error.message)
+    if (typeof parsed.message === 'string') return redactUpstreamMessage(parsed.message)
   } catch {
     // Non-JSON upstream errors are intentionally not reflected verbatim.
   }
   return `上游请求失败（HTTP ${status}）`
+}
+
+function redactUpstreamMessage(value: string): string {
+  return value
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{8,}/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk|rk|pk|AIza)[-_A-Za-z0-9]{8,}\b/g, '[REDACTED]')
+    .slice(0, 1000)
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -189,7 +248,9 @@ function isRetryableStatus(status: number): boolean {
 }
 
 function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: string): boolean {
-  if (endpoint === '/v1/responses/compact') return upstream.protocol !== 'chat_completions'
+  if (endpoint === '/v1/responses/compact') {
+    return upstream.protocol === 'auto' || upstream.protocol === 'responses'
+  }
   return true
 }
 
@@ -219,8 +280,34 @@ function translatedPlan(
 function apiRequestPlans(
   upstream: Required<ApiUpstreamInput>,
   endpoint: SupportedEndpoint,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  upstreamModel: string
 ): ApiRequestPlan[] {
+  const chatBody = endpoint === '/v1/chat/completions'
+    ? body
+    : translateResponsesRequestToChatCompletions(body)
+  if (upstream.protocol === 'anthropic_messages') {
+    return [{
+      endpoint: '/v1/messages',
+      requestBody: translateChatRequestToAnthropic(chatBody),
+      responseProtocol: 'anthropic_messages'
+    }]
+  }
+  if (upstream.protocol === 'gemini') {
+    return [{
+      endpoint: `/v1beta/models/${encodeURIComponent(upstreamModel)}:${body.stream === true ? 'streamGenerateContent' : 'generateContent'}`,
+      ...(body.stream === true ? { query: 'alt=sse' } : {}),
+      requestBody: translateChatRequestToGemini(chatBody),
+      responseProtocol: 'gemini'
+    }]
+  }
+  if (upstream.protocol === 'ollama') {
+    return [{
+      endpoint: '/api/chat',
+      requestBody: translateChatRequestToOllama(chatBody),
+      responseProtocol: 'ollama'
+    }]
+  }
   if (upstream.protocol !== 'auto' || endpoint === '/v1/responses/compact') {
     return [translatedPlan(endpoint, body, upstream.protocol)]
   }
@@ -244,6 +331,56 @@ function responseHeaders(upstream: Response): Record<string, string> {
     if (value) result[name] = value
   }
   return result
+}
+
+/**
+ * Build a native-provider URL without retaining an accidentally pasted /v1
+ * suffix. OpenAI-compatible paths keep the existing exact-path behaviour;
+ * native adapters always start at the provider root (/v1, /v1beta and /api
+ * are endpoint families rather than user-controlled base paths).
+ */
+function buildProviderUpstreamUrl(
+  upstream: Required<ApiUpstreamInput>,
+  endpoint: string,
+  query?: string
+): string {
+  if (upstream.protocol === 'auto' || upstream.protocol === 'responses' || upstream.protocol === 'chat_completions') {
+    const url = new URL(buildOpenAiUpstreamUrl(upstream.baseUrl, endpoint))
+    if (query) url.search = query
+    return url.toString()
+  }
+  const url = new URL(upstream.baseUrl)
+  const current = url.pathname.replace(/\/+$/, '')
+  const root = /(?:^|\/)(?:v1|v1beta|api)$/i.test(current)
+    ? current.replace(/\/(?:v1|v1beta|api)$/i, '')
+    : current
+  url.pathname = `${root}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`.replace(/\/{2,}/g, '/')
+  url.search = query ?? ''
+  return url.toString()
+}
+
+function apiUpstreamHeaders(
+  upstream: Required<ApiUpstreamInput>,
+  incoming: IncomingMessage
+): Record<string, string> {
+  const common = {
+    'content-type': 'application/json',
+    accept: incoming.headers.accept ?? '*/*'
+  }
+  if (upstream.protocol === 'anthropic_messages') {
+    return {
+      ...common,
+      ...(upstream.apiKey ? { 'x-api-key': upstream.apiKey } : {}),
+      'anthropic-version': '2023-06-01',
+      ...(incoming.headers['anthropic-version'] ? { 'anthropic-version': String(incoming.headers['anthropic-version']) } : {})
+    }
+  }
+  if (upstream.protocol === 'gemini') return { ...common, ...(upstream.apiKey ? { 'x-goog-api-key': upstream.apiKey } : {}) }
+  return {
+    ...common,
+    ...(upstream.apiKey ? { authorization: `Bearer ${upstream.apiKey}` } : {}),
+    ...(incoming.headers['openai-beta'] ? { 'openai-beta': String(incoming.headers['openai-beta']) } : {})
+  }
 }
 
 async function relayResponse(upstream: Response, response: ServerResponse): Promise<void> {
@@ -302,6 +439,143 @@ async function relayTranslatedResponse(
     ? translateChatCompletionsResponseToResponses(payload)
     : translateResponsesResponseToChatCompletions(payload)
   writeJson(response, upstream.status, translated)
+}
+
+function nativeResponseToChat(
+  payload: unknown,
+  protocol: UpstreamResponseProtocol
+): Record<string, unknown> {
+  if (protocol === 'anthropic_messages') return translateAnthropicResponseToChat(payload)
+  if (protocol === 'gemini') return translateGeminiResponseToChat(payload)
+  if (protocol === 'ollama') return translateOllamaResponseToChat(payload)
+  throw new Error('未知的原生上游响应协议')
+}
+
+function nativeStreamToChat(
+  stream: ReadableStream<Uint8Array>,
+  protocol: UpstreamResponseProtocol
+): ReadableStream<Uint8Array> {
+  if (protocol === 'anthropic_messages') return translateAnthropicSseToChat(stream)
+  if (protocol === 'gemini') return translateGeminiSseToChat(stream)
+  if (protocol === 'ollama') return translateOllamaStreamToChat(stream)
+  throw new Error('未知的原生上游流式协议')
+}
+
+async function relayStream(
+  stream: ReadableStream<Uint8Array>,
+  upstream: Response,
+  response: ServerResponse,
+  contentType: string
+): Promise<void> {
+  const headers = responseHeaders(upstream)
+  delete headers['content-length']
+  headers['content-type'] = contentType
+  response.writeHead(upstream.status, headers)
+  const reader = stream.getReader()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!response.write(Buffer.from(value))) {
+        await new Promise<void>((resolve) => response.once('drain', resolve))
+      }
+    }
+    response.end()
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/**
+ * Relay one successful plan. Native upstreams are first normalized to Chat;
+ * a native caller is then adapted from that same Chat form. This prevents
+ * protocol pair explosions (Anthropic->Gemini, Gemini->Ollama, etc.).
+ */
+async function relayPlanResponse(
+  upstream: Response,
+  response: ServerResponse,
+  canonicalEndpoint: SupportedEndpoint,
+  plan: ApiRequestPlan,
+  clientProtocol: NativeClientProtocol,
+  upstreamModel: string
+): Promise<void> {
+  const contentType = upstream.headers.get('content-type')?.toLowerCase() ?? ''
+  const streaming = contentType.includes('text/event-stream')
+    || (plan.responseProtocol === 'ollama' && contentType.includes('application/x-ndjson'))
+
+  if (clientProtocol === 'openai' && !plan.responseProtocol) {
+    if (plan.responseDirection) {
+      await relayTranslatedResponse(upstream, response, plan.responseDirection, upstreamModel)
+    } else {
+      await relayResponse(upstream, response)
+    }
+    return
+  }
+
+  if (streaming) {
+    if (!upstream.body) throw new Error('上游流式响应缺少响应体')
+    let chatStream: ReadableStream<Uint8Array>
+    if (plan.responseProtocol) {
+      chatStream = nativeStreamToChat(upstream.body, plan.responseProtocol)
+    } else if (plan.responseDirection === 'responses_to_chat') {
+      chatStream = translateOpenAiSseStream(upstream.body, 'responses_to_chat', { model: upstreamModel })
+    } else if (plan.responseDirection === 'chat_to_responses') {
+      // A native client is always normalized through Chat. This branch is
+      // defensive for future callers that accidentally pair it with a
+      // Responses canonical request.
+      chatStream = translateOpenAiSseStream(upstream.body, 'responses_to_chat', { model: upstreamModel })
+    } else {
+      chatStream = upstream.body
+    }
+
+    if (clientProtocol !== 'openai') {
+      await relayStream(
+        translateChatSseForClient(chatStream, clientProtocol),
+        upstream,
+        response,
+        clientResponseContentType(clientProtocol)
+      )
+      return
+    }
+    if (canonicalEndpoint === '/v1/responses') {
+      await relayStream(
+        translateOpenAiSseStream(chatStream, 'chat_to_responses', { model: upstreamModel }),
+        upstream,
+        response,
+        'text/event-stream; charset=utf-8'
+      )
+      return
+    }
+    await relayStream(chatStream, upstream, response, 'text/event-stream; charset=utf-8')
+    return
+  }
+
+  const payload = await upstream.json()
+  let chatPayload: Record<string, unknown>
+  if (plan.responseProtocol) {
+    chatPayload = nativeResponseToChat(payload, plan.responseProtocol)
+  } else if (plan.responseDirection === 'responses_to_chat') {
+    chatPayload = translateResponsesResponseToChatCompletions(payload)
+  } else if (plan.responseDirection === 'chat_to_responses') {
+    chatPayload = translateChatCompletionsResponseToResponses(payload)
+  } else {
+    chatPayload = payload as Record<string, unknown>
+  }
+
+  if (clientProtocol !== 'openai') {
+    // All native incoming endpoints call the Chat canonical route. Do not
+    // silently fabricate a conversion if a future route violates that rule.
+    if (canonicalEndpoint !== '/v1/chat/completions') {
+      throw new Error('原生客户端只能通过 Chat 兼容路由转发')
+    }
+    writeJson(response, upstream.status, translateChatResponseForClient(chatPayload, clientProtocol))
+    return
+  }
+  if (canonicalEndpoint === '/v1/responses' && plan.responseProtocol) {
+    writeJson(response, upstream.status, translateChatCompletionsResponseToResponses(chatPayload))
+    return
+  }
+  writeJson(response, upstream.status, chatPayload)
 }
 
 export function generateLocalApiAccessKey(): string {
@@ -436,7 +710,7 @@ export class LocalApiServer {
     head: Buffer
   ): Promise<void> {
     const requestUrl = new URL(request.url ?? '/', `http://${LOCAL_API_SERVER_HOST}`)
-    if (requestUrl.pathname !== '/v1/responses') {
+    if (!['/v1/responses', '/responses', '/backend-api/codex/responses'].includes(requestUrl.pathname)) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
       return
     }
@@ -516,7 +790,7 @@ export class LocalApiServer {
           publicModel = requestedModel
           const incompatibleApiIds = new Set(
             this.config.upstreams
-              .filter((entry) => entry.protocol === 'chat_completions')
+              .filter((entry) => entry.protocol !== 'auto' && entry.protocol !== 'responses')
               .map((entry) => entry.id)
           )
           const websocketRoute: ModelRoute = {
@@ -654,7 +928,8 @@ export class LocalApiServer {
       return
     }
 
-    if (method === 'GET' && requestUrl.pathname === '/v1/models') {
+    const modelListPaths = new Set(['/v1/models', '/models', '/backend-api/codex/models'])
+    if (method === 'GET' && modelListPaths.has(requestUrl.pathname)) {
       const allowed = new Set(key.allowedModels)
       const models = this.config.routes
         .filter((route) => allowed.size === 0 || allowed.has(route.publicModel))
@@ -663,10 +938,110 @@ export class LocalApiServer {
       return
     }
 
-    const supportedEndpoint = requestUrl.pathname === '/v1/responses'
-      || requestUrl.pathname === '/v1/responses/compact'
-      || requestUrl.pathname === '/v1/chat/completions'
-    if (method !== 'POST' || !supportedEndpoint) {
+    const availableModels = this.config.routes
+      .filter((route) => key.allowedModels.length === 0 || key.allowedModels.includes(route.publicModel))
+      .map((route) => route.publicModel)
+
+    if (method === 'GET' && requestUrl.pathname === '/v1beta/models') {
+      writeJson(response, 200, {
+        models: availableModels.map((name) => ({
+          name: `models/${name}`,
+          displayName: name,
+          supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'countTokens']
+        }))
+      })
+      return
+    }
+
+    const geminiModelInfo = /^\/v1beta\/models\/([^/]+)$/i.exec(requestUrl.pathname)
+    if (method === 'GET' && geminiModelInfo) {
+      const model = decodeURIComponent(geminiModelInfo[1]).replace(/^models\//, '')
+      if (!availableModels.includes(model)) {
+        writeClientProtocolError(response, 'gemini', 404, `模型“${model}”不存在或当前密钥无权访问`, 'model_not_found')
+      } else {
+        writeJson(response, 200, {
+          name: `models/${model}`,
+          displayName: model,
+          supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'countTokens']
+        })
+      }
+      return
+    }
+
+    if (method === 'GET' && requestUrl.pathname === '/api/tags') {
+      writeJson(response, 200, {
+        models: availableModels.map((name) => ({ name, model: name, modified_at: '', size: 0, digest: '', details: {} }))
+      })
+      return
+    }
+
+    if (method === 'GET' && requestUrl.pathname === '/api/version') {
+      writeJson(response, 200, { version: '0.14.0-local-router' })
+      return
+    }
+
+    if (method === 'POST' && (requestUrl.pathname === '/v1/messages/count_tokens' || requestUrl.pathname === '/messages/count_tokens')) {
+      try {
+        const body = JSON.parse((await readRequestBody(request)).toString('utf8')) as Record<string, unknown>
+        writeJson(response, 200, { input_tokens: roughTokenCount(body.messages ?? body.input ?? body) })
+      } catch {
+        writeClientProtocolError(response, 'anthropic', 400, '请求体必须是有效的 JSON 对象')
+      }
+      return
+    }
+
+    const geminiCount = /^\/v1beta\/models\/[^/:]+:countTokens$/i.test(requestUrl.pathname)
+    if (method === 'POST' && geminiCount) {
+      try {
+        const body = JSON.parse((await readRequestBody(request)).toString('utf8')) as Record<string, unknown>
+        writeJson(response, 200, { totalTokens: roughTokenCount(body.contents ?? body) })
+      } catch {
+        writeClientProtocolError(response, 'gemini', 400, '请求体必须是有效的 JSON 对象')
+      }
+      return
+    }
+
+    if (method === 'POST' && requestUrl.pathname === '/api/show') {
+      try {
+        const body = JSON.parse((await readRequestBody(request)).toString('utf8')) as Record<string, unknown>
+        const model = typeof body.model === 'string' ? body.model.trim() : ''
+        if (!model || !availableModels.includes(model)) {
+          writeClientProtocolError(response, 'ollama_chat', 404, `模型“${model || '未提供'}”不存在或当前密钥无权访问`, 'model_not_found')
+        } else {
+          writeJson(response, 200, { modelfile: `FROM ${model}`, parameters: '', template: '', details: {}, model_info: {}, capabilities: ['completion', 'tools'] })
+        }
+      } catch {
+        writeClientProtocolError(response, 'ollama_chat', 400, '请求体必须是有效的 JSON 对象')
+      }
+      return
+    }
+
+    if (method === 'POST' && [
+      '/v1/alpha/search', '/alpha/search', '/backend-api/codex/alpha/search'
+    ].includes(requestUrl.pathname)) {
+      // Search needs an account-specific backend contract and has no stable
+      // public-model field to route safely. Returning a truthful error is
+      // preferable to sending a request through an arbitrary model route.
+      writeOpenAiError(response, 501, '当前本地路由只支持模型请求；alpha/search 需要专用上游实现', 'unsupported_endpoint', 'server_error')
+      return
+    }
+
+    const directEndpoint: SupportedEndpoint | null = requestUrl.pathname === '/v1/responses'
+      || requestUrl.pathname === '/responses'
+      || requestUrl.pathname === '/backend-api/codex/responses'
+      ? '/v1/responses'
+      : requestUrl.pathname === '/v1/responses/compact'
+        || requestUrl.pathname === '/responses/compact'
+        || requestUrl.pathname === '/backend-api/codex/responses/compact'
+        ? '/v1/responses/compact'
+        : requestUrl.pathname === '/v1/chat/completions' || requestUrl.pathname === '/chat/completions'
+          ? '/v1/chat/completions'
+          : null
+    const anthropicEndpoint = requestUrl.pathname === '/v1/messages' || requestUrl.pathname === '/messages'
+    const ollamaChatEndpoint = requestUrl.pathname === '/api/chat'
+    const ollamaGenerateEndpoint = requestUrl.pathname === '/api/generate'
+    const geminiEndpoint = /^\/v1beta\/models\/([^/:]+):(generateContent|streamGenerateContent)$/i.exec(requestUrl.pathname)
+    if (method !== 'POST' || (!directEndpoint && !anthropicEndpoint && !ollamaChatEndpoint && !ollamaGenerateEndpoint && !geminiEndpoint)) {
       writeOpenAiError(response, 404, '请求的 API 接口不存在', 'not_found')
       return
     }
@@ -686,33 +1061,63 @@ export class LocalApiServer {
       return
     }
 
+    let endpoint: SupportedEndpoint = directEndpoint ?? '/v1/chat/completions'
+    let clientProtocol: NativeClientProtocol = 'openai'
+    try {
+      if (anthropicEndpoint) {
+        body = translateAnthropicRequestToChat(body)
+        clientProtocol = 'anthropic'
+      } else if (geminiEndpoint) {
+        body = {
+          ...translateGeminiRequestToChat(body, decodeURIComponent(geminiEndpoint[1])),
+          stream: geminiEndpoint[2] === 'streamGenerateContent'
+        }
+        clientProtocol = 'gemini'
+      } else if (ollamaChatEndpoint) {
+        body = translateOllamaChatRequestToChat(body)
+        clientProtocol = 'ollama_chat'
+      } else if (ollamaGenerateEndpoint) {
+        body = translateOllamaGenerateRequestToChat(body)
+        clientProtocol = 'ollama_generate'
+      }
+    } catch (error) {
+      writeClientProtocolError(
+        response,
+        anthropicEndpoint ? 'anthropic' : geminiEndpoint ? 'gemini' : ollamaGenerateEndpoint ? 'ollama_generate' : ollamaChatEndpoint ? 'ollama_chat' : 'openai',
+        400,
+        error instanceof Error ? error.message : '请求格式无效'
+      )
+      return
+    }
+
     const publicModel = typeof body.model === 'string' ? body.model.trim() : ''
     if (!publicModel) {
-      writeOpenAiError(response, 400, '必须提供 model', 'missing_model')
+      writeClientProtocolError(response, clientProtocol, 400, '必须提供 model', 'missing_model')
       return
     }
     if (key.allowedModels.length > 0 && !key.allowedModels.includes(publicModel)) {
-      writeOpenAiError(response, 404, `模型“${publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
+      writeClientProtocolError(response, clientProtocol, 404, `模型“${publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
       return
     }
     const route = this.config.routes.find((entry) => entry.publicModel === publicModel)
     if (!route) {
-      writeOpenAiError(response, 404, `模型“${publicModel}”未配置`, 'model_not_found')
+      writeClientProtocolError(response, clientProtocol, 404, `模型“${publicModel}”未配置`, 'model_not_found')
       return
     }
 
-    const candidates = this.routeCandidates(route, requestUrl.pathname)
+    const candidates = this.routeCandidates(route, endpoint)
     if (candidates.length === 0) {
-      writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的兼容上游`, 'no_available_upstream', 'server_error')
+      writeClientProtocolError(response, clientProtocol, 503, `模型“${publicModel}”没有可用的兼容上游`, 'no_available_upstream')
       return
     }
 
     await this.forwardWithFailover(
       request,
       response,
-      requestUrl.pathname as SupportedEndpoint,
+      endpoint,
       body,
-      candidates
+      candidates,
+      clientProtocol
     )
   }
 
@@ -776,7 +1181,8 @@ export class LocalApiServer {
     outgoing: ServerResponse,
     endpoint: SupportedEndpoint,
     body: Record<string, unknown>,
-    candidates: RouteCandidate[]
+    candidates: RouteCandidate[],
+    clientProtocol: NativeClientProtocol = 'openai'
   ): Promise<void> {
     let lastStatus = 502
     let lastMessage = '所有上游均请求失败'
@@ -800,15 +1206,10 @@ export class LocalApiServer {
           continue
         }
         const upstreamHeaders = candidate.kind === 'api'
-          ? {
-              authorization: `Bearer ${candidate.upstream.apiKey}`,
-              'content-type': 'application/json',
-              accept: incoming.headers.accept ?? '*/*',
-              ...(incoming.headers['openai-beta'] ? { 'openai-beta': String(incoming.headers['openai-beta']) } : {})
-            }
+          ? apiUpstreamHeaders(candidate.upstream, incoming)
           : credentialResolution!.headers
         const plans: ApiRequestPlan[] = candidate.kind === 'api'
-          ? apiRequestPlans(candidate.upstream, endpoint, body)
+          ? apiRequestPlans(candidate.upstream, endpoint, body, candidate.target.upstreamModel)
           : endpoint === '/v1/chat/completions'
             ? [{
                 endpoint: '/v1/responses',
@@ -826,10 +1227,12 @@ export class LocalApiServer {
         for (const [planIndex, plan] of plans.entries()) {
           const upstreamBody = Buffer.from(JSON.stringify({
             ...plan.requestBody,
-            model: candidate.target.upstreamModel
+            ...(candidate.kind === 'api' && candidate.upstream.protocol === 'gemini'
+              ? {}
+              : { model: candidate.target.upstreamModel })
           }))
           const upstreamUrl = candidate.kind === 'api'
-            ? buildOpenAiUpstreamUrl(candidate.upstream.baseUrl, plan.endpoint)
+            ? buildProviderUpstreamUrl(candidate.upstream, plan.endpoint, plan.query)
             : credentialResolution!.url
           const upstream = await this.fetchImpl(upstreamUrl, {
             method: 'POST',
@@ -842,16 +1245,14 @@ export class LocalApiServer {
             this.sourceCooldowns.delete(
               candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id
             )
-            if (plan.responseDirection) {
-              await relayTranslatedResponse(
-                upstream,
-                outgoing,
-                plan.responseDirection,
-                candidate.target.upstreamModel
-              )
-            } else {
-              await relayResponse(upstream, outgoing)
-            }
+            await relayPlanResponse(
+              upstream,
+              outgoing,
+              endpoint,
+              plan,
+              clientProtocol,
+              candidate.target.upstreamModel
+            )
             return
           }
 

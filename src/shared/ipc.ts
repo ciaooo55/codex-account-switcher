@@ -174,7 +174,7 @@ export interface CodexSwitcherApi {
   restoreApiMode(restart: boolean): Promise<SwitchResult>
   switchToCustomApi(profile: CustomApiProfileInput, restart: boolean): Promise<SwitchResult>
   getCustomApiProfile(): Promise<CustomApiProfileSummary>
-  listCustomApiModels(input: { baseUrl: string; apiKey?: string }): Promise<CustomApiListModelsResult>
+  listCustomApiModels(input: { baseUrl: string; apiKey?: string; useSavedKey?: boolean }): Promise<CustomApiListModelsResult>
   getLocalApiServerState(): Promise<LocalApiServerState>
   saveLocalApiServerConfig(input: LocalApiServerConfigInput): Promise<LocalApiServerState>
   startLocalApiServer(): Promise<LocalApiServerState>
@@ -182,6 +182,7 @@ export interface CodexSwitcherApi {
   restartLocalApiServer(): Promise<LocalApiServerState>
   generateLocalApiAccessKey(): Promise<string>
   revealLocalApiAccessKey(id: string): Promise<string>
+  revealLocalApiUpstreamKey(id: string): Promise<string>
   applyLocalApiServerToCodex(input: { accessKeyId: string; model: string; restart: boolean }): Promise<SwitchResult>
   scanGrokDirectory(): Promise<GrokScanResult>
   importGrokFiles(): Promise<GrokScanResult | null>
@@ -280,6 +281,7 @@ export const ipcChannels = {
   localApiServerRestart: 'local-api-server:restart',
   localApiServerGenerateKey: 'local-api-server:generate-key',
   localApiServerRevealKey: 'local-api-server:reveal-key',
+  localApiServerRevealUpstreamKey: 'local-api-server:reveal-upstream-key',
   localApiServerApplyCodex: 'local-api-server:apply-codex',
   grokScan: 'grok:scan',
   grokImport: 'grok:import',

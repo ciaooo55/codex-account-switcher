@@ -4,9 +4,11 @@ import {
   buildModelCatalog,
   CUSTOM_MODEL_AVAILABLE_IN_PLANS,
   customApiModelsUrl,
+  discoverApiUpstream,
   fetchOpenAiCompatibleModelIds,
   modelCatalogConfigPath,
   MODEL_CATALOG_RELATIVE_PATH,
+  probeApiUpstreamModel,
   probeCustomApiModel
 } from './model-catalog'
 import { customApiChatCompletionsUrl, customApiResponsesUrl } from '../../shared/custom-api'
@@ -243,6 +245,44 @@ describe('model catalog helpers', () => {
     expect(listed.models).toEqual([])
     expect(listed.baseUrl).toBe('http://127.0.0.1:18317/v1')
     expect(fetchImpl.mock.calls.length).toBeGreaterThan(3)
+  })
+
+  it('discovers and truly probes Gemini and Ollama upstreams without treating them as OpenAI', async () => {
+    const geminiFetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === 'https://gemini.example/v1beta/models') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ models: [{ name: 'models/gemini-test' }] }) }
+      }
+      if (url.includes(':generateContent')) {
+        expect(init?.headers).toMatchObject({ 'x-goog-api-key': 'gem-key' })
+        return { ok: true, status: 200, text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'gemini works' }] } }] }) }
+      }
+      return { ok: false, status: 404, text: async () => '{}' }
+    })
+    const gemini = await discoverApiUpstream({
+      baseUrl: 'https://gemini.example/v1', apiKey: 'gem-key', fetchImpl: geminiFetch as unknown as typeof fetch
+    })
+    expect(gemini).toMatchObject({ protocol: 'gemini', models: ['gemini-test'], baseUrl: 'https://gemini.example' })
+    await expect(probeApiUpstreamModel({
+      ...gemini, apiKey: 'gem-key', model: 'gemini-test', fetchImpl: geminiFetch as unknown as typeof fetch
+    })).resolves.toMatchObject({ output: 'gemini works', probeUrl: 'https://gemini.example/v1beta/models/gemini-test:generateContent' })
+
+    const ollamaFetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === 'http://127.0.0.1:11434/api/tags') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ models: [{ name: 'llama-local' }] }) }
+      }
+      if (url === 'http://127.0.0.1:11434/api/chat') {
+        expect(init?.headers).toMatchObject({ authorization: 'Bearer ollama-key' })
+        return { ok: true, status: 200, text: async () => JSON.stringify({ message: { content: 'ollama works' } }) }
+      }
+      return { ok: false, status: 404, text: async () => '{}' }
+    })
+    const ollama = await discoverApiUpstream({
+      baseUrl: 'http://127.0.0.1:11434', apiKey: 'ollama-key', fetchImpl: ollamaFetch as unknown as typeof fetch
+    })
+    expect(ollama).toMatchObject({ protocol: 'ollama', models: ['llama-local'], baseUrl: 'http://127.0.0.1:11434' })
+    await expect(probeApiUpstreamModel({
+      ...ollama, apiKey: 'ollama-key', model: 'llama-local', fetchImpl: ollamaFetch as unknown as typeof fetch
+    })).resolves.toMatchObject({ output: 'ollama works', probeUrl: 'http://127.0.0.1:11434/api/chat' })
   })
 
   it('fails model probe when every common path is rejected', async () => {

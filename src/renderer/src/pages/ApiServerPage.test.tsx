@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   restartLocalApiServer: vi.fn(),
   generateLocalApiAccessKey: vi.fn(),
   revealLocalApiAccessKey: vi.fn(),
+  revealLocalApiUpstreamKey: vi.fn(),
   applyLocalApiServerToCodex: vi.fn(),
   listCustomApiModels: vi.fn()
 }))
@@ -82,6 +83,7 @@ describe('ApiServerPage', () => {
     api.restartLocalApiServer.mockResolvedValue(localApiState())
     api.generateLocalApiAccessKey.mockResolvedValue('sk-cas-generated-secure-value')
     api.revealLocalApiAccessKey.mockResolvedValue('sk-cas-saved-secret-value')
+    api.revealLocalApiUpstreamKey.mockResolvedValue('sk-upstream-saved-secret-value')
     api.applyLocalApiServerToCodex.mockResolvedValue({ ok: true, message: 'Codex 已切换', backupPath: 'backup.toml' })
     api.listCustomApiModels.mockResolvedValue({
       ok: true,
@@ -99,13 +101,14 @@ describe('ApiServerPage', () => {
     expect(await screen.findByText('运行中')).toBeInTheDocument()
     expect(screen.getByText(/http:\/\/127\.0\.0\.1:8888\/v1/)).toBeInTheDocument()
     expect(screen.getByText('4321')).toBeInTheDocument()
-    expect(screen.getByText('项目访问密钥')).toBeInTheDocument()
+    expect(screen.getByText('本软件访问密钥')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('sk-cas-…abcd')).toBeInTheDocument()
     expect(screen.queryByText('real-upstream-secret')).not.toBeInTheDocument()
   })
 
   it('保存端口和自启设置时不将已保存秘密回传 Renderer', async () => {
     render(<ApiServerPage />)
-    await screen.findByText('项目访问密钥')
+    await screen.findByText('本软件访问密钥')
 
     fireEvent.change(screen.getByLabelText('监听端口'), { target: { value: '18317' } })
     fireEvent.click(screen.getByLabelText('随应用自动启动'))
@@ -121,11 +124,11 @@ describe('ApiServerPage', () => {
 
   it('生成、编辑和保存新的项目密钥', async () => {
     render(<ApiServerPage />)
-    await screen.findByText('项目访问密钥')
+    await screen.findByText('本软件访问密钥')
 
     fireEvent.click(screen.getByRole('button', { name: '生成安全密钥' }))
     expect(await screen.findByDisplayValue('sk-cas-generated-secure-value')).toBeInTheDocument()
-    const whitelist = screen.getByLabelText('项目密钥 2 模型白名单')
+    const whitelist = screen.getByLabelText('本软件密钥 2 模型白名单')
     fireEvent.change(whitelist, { target: { value: 'xxx, model-b' } })
     fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
 
@@ -149,7 +152,7 @@ describe('ApiServerPage', () => {
 
   it('通过主进程安全复制已保存密钥，不将明文写入页面状态', async () => {
     render(<ApiServerPage />)
-    await screen.findByText('项目访问密钥')
+    await screen.findByText('本软件访问密钥')
     fireEvent.click(screen.getByRole('button', { name: '复制 Codex 专用' }))
 
     await waitFor(() => expect(api.revealLocalApiAccessKey).toHaveBeenCalledWith('codex-key'))
@@ -157,19 +160,36 @@ describe('ApiServerPage', () => {
     expect(screen.queryByDisplayValue('sk-cas-saved-secret-value')).not.toBeInTheDocument()
   })
 
+  it('显示并安全复制已保存的上游 Key，不将完整值写回页面状态', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('本软件访问密钥')
+    fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
+    const upstreamToggle = screen.getAllByRole('button', { name: /上游 A/ })
+      .find((button) => button.getAttribute('aria-expanded') === 'false')
+    expect(upstreamToggle).toBeDefined()
+    fireEvent.click(upstreamToggle!)
+
+    expect(screen.getByDisplayValue('sk-up…wxyz')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '复制 上游 A 上游 API Key' }))
+
+    await waitFor(() => expect(api.revealLocalApiUpstreamKey).toHaveBeenCalledWith('upstream-a'))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-upstream-saved-secret-value')
+    expect(screen.queryByDisplayValue('sk-upstream-saved-secret-value')).not.toBeInTheDocument()
+  })
+
   it('测试上游并同步模型列表', async () => {
     render(<ApiServerPage />)
-    await screen.findByText('项目访问密钥')
+    await screen.findByText('本软件访问密钥')
     fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
 
     fireEvent.click(screen.getByRole('button', { name: '测试并获取模型' }))
-    await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({ baseUrl: 'https://api.example.com/v1' }))
+    await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({ baseUrl: 'https://api.example.com/v1', useSavedKey: false }))
     expect(await screen.findByText(/可用 · \d+ ms/)).toBeInTheDocument()
   })
 
   it('识别 URL-safe Base64 中的 URL 和 Key 并立即真实测试', async () => {
     render(<ApiServerPage />)
-    await screen.findByText('项目访问密钥')
+    await screen.findByText('本软件访问密钥')
     fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
     fireEvent.click(screen.getByRole('button', { name: '粘贴识别' }))
 
@@ -182,14 +202,15 @@ describe('ApiServerPage', () => {
 
     await waitFor(() => expect(api.listCustomApiModels).toHaveBeenCalledWith({
       baseUrl: 'https://encoded.example.com/v1',
-      apiKey: 'sk-encoded-1234567890'
+      apiKey: 'sk-encoded-1234567890',
+      useSavedKey: false
     }))
     expect(screen.getByText('encoded.example.com')).toBeInTheDocument()
   })
 
   it('可以将脱敏的账号凭证引用加入 API 上游池', async () => {
     render(<ApiServerPage />)
-    await screen.findByText('项目访问密钥')
+    await screen.findByText('本软件访问密钥')
     fireEvent.click(screen.getByRole('button', { name: /账号凭证源/ }))
 
     expect(screen.getByText('user@example.com')).toBeInTheDocument()
@@ -208,7 +229,7 @@ describe('ApiServerPage', () => {
     render(<ApiServerPage />)
     await screen.findByText('一键设置 Codex')
 
-    expect(screen.getByLabelText('Codex 专用密钥')).toHaveValue('codex-key')
+    expect(screen.getByLabelText('Codex 使用的本软件密钥')).toHaveValue('codex-key')
     expect(screen.getByLabelText('默认公开模型')).toHaveValue('xxx')
     fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
 

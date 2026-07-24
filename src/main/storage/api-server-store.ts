@@ -23,11 +23,11 @@ interface StoredUpstream {
   id: string
   name: string
   baseUrl: string
-  protocol: 'auto' | 'responses' | 'chat_completions'
+  protocol: import('../../shared/api-server').ApiUpstreamProtocol
   models: string[]
   priority: number
   enabled: boolean
-  encryptedApiKey: string
+  encryptedApiKey?: string
 }
 
 interface ApiServerFile {
@@ -87,10 +87,9 @@ export class ApiServerStore {
       })
 
       const upstreams = normalized.upstreams.map((entry): StoredUpstream => {
-        const encryptedApiKey = entry.apiKey
-          ? this.cipher.encrypt(entry.apiKey)
-          : previousUpstreams.get(entry.id)
-        if (!encryptedApiKey) throw new Error(`上游“${entry.name}”缺少 API Key`)
+        const encryptedApiKey = entry.apiKey === undefined
+          ? previousUpstreams.get(entry.id)
+          : entry.apiKey ? this.cipher.encrypt(entry.apiKey) : undefined
         return {
           id: entry.id,
           name: entry.name,
@@ -99,7 +98,7 @@ export class ApiServerStore {
           models: entry.models,
           priority: entry.priority,
           enabled: entry.enabled,
-          encryptedApiKey
+          ...(encryptedApiKey ? { encryptedApiKey } : {})
         }
       })
 
@@ -142,7 +141,7 @@ export class ApiServerStore {
           id: entry.id,
           name: entry.name,
           baseUrl: entry.baseUrl,
-          apiKey: this.cipher.decrypt(entry.encryptedApiKey),
+          apiKey: entry.encryptedApiKey ? this.cipher.decrypt(entry.encryptedApiKey) : '',
           protocol: entry.protocol,
           models: [...entry.models],
           priority: entry.priority,
@@ -174,6 +173,18 @@ export class ApiServerStore {
     }
   }
 
+  /** Main-process-only secret lookup. Never include this value in summaries. */
+  async getUpstreamKey(id: string): Promise<string | null> {
+    await this.writeQueue
+    const entry = (await this.readFile()).upstreams.find((candidate) => candidate.id === id)
+    if (!entry?.encryptedApiKey) return null
+    try {
+      return this.cipher.decrypt(entry.encryptedApiKey)
+    } catch {
+      throw new Error('上游 API Key 无法解密，请重新配置该上游')
+    }
+  }
+
   private toSummary(file: ApiServerFile): LocalApiServerConfigSummary {
     const accessKeys: LocalApiAccessKeySummary[] = file.accessKeys.map((entry) => {
       let key = ''
@@ -190,7 +201,7 @@ export class ApiServerStore {
     })
     const upstreams: ApiUpstreamSummary[] = file.upstreams.map((entry) => {
       let apiKey = ''
-      try { apiKey = this.cipher.decrypt(entry.encryptedApiKey) } catch { /* only expose unusable state */ }
+      try { apiKey = entry.encryptedApiKey ? this.cipher.decrypt(entry.encryptedApiKey) : '' } catch { /* only expose unusable state */ }
       return {
         id: entry.id,
         name: entry.name,

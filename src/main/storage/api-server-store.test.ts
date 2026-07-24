@@ -64,6 +64,8 @@ describe('ApiServerStore', () => {
     expect(summary.upstreams[0]).toMatchObject({ hasApiKey: true, keyPreview: 'sk-up••••cret' })
     await expect(store.getAccessKey('client')).resolves.toBe('sk-client-secret')
     await expect(store.getAccessKey('missing')).resolves.toBeNull()
+    await expect(store.getUpstreamKey('upstream')).resolves.toBe('sk-upstream-secret')
+    await expect(store.getUpstreamKey('missing')).resolves.toBeNull()
     await expect(store.runtimeConfig()).resolves.toMatchObject({
       port: 8888,
       accessKeys: [{ key: 'sk-client-secret' }],
@@ -93,6 +95,18 @@ describe('ApiServerStore', () => {
       accessKeys: [{ label: 'Codex edited', key: 'sk-client-secret' }],
       upstreams: [{ apiKey: 'sk-upstream-secret' }]
     })
+  })
+
+  it('allows a no-auth upstream while keeping project access keys encrypted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'api-server-store-'))
+    roots.push(root)
+    const store = new ApiServerStore(join(root, 'server.json'), cipher)
+    const input = configuration()
+    await store.save({ ...input, upstreams: [{ ...input.upstreams[0], apiKey: '' }] })
+
+    await expect(store.summary()).resolves.toMatchObject({ upstreams: [{ hasApiKey: false, keyPreview: '' }] })
+    await expect(store.getUpstreamKey('upstream')).resolves.toBeNull()
+    await expect(store.runtimeConfig()).resolves.toMatchObject({ upstreams: [{ apiKey: '' }] })
   })
 
   it('returns a safe empty default when no file exists', async () => {

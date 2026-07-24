@@ -6,6 +6,7 @@ import {
   MANAGED_CUSTOM_API_MODEL_CATALOG,
   type CustomApiProbeEndpoint
 } from '../../shared/custom-api'
+import type { ApiUpstreamProtocol } from '../../shared/api-server'
 
 const DEFAULT_REASONING_LEVELS = [
   { effort: 'low', description: 'Fast responses with lighter reasoning' },
@@ -363,6 +364,179 @@ function responsesOutputText(body: unknown): string {
   return parts.join('\n').trim()
 }
 
+type JsonSerializable = Record<string, unknown>
+
+function optionalRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function arrayAt(value: unknown, index: number): unknown {
+  return Array.isArray(value) ? value[index] : undefined
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function arrayText(value: unknown, key: string): string {
+  return Array.isArray(value)
+    ? value.map((item) => stringValue(optionalRecord(item)?.[key])).filter(Boolean).join('\n')
+    : ''
+}
+
+function providerRootUrl(baseUrl: string): string {
+  const url = new URL(baseUrl)
+  const path = url.pathname.replace(/\/+$/, '')
+  if (/(?:^|\/)(?:v1|v1beta|api)$/i.test(path)) {
+    url.pathname = path.replace(/\/(?:v1|v1beta|api)$/i, '') || '/'
+  }
+  url.search = ''
+  url.hash = ''
+  return url.toString().replace(/\/$/, '')
+}
+
+function idsFromRows(rows: unknown, key: 'id' | 'name' | 'model'): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const raw = typeof row === 'string'
+      ? row
+      : row && typeof row === 'object' ? (row as Record<string, unknown>)[key] : undefined
+    const value = normalizeModelId(typeof raw === 'string' ? raw.replace(/^models\//, '') : raw)
+    if (value && !seen.has(value)) { seen.add(value); result.push(value) }
+  }
+  return result
+}
+
+async function providerGetJson(input: {
+  url: string
+  headers: Record<string, string>
+  timeoutMs: number
+  fetchImpl: typeof fetch
+}): Promise<{ ok: boolean; body: unknown; status: number }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), input.timeoutMs)
+  try {
+    const response = await input.fetchImpl(input.url, {
+      headers: { accept: 'application/json', ...input.headers }, signal: controller.signal
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try { body = text ? JSON.parse(text) as unknown : null } catch { /* invalid response is reported as no models */ }
+    return { ok: response.ok, body, status: response.status }
+  } finally { clearTimeout(timer) }
+}
+
+export interface DetectedApiUpstream {
+  protocol: ApiUpstreamProtocol
+  models: string[]
+  baseUrl: string
+  modelsUrl: string
+  errors: string[]
+}
+
+/**
+ * Discover OpenAI-compatible and native provider catalogs without persisting
+ * anything. This is used only for the API-service upstream editor; the
+ * existing direct-Codex custom-API flow remains Responses-only by design.
+ */
+export async function discoverApiUpstream(input: {
+  baseUrl: string
+  apiKey: string
+  timeoutMs?: number
+  fetchImpl?: typeof fetch
+}): Promise<DetectedApiUpstream> {
+  const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 8_000))
+  const fetchImpl = input.fetchImpl ?? fetch
+  const openai = await fetchOpenAiCompatibleModelIds({ ...input, timeoutMs, fetchImpl })
+  if (openai.models.length) {
+    return { protocol: 'auto', models: openai.models, baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors: openai.errors }
+  }
+  const root = providerRootUrl(input.baseUrl)
+  const errors = [...openai.errors]
+
+  const geminiUrl = `${root}/v1beta/models`
+  try {
+    const result = await providerGetJson({ url: geminiUrl, headers: { 'x-goog-api-key': input.apiKey }, timeoutMs, fetchImpl })
+    const models = idsFromRows(optionalArrayRecord(result.body, 'models'), 'name')
+    if (result.ok && models.length) return { protocol: 'gemini', models, baseUrl: root, modelsUrl: geminiUrl, errors }
+    errors.push(`${geminiUrl} → ${result.ok ? '模型列表为空' : `HTTP ${result.status}`}`)
+  } catch (error) { errors.push(`${geminiUrl} → ${error instanceof Error ? error.message : '请求失败'}`) }
+
+  const ollamaUrl = `${root}/api/tags`
+  try {
+    const result = await providerGetJson({ url: ollamaUrl, headers: { authorization: `Bearer ${input.apiKey}` }, timeoutMs, fetchImpl })
+    const body = result.body && typeof result.body === 'object' ? result.body as Record<string, unknown> : {}
+    const models = idsFromRows(body.models, 'name')
+    if (result.ok && models.length) return { protocol: 'ollama', models, baseUrl: root, modelsUrl: ollamaUrl, errors }
+    errors.push(`${ollamaUrl} → ${result.ok ? '模型列表为空' : `HTTP ${result.status}`}`)
+  } catch (error) { errors.push(`${ollamaUrl} → ${error instanceof Error ? error.message : '请求失败'}`) }
+
+  const anthropicUrl = `${root}/v1/models`
+  try {
+    const result = await providerGetJson({ url: anthropicUrl, headers: { 'x-api-key': input.apiKey, 'anthropic-version': '2023-06-01' }, timeoutMs, fetchImpl })
+    const body = result.body && typeof result.body === 'object' ? result.body as Record<string, unknown> : {}
+    const models = idsFromRows(body.data, 'id')
+    if (result.ok && models.length) return { protocol: 'anthropic_messages', models, baseUrl: root, modelsUrl: anthropicUrl, errors }
+    errors.push(`${anthropicUrl} → ${result.ok ? '模型列表为空' : `HTTP ${result.status}`}`)
+  } catch (error) { errors.push(`${anthropicUrl} → ${error instanceof Error ? error.message : '请求失败'}`) }
+
+  return { protocol: 'auto', models: [], baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors }
+}
+
+function optionalArrayRecord(value: unknown, key: string): unknown[] {
+  return value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>)[key])
+    ? (value as Record<string, unknown>)[key] as unknown[]
+    : []
+}
+
+export async function probeApiUpstreamModel(input: {
+  protocol: ApiUpstreamProtocol
+  baseUrl: string
+  apiKey: string
+  model: string
+  timeoutMs?: number
+  fetchImpl?: typeof fetch
+}): Promise<{ output: string; probeUrl: string }> {
+  if (input.protocol === 'auto' || input.protocol === 'responses' || input.protocol === 'chat_completions') {
+    const result = await probeCustomApiModel({
+      baseUrl: input.baseUrl, apiKey: input.apiKey, model: input.model,
+      timeoutMs: input.timeoutMs, fetchImpl: input.fetchImpl, allowChatCompletions: true
+    })
+    return { output: result.output, probeUrl: result.probeUrl }
+  }
+  const root = providerRootUrl(input.baseUrl)
+  const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 12_000))
+  const fetchImpl = input.fetchImpl ?? fetch
+  let url: string
+  let headers: Record<string, string>
+  let body: JsonSerializable
+  if (input.protocol === 'anthropic_messages') {
+    url = `${root}/v1/messages`
+    headers = { 'x-api-key': input.apiKey, 'anthropic-version': '2023-06-01' }
+    body = { model: input.model, max_tokens: 32, messages: [{ role: 'user', content: 'hi' }] }
+  } else if (input.protocol === 'gemini') {
+    url = `${root}/v1beta/models/${encodeURIComponent(input.model)}:generateContent`
+    headers = { 'x-goog-api-key': input.apiKey }
+    body = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }], generationConfig: { maxOutputTokens: 32 } }
+  } else {
+    url = `${root}/api/chat`
+    headers = { authorization: `Bearer ${input.apiKey}` }
+    body = { model: input.model, messages: [{ role: 'user', content: 'hi' }], stream: false }
+  }
+  const result = await postJson({ url, apiKey: '', timeoutMs, fetchImpl, body, headers })
+  if (!result.ok) throw new Error(`模型测试失败（${url} HTTP ${result.status}）：${errorMessageFromBody(result.body, result.text || '上游拒绝请求')}`)
+  const output = input.protocol === 'anthropic_messages'
+    ? arrayText(optionalRecord(result.body)?.content, 'text')
+    : input.protocol === 'gemini'
+      ? arrayText(optionalRecord(optionalRecord(arrayAt(optionalRecord(result.body)?.candidates, 0))?.content)?.parts, 'text')
+      : stringValue(optionalRecord(optionalRecord(result.body)?.message)?.content)
+  if (!output) throw new Error(`模型测试失败（${url}）：响应成功但没有可读的模型回复`)
+  return { output: output.slice(0, 500), probeUrl: url }
+}
+
 function chatCompletionsOutputText(body: unknown): string {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return ''
   const choices = (body as Record<string, unknown>).choices
@@ -385,6 +559,7 @@ async function postJson(input: {
   body: unknown
   timeoutMs: number
   fetchImpl: typeof fetch
+  headers?: Record<string, string>
 }): Promise<{ ok: boolean; status: number; body: unknown; text: string }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), input.timeoutMs)
@@ -392,9 +567,10 @@ async function postJson(input: {
     const response = await input.fetchImpl(input.url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${input.apiKey}`,
+        ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}),
         Accept: 'application/json',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...(input.headers ?? {})
       },
       body: JSON.stringify(input.body),
       signal: controller.signal

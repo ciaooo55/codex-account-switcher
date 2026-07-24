@@ -1,7 +1,19 @@
 export const DEFAULT_LOCAL_API_SERVER_PORT = 8888
 export const LOCAL_API_SERVER_HOST = '127.0.0.1' as const
 
-export type ApiUpstreamProtocol = 'auto' | 'responses' | 'chat_completions'
+/**
+ * Wire format exposed by a third-party upstream.  `auto` is intentionally
+ * limited to the two OpenAI formats: the native provider formats must be
+ * selected explicitly so a failed probe never sends a request to a surprising
+ * endpoint.
+ */
+export type ApiUpstreamProtocol =
+  | 'auto'
+  | 'responses'
+  | 'chat_completions'
+  | 'anthropic_messages'
+  | 'gemini'
+  | 'ollama'
 export type ModelRouteStrategy = 'single' | 'priority' | 'round_robin'
 export type ModelRouteSourceMode = 'api_only' | 'credential_only' | 'mixed'
 export type CredentialSourceProvider = 'codex' | 'cpa-codex' | 'grok' | 'cpa-grok'
@@ -156,14 +168,22 @@ export function normalizeLocalApiServerConfig(
     if (!name || name.length > 128) throw new Error('上游名称不能为空或过长')
     const baseUrl = normalizeHttpBaseUrl(entry.baseUrl)
     const apiKey = entry.apiKey?.trim()
-    if (apiKey !== undefined && (!apiKey || apiKey.length > 16_384)) throw new Error('上游 API Key 不能为空或过长')
+    // Some self-hosted providers (notably a local Ollama daemon) do not use
+    // an upstream key. An omitted/empty key is therefore valid; project
+    // access still always requires one of this application's local keys.
+    if (apiKey !== undefined && apiKey.length > 16_384) throw new Error('上游 API Key 过长')
     const priority = Number.isFinite(entry.priority) ? Math.trunc(entry.priority) : 0
     return {
       id,
       name,
       baseUrl,
       ...(apiKey === undefined ? {} : { apiKey }),
-      protocol: entry.protocol,
+    protocol: (() => {
+      if (!['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama'].includes(entry.protocol)) {
+        throw new Error('上游协议类型无效')
+      }
+      return entry.protocol
+    })(),
       models: normalizeModelIds(entry.models),
       priority,
       enabled: Boolean(entry.enabled)

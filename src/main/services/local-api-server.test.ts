@@ -13,14 +13,20 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 async function reservePort(): Promise<number> {
-  const server = createServer()
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
-  })
-  const port = (server.address() as AddressInfo).port
-  await closeServer(server)
-  return port
+  // WHATWG Fetch intentionally blocks a small set of historically unsafe
+  // ports (for example 6667). Avoid a rare, unrelated test flake when the OS
+  // happens to hand one to us.
+  const forbidden = new Set([1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 69, 79, 110, 111, 113, 119, 135, 139, 143, 389, 465, 512, 513, 514, 587, 636, 993, 995, 2049, 3659, 4045, 6000, 6665, 6666, 6667, 6668, 6669, 6697])
+  while (true) {
+    const server = createServer()
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const port = (server.address() as AddressInfo).port
+    await closeServer(server)
+    if (!forbidden.has(port)) return port
+  }
 }
 
 async function mockUpstream(
@@ -103,7 +109,11 @@ function config(
   }
 }
 
-function upstream(id: string, baseUrl: string, protocol: 'auto' | 'responses' | 'chat_completions' = 'auto') {
+function upstream(
+  id: string,
+  baseUrl: string,
+  protocol: LocalApiServerRuntimeConfig['upstreams'][number]['protocol'] = 'auto'
+) {
   return {
     id,
     name: id,
@@ -150,6 +160,159 @@ describe('LocalApiServer', () => {
 
     const health = await fetch(`http://127.0.0.1:${port}/health`)
     await expect(health.json()).resolves.toMatchObject({ status: 'ok', running: true, port })
+  })
+
+  it('exposes the same configured public models through OpenAI, Gemini and Ollama catalogs', async () => {
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, []))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const headers = { authorization: 'Bearer sk-limited' }
+
+    const [openai, gemini, ollama] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/models`, { headers }),
+      fetch(`http://127.0.0.1:${port}/v1beta/models`, { headers }),
+      fetch(`http://127.0.0.1:${port}/api/tags`, { headers })
+    ])
+    await expect(openai.json()).resolves.toMatchObject({ data: [{ id: 'xxx' }] })
+    await expect(gemini.json()).resolves.toMatchObject({ models: [{ name: 'models/xxx' }] })
+    await expect(ollama.json()).resolves.toMatchObject({ models: [{ name: 'xxx', model: 'xxx' }] })
+  })
+
+  it('accepts Anthropic, Gemini and Ollama clients while keeping the public model name private to this service', async () => {
+    const seen: Array<{ path: string; body: Record<string, unknown> }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen.push({ path: request.url ?? '', body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'chatcmpl-native', object: 'chat.completion', created: 1, model: 'real-1',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'hello native' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 }
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'chat_completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const headers = { authorization: 'Bearer sk-local', 'content-type': 'application/json' }
+
+    const anthropic = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'xxx', max_tokens: 32, messages: [{ role: 'user', content: 'hello' }] })
+    })
+    await expect(anthropic.json()).resolves.toMatchObject({
+      type: 'message', role: 'assistant', model: 'real-1', content: [{ type: 'text', text: 'hello native' }]
+    })
+
+    const gemini = await fetch(`http://127.0.0.1:${port}/v1beta/models/xxx:generateContent`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'hello' }] }] })
+    })
+    await expect(gemini.json()).resolves.toMatchObject({
+      candidates: [{ content: { role: 'model', parts: [{ text: 'hello native' }] } }]
+    })
+
+    const ollama = await fetch(`http://127.0.0.1:${port}/api/generate`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'xxx', prompt: 'hello', stream: false })
+    })
+    await expect(ollama.json()).resolves.toMatchObject({ model: 'real-1', response: 'hello native', done: true })
+    expect(seen).toEqual([
+      expect.objectContaining({ path: '/v1/chat/completions', body: expect.objectContaining({ model: 'real-1', messages: [{ role: 'user', content: 'hello' }] }) }),
+      expect.objectContaining({ path: '/v1/chat/completions', body: expect.objectContaining({ model: 'real-1', messages: [{ role: 'user', content: 'hello' }] }) }),
+      expect.objectContaining({ path: '/v1/chat/completions', body: expect.objectContaining({ model: 'real-1', messages: [{ role: 'user', content: 'hello' }] }) })
+    ])
+  })
+
+  it('uses native Anthropic upstreams without leaking its upstream API key to callers', async () => {
+    let seen: { path: string; apiKey: string | undefined; body: Record<string, unknown> } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '', apiKey: Array.isArray(request.headers['x-api-key']) ? request.headers['x-api-key'][0] : request.headers['x-api-key'],
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'msg_upstream', type: 'message', model: 'real-1', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'from anthropic' }], usage: { input_tokens: 1, output_tokens: 2 }
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('native', mock.baseUrl, 'anthropic_messages')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hello' })
+    })
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toMatchObject({
+      object: 'response', output: [{ type: 'message', content: [{ type: 'output_text', text: 'from anthropic' }] }]
+    })
+    expect(seen).toEqual(expect.objectContaining({
+      path: '/v1/messages', apiKey: 'sk-native',
+      body: expect.objectContaining({ model: 'real-1', messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] })
+    }))
+  })
+
+  it('forwards to a no-auth Ollama upstream without inventing a Bearer key', async () => {
+    let authorization: string | undefined
+    const mock = await mockUpstream(async (request, response) => {
+      authorization = request.headers.authorization
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ model: 'real-1', message: { role: 'assistant', content: 'local works' }, done: true }))
+    })
+    const port = await reservePort()
+    const noAuth = upstream('ollama', mock.baseUrl, 'ollama')
+    noAuth.apiKey = ''
+    const service = new LocalApiServer(config(port, [noAuth]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', messages: [{ role: 'user', content: 'hi' }] })
+    })
+    await expect(result.json()).resolves.toMatchObject({ choices: [{ message: { content: 'local works' } }] })
+    expect(authorization).toBeUndefined()
+  })
+
+  it('converts Chat SSE into native Anthropic, Gemini and Ollama streams without opening a second local port', async () => {
+    const mock = await mockUpstream((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write(`data: ${JSON.stringify({ id: 'chatcmpl-sse', model: 'real-1', choices: [{ index: 0, delta: { role: 'assistant', content: 'hel' }, finish_reason: null }] })}\n\n`)
+      response.end(`data: ${JSON.stringify({ id: 'chatcmpl-sse', model: 'real-1', choices: [{ index: 0, delta: { content: 'lo' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`)
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'chat_completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const headers = { authorization: 'Bearer sk-local', 'content-type': 'application/json' }
+
+    const anthro = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'xxx', max_tokens: 20, stream: true, messages: [{ role: 'user', content: 'hi' }] })
+    })
+    expect(anthro.headers.get('content-type')).toContain('text/event-stream')
+    await expect(anthro.text()).resolves.toContain('event: content_block_delta')
+
+    const gemini = await fetch(`http://127.0.0.1:${port}/v1beta/models/xxx:streamGenerateContent`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }] })
+    })
+    expect(gemini.headers.get('content-type')).toContain('text/event-stream')
+    await expect(gemini.text()).resolves.toContain('"text":"hel"')
+
+    const ollama = await fetch(`http://127.0.0.1:${port}/api/chat`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'xxx', stream: true, messages: [{ role: 'user', content: 'hi' }] })
+    })
+    expect(ollama.headers.get('content-type')).toContain('application/x-ndjson')
+    await expect(ollama.text()).resolves.toContain('"content":"hel"')
   })
 
   it('rewrites the public model and forwards to a /v1 base without duplicating the path', async () => {
