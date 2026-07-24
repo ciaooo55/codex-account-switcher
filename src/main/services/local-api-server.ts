@@ -58,7 +58,8 @@ const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 429])
 const PROTOCOL_FALLBACK_STATUSES = new Set([400, 404, 405, 415, 422, 501])
 
-type SupportedEndpoint = '/v1/responses' | '/v1/responses/compact' | '/v1/chat/completions' | '/v1/completions' | '/v1/embeddings'
+/** Endpoints that can be safely selected by a public-model route. */
+type SupportedEndpoint = '/v1/responses' | '/v1/responses/compact' | '/v1/chat/completions' | '/v1/completions' | '/v1/embeddings' | '/v1/images/generations' | '/v1/images/edits'
 
 interface ApiRequestPlan {
   /** Endpoint to call on the selected upstream (not necessarily OpenAI). */
@@ -244,6 +245,61 @@ async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+/**
+ * Extract a small text field from an already-size-limited multipart request.
+ * We deliberately do not parse or re-encode image bytes: upstream image-edit
+ * APIs require the original boundary and binary payload.  This only locates
+ * the `model` form field needed to select a local public-model route.
+ */
+function multipartTextFieldBounds(
+  body: Buffer,
+  contentType: string,
+  field: string
+): { text: string; start: number; end: number } | null {
+  const boundaryMatch = /\bboundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)
+  const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2]
+  if (!boundary) return null
+  const delimiter = `--${boundary}`
+  // latin1 preserves every input byte one-to-one, so a binary image cannot
+  // corrupt the form delimiters while this small header scan is performed.
+  const source = body.toString('latin1')
+  let offset = 0
+  for (const part of source.split(delimiter)) {
+    const headerEnd = part.indexOf('\r\n\r\n')
+    const separatorLength = 4
+    if (headerEnd < 0) { offset += part.length + delimiter.length; continue }
+    const headers = part.slice(0, headerEnd)
+    // `field` is an internal fixed field name (currently `model`), never
+    // untrusted request text.
+    const name = new RegExp(`\\bname="${field}"`, 'i')
+    if (!name.test(headers)) { offset += part.length + delimiter.length; continue }
+    const start = offset + headerEnd + separatorLength
+    const end = source.indexOf('\r\n', start)
+    if (end < start) return null
+    const text = Buffer.from(source.slice(start, end), 'latin1').toString('utf8').trim()
+    return { text, start, end }
+  }
+  return null
+}
+
+function multipartTextField(body: Buffer, contentType: string, field: string): string | null {
+  return multipartTextFieldBounds(body, contentType, field)?.text ?? null
+}
+
+/** Replace only a fixed ASCII model form field while preserving every binary byte. */
+function rewriteMultipartTextField(
+  body: Buffer,
+  contentType: string,
+  field: string,
+  replacement: string
+): Buffer {
+  const bounds = multipartTextFieldBounds(body, contentType, field)
+  if (!bounds) throw new Error(`multipart 请求缺少 ${field} 字段`)
+  const source = body.toString('latin1')
+  const safeReplacement = Buffer.from(replacement, 'utf8').toString('latin1')
+  return Buffer.from(`${source.slice(0, bounds.start)}${safeReplacement}${source.slice(bounds.end)}`, 'latin1')
+}
+
 function parseUpstreamError(body: string, status: number): string {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }
@@ -271,6 +327,15 @@ function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: strin
     return upstream.protocol === 'auto' || upstream.protocol === 'responses'
   }
   if (endpoint === '/v1/embeddings') {
+    return upstream.protocol === 'auto'
+      || upstream.protocol === 'responses'
+      || upstream.protocol === 'chat_completions'
+      || upstream.protocol === 'completions'
+  }
+  if (endpoint === '/v1/images/generations' || endpoint === '/v1/images/edits') {
+    // Native adapters do not implement the OpenAI Images schema. Responses is
+    // included because official OpenAI and compatible gateways commonly offer
+    // both APIs at the same base URL.
     return upstream.protocol === 'auto'
       || upstream.protocol === 'responses'
       || upstream.protocol === 'chat_completions'
@@ -319,6 +384,7 @@ function apiRequestPlans(
   upstreamModel: string
 ): ApiRequestPlan[] {
   if (endpoint === '/v1/embeddings') return [{ endpoint, requestBody: body }]
+  if (endpoint === '/v1/images/generations') return [{ endpoint, requestBody: body }]
   const chatBody = endpoint === '/v1/chat/completions' || endpoint === '/v1/completions'
     ? body
     : translateResponsesRequestToChatCompletions(body)
@@ -441,6 +507,20 @@ function apiUpstreamHeaders(
   return {
     ...common,
     ...auth,
+    ...(incoming.headers['openai-beta'] ? { 'openai-beta': String(incoming.headers['openai-beta']) } : {})
+  }
+}
+
+/** Headers for multipart endpoints which must retain their original boundary. */
+function apiUpstreamRawHeaders(
+  upstream: Required<ApiUpstreamInput>,
+  incoming: IncomingMessage,
+  contentType: string
+): Record<string, string> {
+  return {
+    'content-type': contentType,
+    accept: incoming.headers.accept ?? '*/*',
+    ...apiUpstreamAuthHeaders(upstream),
     ...(incoming.headers['openai-beta'] ? { 'openai-beta': String(incoming.headers['openai-beta']) } : {})
   }
 }
@@ -1058,7 +1138,7 @@ export class LocalApiServer {
     }
 
     if (method === 'GET' && requestUrl.pathname === '/api/version') {
-      writeJson(response, 200, { version: '0.14.0-local-router' })
+      writeJson(response, 200, { version: '0.14.1-local-router' })
       return
     }
 
@@ -1122,7 +1202,11 @@ export class LocalApiServer {
             ? '/v1/completions'
             : requestUrl.pathname === '/v1/embeddings' || requestUrl.pathname === '/embeddings'
               ? '/v1/embeddings'
-          : null
+              : requestUrl.pathname === '/v1/images/generations' || requestUrl.pathname === '/images/generations'
+                ? '/v1/images/generations'
+                : requestUrl.pathname === '/v1/images/edits' || requestUrl.pathname === '/images/edits'
+                  ? '/v1/images/edits'
+                : null
     const anthropicEndpoint = requestUrl.pathname === '/v1/messages' || requestUrl.pathname === '/messages'
     const ollamaChatEndpoint = requestUrl.pathname === '/api/chat'
     const ollamaGenerateEndpoint = requestUrl.pathname === '/api/generate'
@@ -1130,6 +1214,43 @@ export class LocalApiServer {
     const interactionsEndpoint = requestUrl.pathname === '/v1beta/interactions'
     if (method !== 'POST' || (!directEndpoint && !anthropicEndpoint && !ollamaChatEndpoint && !ollamaGenerateEndpoint && !geminiEndpoint && !interactionsEndpoint)) {
       writeOpenAiError(response, 404, '请求的 API 接口不存在', 'not_found')
+      return
+    }
+
+    if (directEndpoint === '/v1/images/edits') {
+      const contentTypeValue = request.headers['content-type']
+      const contentType = (Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue) ?? ''
+      if (!/^multipart\/form-data\b/i.test(contentType)) {
+        writeOpenAiError(response, 415, 'images/edits 需要 multipart/form-data 请求体', 'unsupported_media_type')
+        return
+      }
+      let rawBody: Buffer
+      try {
+        rawBody = await readRequestBody(request)
+      } catch (error) {
+        writeOpenAiError(response, (error as Error).message === 'request_too_large' ? 413 : 400, 'images/edits 请求体无效或过大', 'invalid_request_error')
+        return
+      }
+      const publicModel = multipartTextField(rawBody, contentType, 'model') ?? ''
+      if (!publicModel) {
+        writeOpenAiError(response, 400, 'images/edits 必须提供 model 字段', 'missing_model')
+        return
+      }
+      if (key.allowedModels.length > 0 && !key.allowedModels.includes(publicModel)) {
+        writeOpenAiError(response, 404, `模型“${publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
+        return
+      }
+      const route = this.config.routes.find((entry) => entry.publicModel === publicModel)
+      if (!route) {
+        writeOpenAiError(response, 404, `模型“${publicModel}”未配置`, 'model_not_found')
+        return
+      }
+      const candidates = this.routeCandidates(route, directEndpoint)
+      if (candidates.length === 0) {
+        writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的 Images 上游`, 'no_available_upstream')
+        return
+      }
+      await this.forwardRawWithFailover(request, response, directEndpoint, rawBody, contentType, candidates)
       return
     }
 
@@ -1244,8 +1365,9 @@ export class LocalApiServer {
         !source.enabled
       ) return []
       // Existing account credentials are Responses-only upstreams. Do not
-      // pretend their access tokens can serve provider-specific embeddings.
-      if (endpoint === '/v1/embeddings') return []
+      // pretend their access tokens can serve provider-specific embeddings or
+      // the OpenAI Images endpoint.
+      if (endpoint === '/v1/embeddings' || endpoint === '/v1/images/generations' || endpoint === '/v1/images/edits') return []
       const cooldownUntil = this.sourceCooldowns.get(source.id) ?? 0
       if (cooldownUntil > Date.now()) return []
       if (cooldownUntil) this.sourceCooldowns.delete(source.id)
@@ -1409,5 +1531,83 @@ export class LocalApiServer {
     const code = lastStatus === 429 ? 'rate_limit_exceeded' : 'upstream_error'
     const type = lastStatus === 429 ? 'rate_limit_error' : 'server_error'
     writeOpenAiError(outgoing, clientStatus, lastMessage, code, type)
+  }
+
+  /**
+   * Forward a multipart API request without re-encoding its binary fields.
+   * Image edit requests are intentionally API-upstream-only: imported Codex
+   * and Grok account credentials are Responses credentials and cannot be
+   * represented truthfully as an Images credential.
+   */
+  private async forwardRawWithFailover(
+    incoming: IncomingMessage,
+    outgoing: ServerResponse,
+    endpoint: '/v1/images/edits',
+    rawBody: Buffer,
+    contentType: string,
+    candidates: RouteCandidate[]
+  ): Promise<void> {
+    let lastStatus = 502
+    let lastMessage = '所有上游均请求失败'
+
+    for (const [index, candidate] of candidates.entries()) {
+      if (candidate.kind !== 'api') continue
+      const abortController = new AbortController()
+      const onClientClose = (): void => {
+        if (!outgoing.writableEnded) abortController.abort()
+      }
+      outgoing.once('close', onClientClose)
+      try {
+        const rawUpstreamUrl = buildProviderUpstreamUrl(candidate.upstream, endpoint)
+        const upstreamUrl = applyApiUpstreamAuthQuery(rawUpstreamUrl, candidate.upstream)
+        const upstreamBody = rewriteMultipartTextField(
+          rawBody,
+          contentType,
+          'model',
+          candidate.target.upstreamModel
+        )
+        const upstream = await this.fetchImpl(upstreamUrl, {
+          method: 'POST',
+          headers: apiUpstreamRawHeaders(candidate.upstream, incoming, contentType),
+          body: new Uint8Array(upstreamBody),
+          signal: abortController.signal
+        })
+        if (upstream.ok) {
+          this.sourceCooldowns.delete(candidate.upstream.id)
+          await relayResponse(upstream, outgoing)
+          return
+        }
+
+        lastStatus = upstream.status
+        lastMessage = parseUpstreamError(await upstream.text(), upstream.status)
+        if (isRetryableStatus(lastStatus)) {
+          this.sourceCooldowns.set(candidate.upstream.id, Date.now() + (lastStatus === 429 ? 60_000 : 5 * 60_000))
+        }
+        if (!isRetryableStatus(lastStatus) || index === candidates.length - 1) break
+      } catch (error) {
+        if (outgoing.headersSent) {
+          if (!outgoing.writableEnded) outgoing.destroy(error instanceof Error ? error : undefined)
+          return
+        }
+        if (abortController.signal.aborted) return
+        lastStatus = 502
+        lastMessage = error instanceof Error && error.name !== 'TypeError'
+          ? error.message.slice(0, 1000)
+          : '无法连接上游 API'
+        this.sourceCooldowns.set(candidate.upstream.id, Date.now() + 10_000)
+        if (index === candidates.length - 1) break
+      } finally {
+        outgoing.off('close', onClientClose)
+      }
+    }
+
+    const clientStatus = lastStatus === 401 || lastStatus === 403 || lastStatus === 429 ? lastStatus : 502
+    writeOpenAiError(
+      outgoing,
+      clientStatus,
+      lastMessage,
+      lastStatus === 429 ? 'rate_limit_exceeded' : 'upstream_error',
+      lastStatus === 429 ? 'rate_limit_error' : 'server_error'
+    )
   }
 }

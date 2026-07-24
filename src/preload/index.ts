@@ -53,6 +53,7 @@ const api: CodexSwitcherApi = {
   restoreApiMode: (restart) => ipcRenderer.invoke(ipcChannels.restoreApiMode, { restart }),
   switchToCustomApi: (profile, restart) => ipcRenderer.invoke(ipcChannels.customApiSwitch, { profile, restart }),
   getCustomApiProfile: () => ipcRenderer.invoke(ipcChannels.customApiProfile),
+  revealCustomApiKey: () => ipcRenderer.invoke(ipcChannels.customApiRevealKey),
   listCustomApiModels: (input) => ipcRenderer.invoke(ipcChannels.customApiListModels, input),
   getLocalApiServerState: () => ipcRenderer.invoke(ipcChannels.localApiServerState),
   saveLocalApiServerConfig: (input) => ipcRenderer.invoke(ipcChannels.localApiServerSave, input),

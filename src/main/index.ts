@@ -1905,6 +1905,9 @@ async function main(): Promise<void> {
     const settings = await settingsStore.get()
     return customApiStore.summary({ baseUrl: settings.customApiBaseUrl, model: settings.customApiModel })
   })
+  // The renderer receives this value only after an explicit eye/copy action.
+  // It is never added to snapshots, logs, model catalogs or Codex history.
+  ipcMain.handle(ipcChannels.customApiRevealKey, () => customApiStore.getKey())
   ipcMain.handle(ipcChannels.customApiListModels, async (_event, input: unknown) => {
     const payload = z
       .object({

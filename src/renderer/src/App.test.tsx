@@ -373,6 +373,7 @@ function api(): CodexSwitcherApi {
     restoreApiMode: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     switchToCustomApi: vi.fn().mockResolvedValue({ ok: true, message: 'ok', backupPath: null }),
     getCustomApiProfile: vi.fn().mockResolvedValue(snapshot.customApi),
+    revealCustomApiKey: vi.fn().mockResolvedValue('saved-custom-api-key'),
     listCustomApiModels: vi.fn().mockResolvedValue({ ok: true, message: 'ok', models: ['gpt-custom'], baseUrl: 'https://api.openai.com/v1' }),
     getLocalApiServerState: vi.fn().mockResolvedValue({
       config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
@@ -1397,6 +1398,32 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '恢复备份 API' }))
 
     await waitFor(() => expect(window.codexSwitcher.restoreApiMode).toHaveBeenCalledWith(true))
+  })
+
+  it('reveals and copies a saved direct-upstream API key only after the user asks', async () => {
+    const bridge = api()
+    vi.mocked(bridge.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      customApi: { ...snapshot.customApi, hasApiKey: true }
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    const input = screen.getByLabelText('API Key')
+    expect(input).toHaveValue('')
+    expect(bridge.revealCustomApiKey).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '显示 API Key' }))
+    await waitFor(() => expect(bridge.revealCustomApiKey).toHaveBeenCalledOnce())
+    expect(input).toHaveValue('saved-custom-api-key')
+
+    fireEvent.click(screen.getByRole('button', { name: '复制 API Key' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('saved-custom-api-key'))
   })
 
   it('saves a tested custom API, then lets the user defer the repair/restart', async () => {

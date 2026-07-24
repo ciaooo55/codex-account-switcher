@@ -1,6 +1,9 @@
 import {
   CheckCircle2,
+  Copy,
   Download,
+  Eye,
+  EyeOff,
   FolderOpen,
   KeyRound,
   LoaderCircle,
@@ -8,7 +11,7 @@ import {
   RefreshCw,
   X
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type { AppSnapshot, UpdateState } from '../../../../shared/ipc'
 import type { AppSettings } from '../../../../shared/types'
@@ -75,6 +78,13 @@ export function SettingsDialog({
 }: SettingsDialogProps): React.JSX.Element | null {
   const [pasteText, setPasteText] = useState('')
   const [pasteNote, setPasteNote] = useState('')
+  const [customApiKeyVisible, setCustomApiKeyVisible] = useState(false)
+  const [customApiKeyAction, setCustomApiKeyAction] = useState<'reveal' | 'copy' | null>(null)
+
+  useEffect(() => {
+    if (!open) setCustomApiKeyVisible(false)
+  }, [open])
+
   if (!open) return null
 
   const parsedModels = parseCustomApiModels(customApiModelsText)
@@ -100,6 +110,40 @@ export function SettingsDialog({
     if (!selectedModel || customApiModels.includes(selectedModel)) return
     replaceEditedModels([...customApiModels, selectedModel])
     setCustomApiModelsNote(`已明确将默认模型“${selectedModel}”加入编辑目录`)
+  }
+
+  const savedOrDraftCustomApiKey = async (): Promise<string> => {
+    const draftKey = customApiKey.trim()
+    if (draftKey) return draftKey
+    const savedKey = await codexApi().revealCustomApiKey()
+    if (!savedKey) throw new Error('尚未保存 API Key，请先填写并保存。')
+    return savedKey
+  }
+
+  const revealCustomApiKey = async (): Promise<void> => {
+    setCustomApiKeyAction('reveal')
+    try {
+      const key = await savedOrDraftCustomApiKey()
+      setCustomApiKey(key)
+      setCustomApiKeyVisible(true)
+      setMessage({ kind: 'ok', text: '已显示完整 API Key；关闭设置后会重新隐藏。' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setCustomApiKeyAction(null)
+    }
+  }
+
+  const copyCustomApiKey = async (): Promise<void> => {
+    setCustomApiKeyAction('copy')
+    try {
+      await navigator.clipboard.writeText(await savedOrDraftCustomApiKey())
+      setMessage({ kind: 'ok', text: 'API Key 已复制到剪贴板。' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setCustomApiKeyAction(null)
+    }
   }
 
   return (
@@ -141,7 +185,40 @@ export function SettingsDialog({
                     ))}
                   </datalist>
                 </label>
-                <label>API Key<input type="password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} placeholder={snapshot.customApi.hasApiKey ? '留空继续使用已保存 Key' : '输入 API Key'} autoComplete="new-password" /></label>
+                <label>API Key
+                  <div className="flex min-w-0 gap-1">
+                    <input
+                      className="min-w-0 flex-1 font-[var(--font-mono)]"
+                      type={customApiKeyVisible ? 'text' : 'password'}
+                      value={customApiKey}
+                      onChange={(event) => { setCustomApiKey(event.target.value); setCustomApiKeyVisible(true) }}
+                      placeholder={snapshot.customApi.hasApiKey ? '已保存；点击眼睛显示或复制' : '输入 API Key'}
+                      autoComplete="new-password"
+                    />
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="secondary"
+                      aria-label={customApiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+                      title={customApiKeyVisible ? '隐藏 API Key' : '显示完整 API Key'}
+                      disabled={busy || customApiKeyAction === 'reveal' || (!customApiKey && !snapshot.customApi.hasApiKey)}
+                      onClick={() => customApiKeyVisible ? setCustomApiKeyVisible(false) : void revealCustomApiKey()}
+                    >
+                      {customApiKeyAction === 'reveal' ? <LoaderCircle className="spin" size={15} /> : customApiKeyVisible ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="secondary"
+                      aria-label="复制 API Key"
+                      title="复制 API Key"
+                      disabled={busy || customApiKeyAction === 'copy' || (!customApiKey && !snapshot.customApi.hasApiKey)}
+                      onClick={() => void copyCustomApiKey()}
+                    >
+                      {customApiKeyAction === 'copy' ? <LoaderCircle className="spin" size={15} /> : <Copy size={15} />}
+                    </Button>
+                  </div>
+                </label>
               </div>
               <details className="paste-recognizer rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2">
                 <summary className="cursor-pointer select-none text-[13px] font-medium text-[var(--color-text)]">粘贴识别（URL / Key / Base64 / JSON）</summary>

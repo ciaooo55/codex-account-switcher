@@ -349,7 +349,7 @@ describe('ApiServerPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
 
-    expect(await screen.findByText(/Codex 当前仍由 codex_local_access 接管/)).toBeInTheDocument()
+    expect(await screen.findByText('顶层 provider 已被其他工具写入。')).toBeInTheDocument()
     expect(screen.getByText(/实际使用：codex_local_access \/ grok-4\.5/)).toBeInTheDocument()
   })
 })

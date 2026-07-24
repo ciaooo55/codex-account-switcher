@@ -176,6 +176,8 @@ export interface CodexSwitcherApi {
   restoreApiMode(restart: boolean): Promise<SwitchResult>
   switchToCustomApi(profile: CustomApiProfileInput, restart: boolean): Promise<SwitchResult>
   getCustomApiProfile(): Promise<CustomApiProfileSummary>
+  /** Explicit user action only: returns the saved direct-upstream key for display/copy. */
+  revealCustomApiKey(): Promise<string | null>
   listCustomApiModels(input: { baseUrl: string; apiKey?: string; useSavedKey?: boolean }): Promise<CustomApiListModelsResult>
   getLocalApiServerState(): Promise<LocalApiServerState>
   saveLocalApiServerConfig(input: LocalApiServerConfigInput): Promise<LocalApiServerState>
@@ -280,6 +282,7 @@ export const ipcChannels = {
   restoreApiMode: 'accounts:restore-api-mode',
   customApiSwitch: 'custom-api:switch',
   customApiProfile: 'custom-api:profile',
+  customApiRevealKey: 'custom-api:reveal-key',
   customApiListModels: 'custom-api:list-models',
   localApiServerState: 'local-api-server:state',
   localApiServerSave: 'local-api-server:save',

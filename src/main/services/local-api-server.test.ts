@@ -363,6 +363,124 @@ describe('LocalApiServer', () => {
     }))
   })
 
+  it('relays OpenAI image generation through the selected third-party model route', async () => {
+    let seen: { path: string; authorization: string | undefined; body: Record<string, unknown> } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '',
+        authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ created: 1, data: [{ url: 'https://images.example/generated.png' }] }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('image', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const result = await fetch(`http://127.0.0.1:${port}/v1/images/generations`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', prompt: 'a local API service dashboard', size: '1024x1024' })
+    })
+
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toEqual({ created: 1, data: [{ url: 'https://images.example/generated.png' }] })
+    expect(seen).toEqual(expect.objectContaining({
+      path: '/v1/images/generations',
+      authorization: 'Bearer sk-image',
+      body: { model: 'real-1', prompt: 'a local API service dashboard', size: '1024x1024' }
+    }))
+  })
+
+  it('relays OpenAI image edits without corrupting multipart image bytes or leaking the client key', async () => {
+    type SeenImageEdit = { path: string; authorization: string | undefined; contentType: string | undefined; body: Buffer }
+    const seen: SeenImageEdit[] = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen.push({
+        path: request.url ?? '',
+        authorization: request.headers.authorization,
+        contentType: request.headers['content-type'],
+        body: Buffer.concat(chunks)
+      })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ created: 1, data: [{ b64_json: 'image-data' }] }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('image-edit', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const boundary = '----codex-switcher-image-boundary'
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x0a, 0x42])
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nxxx\r\n`, 'utf8'),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nrestore this image\r\n`, 'utf8'),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\nContent-Type: image/png\r\n\r\n`, 'utf8'),
+      imageBytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
+    ])
+
+    const result = await fetch(`http://127.0.0.1:${port}/v1/images/edits`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer sk-local',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      body: new Uint8Array(multipart)
+    })
+
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toEqual({ created: 1, data: [{ b64_json: 'image-data' }] })
+    const expectedBody = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nreal-1\r\n`, 'utf8'),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nrestore this image\r\n`, 'utf8'),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\nContent-Type: image/png\r\n\r\n`, 'utf8'),
+      imageBytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
+    ])
+    expect(seen).toEqual([expect.objectContaining({
+      path: '/v1/images/edits',
+      authorization: 'Bearer sk-image-edit',
+      contentType: `multipart/form-data; boundary=${boundary}`
+    })])
+    const multipartSeen = seen[0]!
+    expect(multipartSeen.body.equals(expectedBody)).toBe(true)
+    expect(multipartSeen.body.includes(Buffer.from('sk-local'))).toBe(false)
+  })
+
+  it('returns an OpenAI error when an image edit is not multipart or has no model field', async () => {
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, []))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const nonMultipart = await fetch(`http://127.0.0.1:${port}/v1/images/edits`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx' })
+    })
+    expect(nonMultipart.status).toBe(415)
+    await expect(nonMultipart.json()).resolves.toMatchObject({ error: { code: 'unsupported_media_type' } })
+
+    const boundary = '----codex-switcher-missing-model'
+    const missingModel = await fetch(`http://127.0.0.1:${port}/v1/images/edits`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer sk-local',
+        'content-type': `multipart/form-data; boundary=${boundary}`
+      },
+      body: `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nno model\r\n--${boundary}--\r\n`
+    })
+    expect(missingModel.status).toBe(400)
+    await expect(missingModel.json()).resolves.toMatchObject({ error: { code: 'missing_model' } })
+  })
+
   it('returns legacy Completion SSE while its selected upstream streams Chat chunks', async () => {
     const mock = await mockUpstream((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' })
