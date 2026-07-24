@@ -30,12 +30,16 @@ import {
   translateAnthropicSseToChat,
   translateChatRequestToAnthropic,
   translateChatRequestToGemini,
+  translateChatRequestToInteractions,
   translateChatRequestToOllama,
   translateChatResponseForClient,
   translateChatSseForClient,
   translateGeminiRequestToChat,
   translateGeminiResponseToChat,
   translateGeminiSseToChat,
+  translateInteractionsRequestToChat,
+  translateInteractionsResponseToChat,
+  translateInteractionsSseToChat,
   translateOllamaChatRequestToChat,
   translateOllamaGenerateRequestToChat,
   translateOllamaResponseToChat,
@@ -204,7 +208,7 @@ function writeClientProtocolError(
     writeJson(response, status, { type: 'error', error: { type: code, message } })
     return
   }
-  if (protocol === 'gemini') {
+  if (protocol === 'gemini' || protocol === 'interactions') {
     writeJson(response, status, { error: { code: status, status: status === 404 ? 'NOT_FOUND' : 'INVALID_ARGUMENT', message } })
     return
   }
@@ -310,6 +314,13 @@ function apiRequestPlans(
       responseProtocol: 'gemini'
     }]
   }
+  if (upstream.protocol === 'gemini_interactions') {
+    return [{
+      endpoint: '/v1beta/interactions',
+      requestBody: translateChatRequestToInteractions({ ...chatBody, model: upstreamModel }),
+      responseProtocol: 'gemini_interactions'
+    }]
+  }
   if (upstream.protocol === 'ollama') {
     return [{
       endpoint: '/api/chat',
@@ -385,7 +396,7 @@ function apiUpstreamHeaders(
       ...(incoming.headers['anthropic-version'] ? { 'anthropic-version': String(incoming.headers['anthropic-version']) } : {})
     }
   }
-  if (upstream.protocol === 'gemini') return { ...common, ...auth }
+  if (upstream.protocol === 'gemini' || upstream.protocol === 'gemini_interactions') return { ...common, ...auth }
   return {
     ...common,
     ...auth,
@@ -457,6 +468,7 @@ function nativeResponseToChat(
 ): Record<string, unknown> {
   if (protocol === 'anthropic_messages') return translateAnthropicResponseToChat(payload)
   if (protocol === 'gemini') return translateGeminiResponseToChat(payload)
+  if (protocol === 'gemini_interactions') return translateInteractionsResponseToChat(payload)
   if (protocol === 'ollama') return translateOllamaResponseToChat(payload)
   throw new Error('未知的原生上游响应协议')
 }
@@ -467,6 +479,7 @@ function nativeStreamToChat(
 ): ReadableStream<Uint8Array> {
   if (protocol === 'anthropic_messages') return translateAnthropicSseToChat(stream)
   if (protocol === 'gemini') return translateGeminiSseToChat(stream)
+  if (protocol === 'gemini_interactions') return translateInteractionsSseToChat(stream)
   if (protocol === 'ollama') return translateOllamaStreamToChat(stream)
   throw new Error('未知的原生上游流式协议')
 }
@@ -960,7 +973,7 @@ export class LocalApiServer {
         models: availableModels.map((name) => ({
           name: `models/${name}`,
           displayName: name,
-          supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'countTokens']
+          supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'interactions', 'countTokens']
         }))
       })
       return
@@ -975,7 +988,7 @@ export class LocalApiServer {
         writeJson(response, 200, {
           name: `models/${model}`,
           displayName: model,
-          supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'countTokens']
+          supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'interactions', 'countTokens']
         })
       }
       return
@@ -1054,7 +1067,8 @@ export class LocalApiServer {
     const ollamaChatEndpoint = requestUrl.pathname === '/api/chat'
     const ollamaGenerateEndpoint = requestUrl.pathname === '/api/generate'
     const geminiEndpoint = /^\/v1beta\/models\/([^/:]+):(generateContent|streamGenerateContent)$/i.exec(requestUrl.pathname)
-    if (method !== 'POST' || (!directEndpoint && !anthropicEndpoint && !ollamaChatEndpoint && !ollamaGenerateEndpoint && !geminiEndpoint)) {
+    const interactionsEndpoint = requestUrl.pathname === '/v1beta/interactions'
+    if (method !== 'POST' || (!directEndpoint && !anthropicEndpoint && !ollamaChatEndpoint && !ollamaGenerateEndpoint && !geminiEndpoint && !interactionsEndpoint)) {
       writeOpenAiError(response, 404, '请求的 API 接口不存在', 'not_found')
       return
     }
@@ -1086,6 +1100,9 @@ export class LocalApiServer {
           stream: geminiEndpoint[2] === 'streamGenerateContent'
         }
         clientProtocol = 'gemini'
+      } else if (interactionsEndpoint) {
+        body = translateInteractionsRequestToChat(body)
+        clientProtocol = 'interactions'
       } else if (ollamaChatEndpoint) {
         body = translateOllamaChatRequestToChat(body)
         clientProtocol = 'ollama_chat'
@@ -1096,7 +1113,7 @@ export class LocalApiServer {
     } catch (error) {
       writeClientProtocolError(
         response,
-        anthropicEndpoint ? 'anthropic' : geminiEndpoint ? 'gemini' : ollamaGenerateEndpoint ? 'ollama_generate' : ollamaChatEndpoint ? 'ollama_chat' : 'openai',
+        anthropicEndpoint ? 'anthropic' : geminiEndpoint ? 'gemini' : interactionsEndpoint ? 'interactions' : ollamaGenerateEndpoint ? 'ollama_generate' : ollamaChatEndpoint ? 'ollama_chat' : 'openai',
         400,
         error instanceof Error ? error.message : '请求格式无效'
       )
@@ -1240,7 +1257,7 @@ export class LocalApiServer {
         for (const [planIndex, plan] of plans.entries()) {
           const upstreamBody = Buffer.from(JSON.stringify({
             ...plan.requestBody,
-            ...(candidate.kind === 'api' && candidate.upstream.protocol === 'gemini'
+            ...(candidate.kind === 'api' && (candidate.upstream.protocol === 'gemini' || candidate.upstream.protocol === 'gemini_interactions')
               ? {}
               : { model: candidate.target.upstreamModel })
           }))

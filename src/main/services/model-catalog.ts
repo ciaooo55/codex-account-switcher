@@ -417,6 +417,22 @@ function arrayText(value: unknown, key: string): string {
     : ''
 }
 
+function interactionsOutputText(value: unknown): string {
+  const envelope = optionalRecord(value)
+  const interaction = optionalRecord(envelope?.interaction) ?? envelope
+  const parts: string[] = []
+  for (const item of Array.isArray(interaction?.steps) ? interaction.steps : []) {
+    const step = optionalRecord(item)
+    if (step?.type !== 'model_output') continue
+    if (typeof step.content === 'string' && step.content.trim()) parts.push(step.content.trim())
+    for (const content of Array.isArray(step.content) ? step.content : []) {
+      const part = optionalRecord(content)
+      if (typeof part?.text === 'string' && part.text.trim()) parts.push(part.text.trim())
+    }
+  }
+  return parts.join('\n').trim()
+}
+
 function providerRootUrl(baseUrl: string): string {
   const url = new URL(baseUrl)
   const path = url.pathname.replace(/\/+$/, '')
@@ -476,21 +492,26 @@ export interface DetectedApiUpstream {
 export async function discoverApiUpstream(input: {
   baseUrl: string
   apiKey: string
+  /** Keep an explicitly selected native protocol stable when refreshing it. */
+  protocol?: ApiUpstreamProtocol
   timeoutMs?: number
   fetchImpl?: typeof fetch
 } & UpstreamAuthenticationInput): Promise<DetectedApiUpstream> {
   const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 8_000))
   const fetchImpl = input.fetchImpl ?? fetch
-  const openai = await fetchOpenAiCompatibleModelIds({ ...input, protocol: 'auto', timeoutMs, fetchImpl })
-  if (openai.models.length) {
-    return { protocol: 'auto', models: openai.models, baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors: openai.errors }
-  }
+  const selectedNative = input.protocol === 'gemini' || input.protocol === 'gemini_interactions'
+    || input.protocol === 'anthropic_messages' || input.protocol === 'ollama'
+  const openai = selectedNative
+    ? { models: [] as string[], baseUrl: input.baseUrl, modelsUrl: input.baseUrl, errors: [] as string[] }
+    : await fetchOpenAiCompatibleModelIds({ ...input, protocol: 'auto', timeoutMs, fetchImpl })
+  if (openai.models.length) return { protocol: 'auto', models: openai.models, baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors: openai.errors }
   const root = providerRootUrl(input.baseUrl)
   const errors = [...openai.errors]
 
   const geminiUrl = `${root}/v1beta/models`
   try {
-    const auth = upstreamAuthentication(input, 'gemini')
+    const requestedGeminiProtocol = input.protocol === 'gemini_interactions' ? 'gemini_interactions' : 'gemini'
+    const auth = upstreamAuthentication(input, requestedGeminiProtocol)
     const result = await providerGetJson({
       url: applyApiUpstreamAuthQuery(geminiUrl, auth),
       headers: apiUpstreamAuthHeaders(auth),
@@ -498,7 +519,7 @@ export async function discoverApiUpstream(input: {
       fetchImpl
     })
     const models = idsFromRows(optionalArrayRecord(result.body, 'models'), 'name')
-    if (result.ok && models.length) return { protocol: 'gemini', models, baseUrl: root, modelsUrl: geminiUrl, errors }
+    if (result.ok && models.length) return { protocol: requestedGeminiProtocol, models, baseUrl: root, modelsUrl: geminiUrl, errors }
     errors.push(`${geminiUrl} → ${result.ok ? '模型列表为空' : `HTTP ${result.status}`}`)
   } catch (error) { errors.push(`${geminiUrl} → ${error instanceof Error ? error.message : '请求失败'}`) }
 
@@ -569,6 +590,11 @@ export async function probeApiUpstreamModel(input: {
     url = applyApiUpstreamAuthQuery(`${root}/v1/messages`, auth)
     headers = { ...apiUpstreamAuthHeaders(auth), 'anthropic-version': '2023-06-01' }
     body = { model: input.model, max_tokens: 32, messages: [{ role: 'user', content: 'hi' }] }
+  } else if (input.protocol === 'gemini_interactions') {
+    const auth = upstreamAuthentication(input, 'gemini_interactions')
+    url = applyApiUpstreamAuthQuery(`${root}/v1beta/interactions`, auth)
+    headers = apiUpstreamAuthHeaders(auth)
+    body = { model: input.model, input: 'hi', stream: false, generation_config: { max_output_tokens: 32 } }
   } else if (input.protocol === 'gemini') {
     const auth = upstreamAuthentication(input, 'gemini')
     url = applyApiUpstreamAuthQuery(`${root}/v1beta/models/${encodeURIComponent(input.model)}:generateContent`, auth)
@@ -586,6 +612,8 @@ export async function probeApiUpstreamModel(input: {
     ? arrayText(optionalRecord(result.body)?.content, 'text')
     : input.protocol === 'gemini'
       ? arrayText(optionalRecord(optionalRecord(arrayAt(optionalRecord(result.body)?.candidates, 0))?.content)?.parts, 'text')
+      : input.protocol === 'gemini_interactions'
+        ? interactionsOutputText(result.body)
       : stringValue(optionalRecord(optionalRecord(result.body)?.message)?.content)
   if (!output) throw new Error(`模型测试失败（${url}）：响应成功但没有可读的模型回复`)
   return { output: output.slice(0, 500), probeUrl: url }

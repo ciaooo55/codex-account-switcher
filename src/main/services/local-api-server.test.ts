@@ -271,6 +271,71 @@ describe('LocalApiServer', () => {
     ])
   })
 
+  it('accepts Gemini Interactions clients and routes them through the public model', async () => {
+    const seen: Array<{ path: string; body: Record<string, unknown> }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen.push({ path: request.url ?? '', body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'chatcmpl-interactions', object: 'chat.completion', model: 'real-1',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'hello interactions' }, finish_reason: 'stop' }]
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'chat_completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1beta/interactions`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: [{ type: 'user_input', content: [{ type: 'text', text: 'hi' }] }] })
+    })
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toMatchObject({
+      object: 'interaction', model: 'real-1', status: 'completed',
+      steps: [{ type: 'model_output', content: [{ type: 'text', text: 'hello interactions' }] }]
+    })
+    expect(seen).toEqual([expect.objectContaining({
+      path: '/v1/chat/completions',
+      body: expect.objectContaining({ model: 'real-1', messages: [{ role: 'user', content: 'hi' }] })
+    })])
+  })
+
+  it('uses a Gemini Interactions upstream with x-goog-api-key and its real model name', async () => {
+    let seen: { path: string; key: string | undefined; body: Record<string, unknown> } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '', key: Array.isArray(request.headers['x-goog-api-key']) ? request.headers['x-goog-api-key'][0] : request.headers['x-goog-api-key'],
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'interaction_upstream', model: 'real-1', status: 'completed',
+        steps: [{ type: 'model_output', content: [{ type: 'text', text: 'from interactions' }] }]
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('gemini', mock.baseUrl, 'gemini_interactions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hi' })
+    })
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toMatchObject({
+      object: 'response', output: [{ type: 'message', content: [{ type: 'output_text', text: 'from interactions' }] }]
+    })
+    expect(seen).toEqual(expect.objectContaining({
+      path: '/v1beta/interactions', key: 'sk-gemini',
+      body: expect.objectContaining({ model: 'real-1', input: [{ type: 'user_input', content: [{ type: 'text', text: 'hi' }] }] })
+    }))
+  })
+
   it('uses native Anthropic upstreams without leaking its upstream API key to callers', async () => {
     let seen: { path: string; apiKey: string | undefined; body: Record<string, unknown> } | null = null
     const mock = await mockUpstream(async (request, response) => {

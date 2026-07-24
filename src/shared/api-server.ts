@@ -13,6 +13,7 @@ export type ApiUpstreamProtocol =
   | 'chat_completions'
   | 'anthropic_messages'
   | 'gemini'
+  | 'gemini_interactions'
   | 'ollama'
 /**
  * Authentication variants used by third-party gateways. `auto` chooses the
@@ -243,7 +244,7 @@ function normalizeAuthQueryParam(value: string | undefined): string {
 export function resolvedApiUpstreamAuthMode(input: ApiUpstreamAuthConfig): ApiUpstreamAuthMode {
   if ((input.authMode ?? 'auto') !== 'auto') return input.authMode ?? 'auto'
   if (input.protocol === 'anthropic_messages') return 'x_api_key'
-  if (input.protocol === 'gemini') return 'x_goog_api_key'
+  if (input.protocol === 'gemini' || input.protocol === 'gemini_interactions') return 'x_goog_api_key'
   return 'bearer'
 }
 
@@ -328,7 +329,7 @@ export function normalizeLocalApiServerConfig(
     if (apiKey !== undefined && apiKey.length > 16_384) throw new Error('上游 API Key 过长')
     const priority = Number.isFinite(entry.priority) ? Math.trunc(entry.priority) : 0
     const protocol = (() => {
-      if (!['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'ollama'].includes(entry.protocol)) {
+      if (!['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'gemini_interactions', 'ollama'].includes(entry.protocol)) {
         throw new Error('上游协议类型无效')
       }
       return entry.protocol

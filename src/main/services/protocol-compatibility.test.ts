@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   translateAnthropicRequestToChat,
+  translateChatResponseForClient,
+  translateChatSseForClient,
   translateGeminiSseToChat,
+  translateInteractionsRequestToChat,
+  translateInteractionsSseToChat,
   translateOllamaGenerateRequestToChat
 } from './protocol-compatibility'
 
@@ -44,5 +48,52 @@ describe('native protocol compatibility', () => {
     expect(translated).toContain('"content":"lo"')
     expect(translated).toContain('"finish_reason":"stop"')
     expect(translated).toContain('data: [DONE]')
+  })
+
+  it('adapts Gemini Interactions requests, results, and both SSE directions', async () => {
+    expect(translateInteractionsRequestToChat({
+      model: 'public-model', input: [{ type: 'user_input', content: [{ type: 'text', text: 'hi' }] }],
+      generation_config: { max_output_tokens: 42 },
+      tools: [{ function_declarations: [{ name: 'lookup', parameters: { type: 'object' } }] }]
+    })).toMatchObject({
+      model: 'public-model', max_tokens: 42,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }]
+    })
+
+    expect(translateChatResponseForClient({
+      id: 'chat_1', model: 'public-model', choices: [{
+        message: { role: 'assistant', content: 'hello', tool_calls: [{ id: 'call_1', function: { name: 'lookup', arguments: '{"q":"x"}' } }] },
+        finish_reason: 'tool_calls'
+      }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }
+    }, 'interactions')).toMatchObject({
+      id: 'chat_1', object: 'interaction', status: 'requires_action',
+      steps: [
+        { type: 'model_output', content: [{ type: 'text', text: 'hello' }] },
+        { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: { q: 'x' } }
+      ]
+    })
+
+    const upstream = byteStream(
+      `event: interaction.created\ndata: ${JSON.stringify({ event_type: 'interaction.created', interaction: { id: 'int_1', model: 'gemini-real' } })}\n\n`
+      + `event: step.start\ndata: ${JSON.stringify({ event_type: 'step.start', index: 0, step: { type: 'model_output' } })}\n\n`
+      + `event: step.delta\ndata: ${JSON.stringify({ event_type: 'step.delta', index: 0, delta: { type: 'text_delta', text: 'hello' } })}\n\n`
+      + `event: interaction.completed\ndata: ${JSON.stringify({ event_type: 'interaction.completed', interaction: { status: 'completed' } })}\n\n`
+    )
+    const chat = await new Response(translateInteractionsSseToChat(upstream)).text()
+    expect(chat).toContain('"content":"hello"')
+    expect(chat).toContain('"finish_reason":"stop"')
+    expect(chat).toContain('data: [DONE]')
+
+    const native = await new Response(translateChatSseForClient(byteStream(
+      `data: ${JSON.stringify({ id: 'chat_1', model: 'public-model', choices: [{ delta: { role: 'assistant', content: 'hi' }, finish_reason: null }] })}\n\n`
+      + `data: ${JSON.stringify({ id: 'chat_1', model: 'public-model', choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`
+      + 'data: [DONE]\n\n'
+    ), 'interactions')).text()
+    expect(native).toContain('event: interaction.created')
+    expect(native).toContain('event: step.delta')
+    expect(native).toContain('"text":"hi"')
+    expect(native).toContain('event: interaction.completed')
+    expect(native).toContain('event: done')
   })
 })

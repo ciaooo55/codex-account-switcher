@@ -89,6 +89,12 @@ describe('api server shared configuration', () => {
     })
   })
 
+  it('uses the Gemini standard key header for explicit Interactions upstreams', () => {
+    expect(apiUpstreamAuthHeaders({ protocol: 'gemini_interactions', apiKey: 'gem-key' })).toEqual({
+      'x-goog-api-key': 'gem-key'
+    })
+  })
+
   it('keeps an explicit Codex loopback binding and rejects malformed values', () => {
     const input = {
       port: 8888,

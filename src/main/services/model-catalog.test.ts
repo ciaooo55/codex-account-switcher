@@ -319,6 +319,29 @@ describe('model catalog helpers', () => {
     })).resolves.toMatchObject({ output: 'ollama works', probeUrl: 'http://127.0.0.1:11434/api/chat' })
   })
 
+  it('keeps explicit Gemini Interactions discovery and probes its native endpoint', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === 'https://interactions.example/v1beta/models') {
+        expect(init?.headers).toMatchObject({ 'x-goog-api-key': 'interaction-key' })
+        return { ok: true, status: 200, text: async () => JSON.stringify({ models: [{ name: 'models/gemini-interactions' }] }) }
+      }
+      if (url === 'https://interactions.example/v1beta/interactions') {
+        expect(init?.headers).toMatchObject({ 'x-goog-api-key': 'interaction-key' })
+        expect(init?.body).toContain('"model":"gemini-interactions"')
+        return { ok: true, status: 200, text: async () => JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'text', text: 'interaction works' }] }] }) }
+      }
+      return { ok: false, status: 404, text: async () => '{}' }
+    })
+    const listed = await discoverApiUpstream({
+      baseUrl: 'https://interactions.example/v1', apiKey: 'interaction-key', protocol: 'gemini_interactions',
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    expect(listed).toMatchObject({ protocol: 'gemini_interactions', models: ['gemini-interactions'], baseUrl: 'https://interactions.example' })
+    await expect(probeApiUpstreamModel({
+      ...listed, apiKey: 'interaction-key', model: 'gemini-interactions', fetchImpl: fetchImpl as unknown as typeof fetch
+    })).resolves.toMatchObject({ output: 'interaction works', probeUrl: 'https://interactions.example/v1beta/interactions' })
+  })
+
   it('fails model probe when every common path is rejected', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: false,
