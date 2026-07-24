@@ -8,6 +8,7 @@ import { CredentialSwitcher } from './switcher'
 const tempDirs: string[] = []
 
 afterEach(async () => {
+  vi.unstubAllGlobals()
   await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
@@ -84,7 +85,9 @@ describe('CredentialSwitcher', () => {
     const config = await readFile(paths.configPath, 'utf8')
     expect(config).toContain('model_provider = "codex_account_switcher"')
     expect(config).not.toMatch(/^openai_base_url\s*=/m)
-    expect(config).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(config).toContain(
+      `model_catalog_json = ${JSON.stringify(join(paths.dir, 'account-switcher-model-catalog.json'))}`
+    )
     expect(config).toContain('[model_providers.codex_account_switcher]')
     expect(config).toContain('base_url = "http://127.0.0.1:18317/v1"')
     expect(config).toContain('wire_api = "responses"')
@@ -136,6 +139,45 @@ describe('CredentialSwitcher', () => {
     expect(config).toContain('model_provider = "codex_account_switcher"')
   })
 
+  it('keeps the Responses-tested base when the models endpoint is found on another prefix', async () => {
+    const paths = await fixture()
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url === 'http://127.0.0.1:18371/openai/models') {
+        return new Response(JSON.stringify({ data: [{ id: 'real-model' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      }
+      return new Response('{}', { status: 404 })
+    }))
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18371/openai/v1',
+      model: 'real-model',
+      apiKey: 'custom-secret-key',
+      verifiedProbe: {
+        endpoint: 'responses',
+        baseUrl: 'http://127.0.0.1:18371/openai/v1',
+        probeUrl: 'http://127.0.0.1:18371/openai/v1/responses',
+        output: 'working response'
+      }
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      discoveredBaseUrl: 'http://127.0.0.1:18371/openai/v1'
+    })
+    const config = await readFile(paths.configPath, 'utf8')
+    expect(config).toContain('base_url = "http://127.0.0.1:18371/openai/v1"')
+    expect(config).not.toContain('base_url = "http://127.0.0.1:18371/openai"')
+  })
+
   it('writes the user-edited model list without re-adding removed upstream models', async () => {
     const paths = await fixture()
     const switcher = new CredentialSwitcher({
@@ -160,6 +202,31 @@ describe('CredentialSwitcher', () => {
     })
     const catalog = JSON.parse(await readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
     expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual(['remote-b', 'manual-model'])
+  })
+
+  it('rejects an explicit list that omits the selected model without changing files', async () => {
+    const paths = await fixture()
+    const previousConfig = await readFile(paths.configPath, 'utf8')
+    const switcher = new CredentialSwitcher({
+      ...paths,
+      cipher,
+      backupRetention: 20,
+      probeModel: async () => ({ endpoint: 'responses' as const, output: 'hello' }),
+      fetchModels: async () => ['selected-model', 'manual-model']
+    })
+
+    const result = await switcher.switchToCustomApi({
+      baseUrl: 'http://127.0.0.1:18317/v1',
+      model: 'selected-model',
+      apiKey: 'custom-secret-key',
+      models: ['manual-model']
+    })
+
+    expect(result).toMatchObject({ ok: false })
+    expect(result.message).toContain('不会自动添加未明确输入的模型')
+    expect(await readFile(paths.configPath, 'utf8')).toBe(previousConfig)
+    await expect(readFile(join(paths.dir, 'account-switcher-model-catalog.json'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('writes the real upstream URL, key, and model IDs into Codex', async () => {
@@ -271,7 +338,9 @@ describe('CredentialSwitcher', () => {
     expect(result.message).toContain('上游模型列表为空')
     const config = await readFile(paths.configPath, 'utf8')
     expect(config).toContain('model = "grok-4.5"')
-    expect(config).toContain('model_catalog_json = "account-switcher-model-catalog.json"')
+    expect(config).toContain(
+      `model_catalog_json = ${JSON.stringify(join(paths.dir, 'account-switcher-model-catalog.json'))}`
+    )
     expect(config).toContain('[model_providers.codex_account_switcher]')
   })
 
@@ -379,7 +448,7 @@ describe('CredentialSwitcher', () => {
     expect((await switcher.restoreLatest()).ok).toBe(true)
     expect(await readFile(catalogPath, 'utf8')).toBe(apiCatalog)
     expect(await readFile(paths.configPath, 'utf8')).toContain(
-      'model_catalog_json = "account-switcher-model-catalog.json"'
+      `model_catalog_json = ${JSON.stringify(catalogPath)}`
     )
   })
 

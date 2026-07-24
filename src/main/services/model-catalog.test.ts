@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import { isAbsolute, resolve } from 'node:path'
 import {
   buildModelCatalog,
+  CUSTOM_MODEL_AVAILABLE_IN_PLANS,
   customApiModelsUrl,
   fetchOpenAiCompatibleModelIds,
   modelCatalogConfigPath,
@@ -10,21 +12,27 @@ import {
 import { customApiChatCompletionsUrl, customApiResponsesUrl } from '../../shared/custom-api'
 
 describe('model catalog helpers', () => {
-  it('exposes a stable relative config path for model_catalog_json', () => {
-    expect(modelCatalogConfigPath()).toBe('account-switcher-model-catalog.json')
+  it('exposes an absolute config path for model_catalog_json', () => {
+    const codexHome = resolve('fixtures', 'codex-home')
+    const configPath = modelCatalogConfigPath(codexHome)
+
+    expect(configPath).toBe(resolve(codexHome, 'account-switcher-model-catalog.json'))
+    expect(isAbsolute(configPath)).toBe(true)
     expect(MODEL_CATALOG_RELATIVE_PATH).toBe('account-switcher-model-catalog.json')
   })
 
-  it('builds a preferred-first catalog with list visibility', () => {
+  it('preserves the exact normalized input order and adds picker metadata', () => {
     const catalog = buildModelCatalog(['b-model', 'a-model', 'b-model'], 'a-model')
-    expect(catalog.models.map((model) => model.slug)).toEqual(['a-model', 'b-model'])
+    expect(catalog.models.map((model) => model.slug)).toEqual(['b-model', 'a-model'])
     expect(catalog.models[0]).toMatchObject({
-      slug: 'a-model',
-      display_name: 'a-model',
+      slug: 'b-model',
+      display_name: 'b-model',
       visibility: 'list',
       supported_in_api: true,
       priority: 1,
-      base_instructions: expect.any(String)
+      base_instructions: expect.any(String),
+      available_in_plans: CUSTOM_MODEL_AVAILABLE_IN_PLANS,
+      supports_reasoning_summary_parameter: true
     })
     expect(catalog.models[0].base_instructions.length).toBeGreaterThan(20)
     expect(catalog.models.every((model) => typeof model.base_instructions === 'string')).toBe(true)
@@ -45,10 +53,11 @@ describe('model catalog helpers', () => {
     ])
   })
 
-  it('always includes the preferred model even when remote list is empty', () => {
-    const catalog = buildModelCatalog([], 'grok-4.5')
-    expect(catalog.models).toHaveLength(1)
-    expect(catalog.models[0].slug).toBe('grok-4.5')
+  it('never injects a preferred model that was not explicitly supplied', () => {
+    expect(() => buildModelCatalog([], 'grok-4.5')).toThrow('至少需要一个有效模型名')
+    expect(() => buildModelCatalog(['model-a', 'model-b'], 'grok-4.5')).toThrow(
+      '不会自动添加未明确输入的模型'
+    )
   })
 
   it('normalizes models URL from a base URL', () => {

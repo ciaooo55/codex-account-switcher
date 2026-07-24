@@ -1378,15 +1378,16 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('更多'))
     fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
-    fireEvent.change(screen.getByLabelText('API 地址'), {
-      target: { value: 'http://127.0.0.1:18317' }
-    })
     fireEvent.change(screen.getByLabelText('API Key'), {
       target: { value: 'temporary-custom-key' }
     })
     fireEvent.change(screen.getByLabelText('同步到 Codex 的模型目录'), {
       target: { value: 'gpt-5.4\nmanual-model' }
     })
+    fireEvent.change(screen.getByLabelText('API 地址'), {
+      target: { value: 'http://127.0.0.1:18317' }
+    })
+    expect(screen.getByLabelText('同步到 Codex 的模型目录')).toHaveValue('gpt-5.4\nmanual-model')
     fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
     const confirmation = await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' })
     expect(confirmation).toHaveTextContent('测试失败不会修改配置')
@@ -1405,6 +1406,64 @@ describe('App', () => {
     expect(bridge.previewSessionRepair).not.toHaveBeenCalled()
   })
 
+  it('requires the default model to be explicitly present instead of silently adding it', async () => {
+    const bridge = api()
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'temporary-custom-key' } })
+    fireEvent.change(screen.getByLabelText('同步到 Codex 的模型目录'), {
+      target: { value: 'manual-a\nmanual-b' }
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('默认模型“gpt-5.4”不在目录中')
+    expect(screen.getByRole('button', { name: '测试并切换' })).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('从编辑后的模型目录中选择'), {
+      target: { value: 'manual-b' }
+    })
+    expect(screen.getByText('将精确写入 2 个模型；不会自动补入默认模型或上游其他模型。')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' }))
+      .getByRole('button', { name: '测试并保存' }))
+
+    await waitFor(() => expect(bridge.switchToCustomApi).toHaveBeenCalledWith({
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'manual-b',
+      apiKey: 'temporary-custom-key',
+      models: ['manual-a', 'manual-b'],
+      syncModelCatalog: true
+    }, true))
+  })
+
+  it('keeps a manual catalog when upstream model discovery fails', async () => {
+    const bridge = api()
+    vi.mocked(bridge.listCustomApiModels).mockResolvedValue({
+      ok: false,
+      message: '上游 /models 暂时不可用',
+      models: [],
+      baseUrl: 'http://127.0.0.1:9593/v1'
+    })
+    window.codexSwitcher = bridge
+    render(<App />)
+    await screen.findByLabelText('选择 person@example.com')
+
+    fireEvent.click(screen.getByText('更多'))
+    fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'provider-key' } })
+    fireEvent.change(screen.getByLabelText('同步到 Codex 的模型目录'), {
+      target: { value: 'gpt-5.4\nmanual-model' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '从上游替换模型目录' }))
+
+    await waitFor(() => expect(bridge.listCustomApiModels).toHaveBeenCalledTimes(1))
+    expect(screen.getByLabelText('同步到 Codex 的模型目录')).toHaveValue('gpt-5.4\nmanual-model')
+  })
+
   it('requests the entered URL and API key before showing a fetched model list', async () => {
     const bridge = api()
     vi.mocked(bridge.listCustomApiModels).mockResolvedValue({
@@ -1421,13 +1480,15 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
     fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: 'https://provider.example' } })
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'provider-key' } })
-    fireEvent.click(screen.getByRole('button', { name: '获取模型列表' }))
+    fireEvent.click(screen.getByRole('button', { name: '从上游替换模型目录' }))
 
     await waitFor(() => expect(bridge.listCustomApiModels).toHaveBeenCalledWith({
       baseUrl: 'https://provider.example',
       apiKey: 'provider-key'
     }))
     expect(await screen.findByText(/已从 https:\/\/provider\.example\/v1\/models 获取 1 个模型/)).toBeInTheDocument()
+    expect(screen.getByLabelText('API 地址')).toHaveValue('https://provider.example')
+    expect(screen.getByLabelText('同步到 Codex 的模型目录')).toHaveValue('provider-model')
   })
 
   it('warns after a failed real API test and only forces switching after a second confirmation', async () => {
@@ -1453,6 +1514,7 @@ describe('App', () => {
     fireEvent.click(screen.getByText('更多'))
     fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'temporary-custom-key' } })
+    fireEvent.change(screen.getByLabelText('同步到 Codex 的模型目录'), { target: { value: 'gpt-5.4' } })
     fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
     fireEvent.click(within(await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' }))
       .getByRole('button', { name: '测试并保存' }))
@@ -1478,6 +1540,7 @@ describe('App', () => {
     fireEvent.click(screen.getByText('更多'))
     fireEvent.click(screen.getByRole('button', { name: '自定义 API' }))
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'temporary-custom-key' } })
+    fireEvent.change(screen.getByLabelText('同步到 Codex 的模型目录'), { target: { value: 'gpt-5.4' } })
     fireEvent.click(screen.getByRole('button', { name: '测试并切换' }))
     fireEvent.click(within(await screen.findByRole('alertdialog', { name: '测试并切换第三方 API' }))
       .getByRole('button', { name: '测试并保存' }))

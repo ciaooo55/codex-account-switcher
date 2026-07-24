@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import {
   customApiModelsUrlCandidates,
   customApiProbeTargets,
@@ -12,6 +12,37 @@ const DEFAULT_REASONING_LEVELS = [
   { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
   { effort: 'high', description: 'Greater reasoning depth for complex problems' },
   { effort: 'xhigh', description: 'Extra high reasoning depth for complex problems' }
+] as const
+
+/**
+ * Codex Desktop applies plan availability filtering in addition to the
+ * app-server's `visibility` / `supported_in_api` checks. Custom providers are
+ * not tied to a ChatGPT entitlement, so advertise them for every plan value
+ * currently understood by Desktop. Unknown fields remain forward-compatible
+ * with Codex CLI versions whose ModelInfo parser does not use this metadata.
+ */
+export const CUSTOM_MODEL_AVAILABLE_IN_PLANS = [
+  'business',
+  'edu',
+  'edu_plus',
+  'edu_pro',
+  'education',
+  'enterprise',
+  'enterprise_cbp_automation',
+  'enterprise_cbp_usage_based',
+  'finserv',
+  'free',
+  'free_workspace',
+  'go',
+  'hc',
+  'k12',
+  'plus',
+  'pro',
+  'prolite',
+  'quorum',
+  'sci',
+  'self_serve_business_usage_based',
+  'team'
 ] as const
 
 /** Codex desktop requires base_instructions on every model_catalog_json entry. */
@@ -28,6 +59,8 @@ export interface ModelCatalogEntry {
   visibility: 'list'
   supported_in_api: boolean
   priority: number
+  /** Used by Codex Desktop's entitlement-aware model picker. */
+  available_in_plans: string[]
   additional_speed_tiers: string[]
   service_tiers: unknown[]
   availability_nux: null
@@ -43,6 +76,9 @@ export interface ModelCatalogEntry {
   default_verbosity: string
   supports_parallel_tool_calls: boolean
   supports_image_detail_original: boolean
+  /** Current open-source ModelInfo field name. */
+  supports_reasoning_summary_parameter: boolean
+  /** Kept for released Desktop builds that still consume the legacy name. */
   supports_reasoning_summaries: boolean
   supports_search_tool: boolean
   prefer_websockets: boolean
@@ -79,8 +115,13 @@ export function modelCatalogPath(codexHome: string): string {
   return join(codexHome, MODEL_CATALOG_RELATIVE_PATH)
 }
 
-export function modelCatalogConfigPath(): string {
-  return MODEL_CATALOG_RELATIVE_PATH
+/**
+ * `model_catalog_json` is an AbsolutePathBuf in current Codex builds. Although
+ * some versions resolve relative values against CODEX_HOME, an explicit path
+ * avoids depending on the Desktop process working directory or config layer.
+ */
+export function modelCatalogConfigPath(codexHome: string): string {
+  return resolve(modelCatalogPath(codexHome))
 }
 
 function normalizeModelId(value: unknown): string | null {
@@ -118,6 +159,7 @@ function createCustomModelEntry(
     visibility: 'list',
     supported_in_api: true,
     priority: index + 1,
+    available_in_plans: [...CUSTOM_MODEL_AVAILABLE_IN_PLANS],
     additional_speed_tiers: [],
     service_tiers: [],
     availability_nux: null,
@@ -136,6 +178,7 @@ function createCustomModelEntry(
     default_verbosity: 'low',
     supports_parallel_tool_calls: true,
     supports_image_detail_original: true,
+    supports_reasoning_summary_parameter: true,
     supports_reasoning_summaries: true,
     supports_search_tool: false,
     prefer_websockets: false,
@@ -164,11 +207,12 @@ export function buildModelCatalog(
   preferredModel: string,
   displayNames: ReadonlyMap<string, string> = new Map()
 ): ModelCatalogDocument {
-  const preferred = normalizeModelId(preferredModel) ?? preferredModel.trim()
+  const preferred = normalizeModelId(preferredModel)
+  if (!preferred) throw new Error('默认模型名称无效')
   const seen = new Set<string>()
   const ordered: string[] = []
 
-  for (const candidate of [preferred, ...modelIds]) {
+  for (const candidate of modelIds) {
     const id = normalizeModelId(candidate)
     if (!id || seen.has(id)) continue
     seen.add(id)
@@ -177,6 +221,9 @@ export function buildModelCatalog(
 
   if (ordered.length === 0) {
     throw new Error('模型目录至少需要一个有效模型名')
+  }
+  if (!seen.has(preferred)) {
+    throw new Error(`默认模型“${preferred}”不在模型目录中；不会自动添加未明确输入的模型`)
   }
 
   return {

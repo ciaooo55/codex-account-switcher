@@ -13,6 +13,7 @@ import type { AppSnapshot, UpdateState } from '../../../../shared/ipc'
 import type { AppSettings } from '../../../../shared/types'
 import type { RequestConfirmation } from '../../hooks/useConfirmation'
 import { Button, DialogActions, DialogBackdrop, DialogHeader, DialogPanel } from '@/components/ui'
+import { customApiCatalogStatus, parseCustomApiModels } from '@/lib/custom-api-form'
 import { codexApi } from '../../services/codexApi'
 
 export type SettingsDialogProps = {
@@ -72,6 +73,31 @@ export function SettingsDialog({
 }: SettingsDialogProps): React.JSX.Element | null {
   if (!open) return null
 
+  const parsedModels = parseCustomApiModels(customApiModelsText)
+  const catalogStatus = customApiCatalogStatus({
+    models: customApiModels,
+    selectedModel: settingsDraft.customApiModel,
+    syncModelCatalog: customApiSyncCatalog,
+    duplicateCount: parsedModels.duplicateCount
+  })
+  const hasUsableKey = snapshot.customApi.hasApiKey || Boolean(customApiKey.trim())
+  const hasBaseUrl = Boolean(settingsDraft.customApiBaseUrl.trim())
+  const hasSelectedModel = Boolean(settingsDraft.customApiModel.trim())
+  const canSwitchCustomApi = !busy && hasUsableKey && hasBaseUrl && hasSelectedModel && catalogStatus.valid
+
+  const replaceEditedModels = (models: string[]): void => {
+    const normalized = parseCustomApiModels(models.join('\n')).models
+    setCustomApiModels(normalized)
+    setCustomApiModelsText(normalized.join('\n'))
+  }
+
+  const addSelectedModelToCatalog = (): void => {
+    const selectedModel = settingsDraft.customApiModel.trim()
+    if (!selectedModel || customApiModels.includes(selectedModel)) return
+    replaceEditedModels([...customApiModels, selectedModel])
+    setCustomApiModelsNote(`已明确将默认模型“${selectedModel}”加入编辑目录`)
+  }
+
   return (
         <DialogBackdrop className="modal-backdrop">
           <DialogPanel ref={settingsDialogRef} className="settings-panel max-w-[760px]" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
@@ -92,12 +118,11 @@ export function SettingsDialog({
                 <div><strong>自定义 API</strong><span>可从上游获取模型后逐行增删，并选择是否导入 Codex。保存前会真实发送 hi，成功后由你决定是否修复会话并重启。应用保存的 Key 副本使用 DPAPI 加密，但 Codex 运行配置会按兼容格式写入明文 Key</span></div>
                 <span className={`saved-secret ${snapshot.customApi.hasApiKey ? 'ready' : ''}`}>{snapshot.customApi.hasApiKey ? 'Key 已保存' : '未保存 Key'}</span>
               </div>
-              <label>API 地址<input value={settingsDraft.customApiBaseUrl} onChange={(event) => {
+              <label>API 地址<input aria-describedby="custom-api-address-help" value={settingsDraft.customApiBaseUrl} onChange={(event) => {
                 setSettingsDraft({ ...settingsDraft, customApiBaseUrl: event.target.value })
-                setCustomApiModels([])
-                setCustomApiModelsText('')
-                setCustomApiModelsNote('')
-              }} placeholder="https://api.example.com/v1 或完整 .../v1/chat/completions" /></label>
+                setCustomApiModelsNote('API 地址已修改；现有编辑目录保持不变，请在切换前核对。')
+              }} placeholder="https://api.example.com/v1 或完整 .../v1/responses" /></label>
+              <p id="custom-api-address-help" className="custom-api-models-note">这里填写真实上游地址。获取模型时可能探测兼容路径，但不会用探测地址覆盖你的输入。</p>
               <div className="settings-grid">
                 <label>模型
                   <input
@@ -114,28 +139,31 @@ export function SettingsDialog({
                 </label>
                 <label>API Key<input type="password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} placeholder={snapshot.customApi.hasApiKey ? '留空继续使用已保存 Key' : '输入 API Key'} autoComplete="new-password" /></label>
               </div>
-              <label className="check-option"><input type="checkbox" checked={customApiSyncCatalog} onChange={(event) => setCustomApiSyncCatalog(event.target.checked)} />将下面的模型目录导入 Codex</label>
-              <label>同步到 Codex 的模型目录（每行一个，可自由增删）
+              <label className="check-option"><input type="checkbox" checked={customApiSyncCatalog} onChange={(event) => setCustomApiSyncCatalog(event.target.checked)} />将下面目录作为 Codex 的完整模型列表（精确覆盖）</label>
+              <label>Codex 模型目录（每行一个，顺序保留）
                 <textarea
                   aria-label="同步到 Codex 的模型目录"
+                  aria-describedby="custom-api-catalog-status"
+                  aria-invalid={customApiSyncCatalog && !catalogStatus.valid}
                   rows={6}
                   value={customApiModelsText}
                   onChange={(event) => {
                     const text = event.target.value
-                    const seen = new Set<string>()
-                    const models = text.split(/\r?\n/).map((item) => item.trim()).filter((item) => {
-                      if (!item || seen.has(item)) return false
-                      seen.add(item)
-                      return true
-                    })
+                    const models = parseCustomApiModels(text).models
                     setCustomApiModelsText(text)
                     setCustomApiModels(models)
-                    setCustomApiModelsNote(`将同步 ${models.length + (models.includes(settingsDraft.customApiModel.trim()) ? 0 : 1)} 个模型（当前模型会自动保留）`)
+                    setCustomApiModelsNote('')
                   }}
-                  placeholder={'model-a\nmodel-b\n也可以手动增加上游未列出的模型'}
+                  placeholder={'model-a\nmodel-b\n只会导入这里明确列出的模型'}
                 />
               </label>
-              {customApiModelsNote ? <p className="custom-api-models-note">{customApiModelsNote}</p> : null}
+              <div id="custom-api-catalog-status" className={`custom-api-catalog-status ${catalogStatus.kind}`} role={catalogStatus.kind === 'error' ? 'alert' : 'status'}>
+                <span>{catalogStatus.message}</span>
+                {customApiSyncCatalog && hasSelectedModel && !customApiModels.includes(settingsDraft.customApiModel.trim()) ? (
+                  <Button type="button" size="sm" variant="secondary" onClick={addSelectedModelToCatalog}>将默认模型加入目录</Button>
+                ) : null}
+              </div>
+              {customApiModelsNote ? <p className="custom-api-models-note" role="status">{customApiModelsNote}</p> : null}
               {customApiModels.length > 0 ? (
                 <label>从编辑后的模型目录中选择
                   <select
@@ -155,26 +183,24 @@ export function SettingsDialog({
                     baseUrl: settingsDraft.customApiBaseUrl,
                     ...(customApiKey.trim() ? { apiKey: customApiKey } : {})
                   })
-                  setCustomApiModels(listed.models)
-                  setCustomApiModelsText(listed.models.join('\n'))
                   setCustomApiModelsNote(listed.message)
                   if (!listed.ok) throw new Error(listed.message)
-                  if (listed.models.length > 0) {
-                    const current = settingsDraft.customApiModel.trim()
-                    if (!current || !listed.models.includes(current)) {
-                      setSettingsDraft({ ...settingsDraft, customApiModel: listed.models[0], customApiBaseUrl: listed.baseUrl || settingsDraft.customApiBaseUrl })
-                    } else if (listed.baseUrl) {
-                      setSettingsDraft({ ...settingsDraft, customApiBaseUrl: listed.baseUrl })
-                    }
+                  const listedModels = parseCustomApiModels(listed.models.join('\n')).models
+                  replaceEditedModels(listedModels)
+                  if (listedModels.length > 0 && !settingsDraft.customApiModel.trim()) {
+                    setSettingsDraft({ ...settingsDraft, customApiModel: listedModels[0] })
+                    setCustomApiModelsNote(`${listed.message}；默认模型已设为“${listedModels[0]}”`)
                   }
                 }, '已获取自定义 API 模型列表', false)}>
-                  获取模型列表
+                  从上游替换模型目录
                 </Button>
                 <Button variant="default" onClick={() => void (async () => {
                   if (!await requestConfirmation({
                     title: '测试并切换第三方 API',
-                    message: '先真实测试 API；通过后保存 provider 配置，再由你选择是否修复会话并重启 Codex。',
-                    detail: '测试失败不会修改配置。强制保存需要第二次确认，且不会自动重启。',
+                    message: `将使用“${settingsDraft.customApiModel.trim()}”真实测试 ${settingsDraft.customApiBaseUrl.trim()}；通过后写入 Codex。`,
+                    detail: customApiSyncCatalog
+                      ? `模型目录将精确覆盖为当前 ${customApiModels.length} 个条目，不会自动增加其他模型。测试失败不会修改配置。`
+                      : '不会写入托管模型目录。测试失败不会修改配置；强制保存需要第二次确认。',
                     confirmLabel: '测试并保存',
                     tone: 'warning'
                   })) return
@@ -202,16 +228,14 @@ export function SettingsDialog({
                     if (result.restartResult && !result.restartResult.ok) {
                       throw new Error(`自定义 API 已保存，但 Codex 重启失败：${result.restartResult.message}`)
                     }
-                    if (result.catalogModels?.length) {
-                      setCustomApiModels(result.catalogModels)
-                      setCustomApiModelsText(result.catalogModels.join('\n'))
+                    if (result.catalogModels !== undefined) {
+                      replaceEditedModels(result.catalogModels)
                     }
                     setCustomApiModelsNote(result.message)
-                    if (result.selectedModel || result.discoveredBaseUrl) {
+                    if (result.selectedModel) {
                       setSettingsDraft({
                         ...settingsDraft,
-                        customApiModel: result.selectedModel || settingsDraft.customApiModel,
-                        customApiBaseUrl: result.discoveredBaseUrl || settingsDraft.customApiBaseUrl
+                        customApiModel: result.selectedModel
                       })
                     }
                     setCustomApiKey('')
@@ -236,7 +260,7 @@ export function SettingsDialog({
                     if (!restarted.ok) throw new Error(`API 已切换，但自动修复/重启失败：${restarted.message}`)
                     setMessage({ kind: 'ok', text: `${result.message}；已自动修复对话并重启 Codex` })
                   }, undefined, false)
-                })()} disabled={busy || (!snapshot.customApi.hasApiKey && !customApiKey.trim())}>
+                })()} disabled={!canSwitchCustomApi}>
                   <KeyRound size={16} />测试并切换
                 </Button>
               </div>

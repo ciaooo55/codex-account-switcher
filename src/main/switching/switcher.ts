@@ -25,7 +25,7 @@ import {
 import {
   buildModelCatalog,
   fetchOpenAiCompatibleModelIds,
-  MODEL_CATALOG_RELATIVE_PATH,
+  modelCatalogConfigPath,
   modelCatalogPath,
   probeCustomApiModel,
   writeModelCatalogFile
@@ -298,17 +298,24 @@ export class CredentialSwitcher {
             timeoutMs: this.options.catalogTimeoutMs
           })
           remoteModels = listed.models
-          if (listed.baseUrl.trim()) discoveredBaseUrl = listed.baseUrl
+          // The successful Responses probe is authoritative for Codex traffic.
+          // `/models` may be exposed on a different compatibility prefix; using
+          // that GET endpoint's base here can turn a tested provider into a
+          // broken one (and historically could hide the user's intended URL).
         }
       } catch {
         remoteModels = []
       }
 
-      // Explicit models are the edited list from the UI. Do not add back models the
-      // user removed; buildModelCatalog only guarantees the selected model remains.
+      // Explicit models are the exact edited list from the UI. Only the legacy
+      // no-list call path derives a catalog from discovery and pins the tested
+      // model first; an explicit list is never supplemented or reordered.
       const syncModelCatalog = input.syncModelCatalog !== false
+      const requestedModels = input.models === undefined
+        ? [model, ...remoteModels]
+        : input.models
       const sourceCatalog = buildModelCatalog(
-        input.models === undefined ? remoteModels : input.models,
+        requestedModels,
         model
       )
       // Write the real upstream base URL / API key / model IDs into Codex.
@@ -320,6 +327,7 @@ export class CredentialSwitcher {
         baseUrl: discoveredBaseUrl,
         model,
         apiKey: input.apiKey,
+        modelCatalogPath: modelCatalogConfigPath(dirname(this.options.configPath)),
         syncModelCatalog
       })
       backupPath = await this.writeBackup({
@@ -355,7 +363,7 @@ export class CredentialSwitcher {
       ]
       if (syncModelCatalog) {
         requiredProviderLines.push(
-          `model_catalog_json = ${JSON.stringify(MODEL_CATALOG_RELATIVE_PATH)}`
+          `model_catalog_json = ${JSON.stringify(catalogPath)}`
         )
       }
       if (requiredProviderLines.some((line) => !writtenConfig.includes(line))) {

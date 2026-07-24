@@ -1402,6 +1402,32 @@ td { color: var(--ui-text-muted); border-color: var(--ui-border); }
   font-size: 12px;
   line-height: 1.45;
 }
+.custom-api-catalog-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 9px;
+  color: var(--ui-text-muted);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.custom-api-catalog-status.ready {
+  color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+  border-color: var(--ui-accent-border);
+}
+.custom-api-catalog-status.error {
+  color: var(--ui-danger);
+  background: var(--ui-danger-soft);
+  border-color: color-mix(in srgb, var(--ui-danger) 42%, var(--ui-border));
+}
+.custom-api-catalog-status > span { min-width: 0; }
+.custom-api-catalog-status > button { flex: 0 0 auto; }
 .custom-api-panel select {
   width: 100%;
 }

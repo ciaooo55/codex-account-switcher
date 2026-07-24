@@ -63,7 +63,10 @@ import { GrokStatusStore } from './storage/grok-status-store'
 import { fetchOpenAiCompatibleModelIds, MODEL_CATALOG_RELATIVE_PATH, probeCustomApiModel } from './services/model-catalog'
 import { atomicWriteFile } from './storage/atomic-file'
 import { CredentialSwitcher } from './switching/switcher'
-import { applyCustomApiConfig, OWNED_PROVIDER_ID } from './switching/config'
+import {
+  ensureDirectCustomApiProvider,
+  reassertDirectCustomApiProviderAfterStart
+} from './switching/direct-custom-api'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const { autoUpdater } = electronUpdater
@@ -422,58 +425,42 @@ async function main(): Promise<void> {
       }).switchToCustomApi(input)
     }
   }
-  // Keep managed custom-API provider pointed at the real upstream from settings.
-  // This also migrates leftover local-gateway ports from older builds.
-  const ensureDirectCustomApiProvider = async (): Promise<void> => {
+  // Migrate the removed 0.13.13 gateway before Codex reads its stale ephemeral
+  // port/model shells. Direct configurations are only inspected, never rebuilt
+  // from potentially stale settings.
+  const reconcileDirectCustomApiProvider = async () => {
     const settings = await settingsStore.get()
-    const configText = await readFile(settings.configPath, 'utf8').catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
-      throw error
-    })
-    const ownsProvider = new RegExp(
-      '^\s*model_provider\s*=\s*["\']' + OWNED_PROVIDER_ID + '["\']\s*$',
-      'm'
-    ).test(configText)
-    if (!ownsProvider) return
     const apiKey = await customApiStore.getKey()
-    if (!apiKey) return
-    const baseUrl = normalizeCustomApiBaseUrl(settings.customApiBaseUrl)
-    if (!baseUrl) return
-    const preferredModel = settings.customApiModel.trim()
-    if (!preferredModel) return
-    const managedCatalogPattern = MODEL_CATALOG_RELATIVE_PATH.replace(/\./g, '\\.')
-    const syncModelCatalog = new RegExp(
-      '^\s*model_catalog_json\s*=\s*["\'][^"\']*' + managedCatalogPattern + '["\']\s*$',
-      'm'
-    ).test(configText)
-    const applied = applyCustomApiConfig(configText, {
-      baseUrl,
-      model: preferredModel,
-      apiKey,
-      syncModelCatalog
+    if (!apiKey) return null
+    const profile = await customApiStore.summary({
+      baseUrl: settings.customApiBaseUrl,
+      model: settings.customApiModel
     })
-    if (applied.text !== configText) {
-      await atomicWriteFile(settings.configPath, applied.text)
+    const reconciled = await ensureDirectCustomApiProvider({
+      authPath: settings.authPath,
+      configPath: settings.configPath,
+      storedBaseUrl: settings.customApiBaseUrl,
+      storedModel: settings.customApiModel,
+      apiKey,
+      models: profile.models
+    })
+    if (
+      reconciled.active &&
+      reconciled.mode !== 'unrecognized' &&
+      reconciled.baseUrl &&
+      reconciled.model &&
+      (settings.customApiBaseUrl !== reconciled.baseUrl || settings.customApiModel !== reconciled.model)
+    ) {
+      // For an already-direct provider the config is the active source of
+      // truth. Reflect its exact URL/port in the UI instead of overwriting it.
+      await settingsStore.update({
+        customApiBaseUrl: reconciled.baseUrl,
+        customApiModel: reconciled.model
+      })
     }
-    let authNeedsWrite = true
-    try {
-      const currentAuth = JSON.parse(await readFile(settings.authPath, 'utf8')) as {
-        auth_mode?: unknown
-        OPENAI_API_KEY?: unknown
-      }
-      authNeedsWrite = !(
-        currentAuth.auth_mode === 'apikey' &&
-        currentAuth.OPENAI_API_KEY === apiKey
-      )
-    } catch {
-      authNeedsWrite = true
-    }
-    if (authNeedsWrite) {
-      const authText = `${JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: apiKey }, null, 2)}\n`
-      await atomicWriteFile(settings.authPath, authText)
-    }
+    return reconciled
   }
-  await ensureDirectCustomApiProvider().catch((error: unknown) => {
+  await reconcileDirectCustomApiProvider().catch((error: unknown) => {
     console.error('Failed to ensure direct custom API provider', error)
   })
   let reconcileCodexStatusStores = async (): Promise<void> => undefined
@@ -804,8 +791,8 @@ async function main(): Promise<void> {
   }
   const restartCodexAfterSessionSync = async (
     beforeRepair?: () => Promise<void>
-  ): Promise<{ ok: boolean; message: string }> =>
-    processManager.restart(async () => {
+  ): Promise<{ ok: boolean; message: string }> => {
+    const restartResult = await processManager.restart(async () => {
       sessionRepairOperationActive = true
       sendSessionRepairProgress({ active: true, done: 0, total: 6, message: 'Codex 已关闭，正在准备修复对话' })
       try {
@@ -820,6 +807,24 @@ async function main(): Promise<void> {
         sendSessionRepairProgress({ ...sessionRepairProgress, active: false })
       }
     })
+    try {
+      const stateAfterStart = await reconcileDirectCustomApiProvider()
+      if (stateAfterStart?.active && stateAfterStart.mode !== 'unrecognized') {
+        await reassertDirectCustomApiProviderAfterStart(async () => {
+          const result = await reconcileDirectCustomApiProvider()
+          if (!result) throw new Error('已保存的自定义 API Key 不可用')
+          return result
+        })
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      return {
+        ok: false,
+        message: `${restartResult.message}；Codex 启动后重新确认自定义 API 配置失败：${detail}`
+      }
+    }
+    return restartResult
+  }
   const conversationManager = async (): Promise<ConversationManager> => {
     const settings = await settingsStore.get()
     const codexHome = resolve(dirname(settings.configPath))

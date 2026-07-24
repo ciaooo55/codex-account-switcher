@@ -1,5 +1,4 @@
 import { normalizeCustomApiBaseUrl } from '../../shared/custom-api'
-import { MANAGED_CUSTOM_API_MODEL_CATALOG } from '../../shared/custom-api'
 
 export type ManagedConfigKey =
   | 'model_provider'
@@ -24,8 +23,36 @@ const MANAGED_KEYS: ManagedConfigKey[] = [
 
 export const OWNED_PROVIDER_ID = 'codex_account_switcher'
 
+export interface ActiveOwnedProviderConfig {
+  /** What Codex currently has at the top level; Desktop may have overwritten it. */
+  topLevelProvider: string | null
+  /** Exact value currently written at the top level. */
+  model: string | null
+  /** Exact configured provider URL. It is intentionally not re-normalized here. */
+  baseUrl: string | null
+  bearerToken: string | null
+  modelCatalogJson: string | null
+}
+
 function assignmentPattern(key: ManagedConfigKey): RegExp {
   return new RegExp(`^\\s*${key}\\s*=`)
+}
+
+function tomlStringAssignment(line: string | undefined, key: string): string | null {
+  if (!line) return null
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = line.match(
+    new RegExp(`^\\s*${escapedKey}\\s*=\\s*("(?:\\\\.|[^"\\\\])*"|'[^']*')\\s*(?:#.*)?$`)
+  )
+  if (!match) return null
+  const literal = match[1]
+  if (literal.startsWith("'")) return literal.slice(1, -1)
+  try {
+    const parsed = JSON.parse(literal) as unknown
+    return typeof parsed === 'string' ? parsed : null
+  } catch {
+    return null
+  }
 }
 
 function firstSectionIndex(lines: string[]): number {
@@ -63,6 +90,49 @@ function snapshotManagedConfig(text: string): ManagedConfigSnapshot {
     snapshot.model_catalog_json = null
   }
   return snapshot
+}
+
+/**
+ * Reads the switcher's owned provider fields. The provider section itself is
+ * the mode marker: Codex Desktop may rewrite the top-level provider/model while
+ * preserving this section, and startup must be able to reassert those fields.
+ * Keeping this
+ * parser here avoids fragile RegExp string escaping at Electron startup (for
+ * example, an unescaped `"\s"` becoming the literal letter `s`).
+ */
+export function readActiveOwnedProviderConfig(text: string): ActiveOwnedProviderConfig | null {
+  const lines = text.split(/\r?\n/)
+  const sectionIndex = firstSectionIndex(lines)
+  const topLevel = lines.slice(0, sectionIndex)
+  const header = `[model_providers.${OWNED_PROVIDER_ID}]`
+  const start = lines.findIndex((line) => line.trim() === header)
+  if (start === -1) return null
+  const providerLines: string[] = []
+  for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
+    providerLines.push(lines[index])
+  }
+  const providerValue = (key: 'base_url' | 'experimental_bearer_token'): string | null =>
+    tomlStringAssignment(
+      providerLines.find((line) => new RegExp(`^\\s*${key}\\s*=`).test(line)),
+      key
+    )
+
+  return {
+    topLevelProvider: tomlStringAssignment(
+      topLevel.find((line) => assignmentPattern('model_provider').test(line)),
+      'model_provider'
+    ),
+    model: tomlStringAssignment(
+      topLevel.find((line) => assignmentPattern('model').test(line)),
+      'model'
+    ),
+    baseUrl: providerValue('base_url'),
+    bearerToken: providerValue('experimental_bearer_token'),
+    modelCatalogJson: tomlStringAssignment(
+      topLevel.find((line) => assignmentPattern('model_catalog_json').test(line)),
+      'model_catalog_json'
+    )
+  }
 }
 
 function replaceManagedLines(text: string, replacements: Partial<ManagedConfigSnapshot>): string {
@@ -133,12 +203,18 @@ function tomlString(value: string): string {
 function removeProviderSection(text: string, providerId: string): string {
   const lines = text.split(/\r?\n/)
   const header = `[model_providers.${providerId}]`
-  const start = lines.findIndex((line) => line.trim() === header)
-  if (start === -1) return text
-  let end = start + 1
-  while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1
-  lines.splice(start, end - start)
-  return lines.join(text.includes('\r\n') ? '\r\n' : '\n').replace(/\n{3,}/g, '\n\n')
+  let removed = false
+  for (;;) {
+    const start = lines.findIndex((line) => line.trim() === header)
+    if (start === -1) break
+    let end = start + 1
+    while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1
+    lines.splice(start, end - start)
+    removed = true
+  }
+  if (!removed) return text
+  const newline = text.includes('\r\n') ? '\r\n' : '\n'
+  return lines.join(newline).replace(/(?:\r?\n){3,}/g, `${newline}${newline}`)
 }
 
 /**
@@ -164,7 +240,14 @@ export function replaceOwnedProviderBaseUrl(text: string, baseUrl: string): stri
 
 export function applyCustomApiConfig(
   text: string,
-  input: { baseUrl: string; model: string; apiKey: string; syncModelCatalog?: boolean }
+  input: {
+    baseUrl: string
+    model: string
+    apiKey: string
+    /** Absolute path to the catalog written beside config.toml. */
+    modelCatalogPath: string
+    syncModelCatalog?: boolean
+  }
 ): { text: string; snapshot: ManagedConfigSnapshot } {
   const snapshot = snapshotManagedConfig(text)
   const withoutPrevious = removeProviderSection(text, OWNED_PROVIDER_ID).trimEnd()
@@ -177,7 +260,7 @@ export function applyCustomApiConfig(
     model_reasoning_effort: null,
     model_catalog_json: input.syncModelCatalog === false
       ? null
-      : `model_catalog_json = ${tomlString(MANAGED_CUSTOM_API_MODEL_CATALOG)}`,
+      : `model_catalog_json = ${tomlString(input.modelCatalogPath)}`,
     cli_auth_credentials_store: 'cli_auth_credentials_store = "file"'
   }).trimEnd()
   const provider = [
