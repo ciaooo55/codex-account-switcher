@@ -352,6 +352,133 @@ table thead th {
   font-variant-numeric: tabular-nums;
 }
 
+.api-model-editor {
+  min-height: 144px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.api-probe-details {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-0);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.api-probe-details summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.api-probe-details pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  border-top: 1px solid var(--color-border);
+  padding: 9px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.api-probe-details.is-warning {
+  border-color: rgba(227, 179, 65, .45);
+  color: var(--color-warn);
+}
+
+.api-probe-details.is-error {
+  border-color: rgba(255, 123, 114, .42);
+  color: var(--color-danger);
+}
+
+.api-codex-integration {
+  display: grid;
+  gap: 3px;
+  max-width: 66ch;
+  border-radius: var(--radius-md);
+  padding: 7px 9px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.api-codex-integration.is-active {
+  background: var(--color-accent-soft);
+  color: var(--color-text-secondary);
+}
+
+.api-codex-integration.is-warning {
+  background: rgba(227, 179, 65, .11);
+  color: var(--color-text-secondary);
+}
+
+.api-codex-integration.is-error {
+  background: rgba(255, 123, 114, .10);
+  color: var(--color-text-secondary);
+}
+
+.api-codex-integration.is-neutral {
+  background: var(--color-surface-2);
+  color: var(--color-text-secondary);
+}
+
+.api-upstream-dialog-backdrop {
+  /* A modal owns the interaction surface; feedback toasts must not cover its
+     title or close control. */
+  z-index: 100;
+}
+
+.api-upstream-dialog {
+  width: min(820px, calc(100vw - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: auto;
+  padding: 0;
+}
+
+.api-upstream-dialog > .panel-header,
+.api-upstream-dialog > .panel-actions {
+  margin: 0;
+}
+
+.api-upstream-dialog .segmented-control button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.api-import-guide {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  padding: 10px 11px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.api-import-guide > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--color-accent);
+}
+
+.api-import-guide code {
+  font-family: var(--font-mono);
+  font-size: .92em;
+}
+
+.api-import-textarea {
+  min-height: 176px;
+  max-height: 320px;
+}
+
 @media (max-width: 900px) {
   .api-server-layout {
     grid-template-columns: 1fr !important;
@@ -378,6 +505,10 @@ table thead th {
 
   .api-codex-panel > div:first-child {
     grid-column: 1 / -1;
+  }
+
+  .api-upstream-dialog .grid-cols-2 {
+    grid-template-columns: 1fr !important;
   }
 }
 

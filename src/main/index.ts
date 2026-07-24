@@ -65,6 +65,7 @@ import {
   discoverApiUpstream,
   fetchOpenAiCompatibleModelIds,
   MODEL_CATALOG_RELATIVE_PATH,
+  modelCatalogConfigPath,
   probeApiUpstreamModel,
   probeCustomApiModel
 } from './services/model-catalog'
@@ -79,7 +80,7 @@ import {
   type LocalApiServerState
 } from '../shared/api-server'
 import { CredentialSwitcher } from './switching/switcher'
-import { readActiveOwnedProviderConfig } from './switching/config'
+import { OWNED_PROVIDER_ID, readActiveOwnedProviderConfig } from './switching/config'
 import {
   ensureDirectCustomApiProvider,
   reassertDirectCustomApiProviderAfterStart
@@ -501,6 +502,105 @@ async function main(): Promise<void> {
     fetch,
     (request) => credentialUpstreamRegistry?.resolve(request) ?? Promise.resolve(null)
   )
+  const codexLocalApiIntegrationStatus = async () => {
+    const settings = await settingsStore.get()
+    const runtime = await apiServerStore.runtimeConfig()
+    const binding = runtime.codexBinding
+    // Use a snapshot for this asynchronous inspection. The runtime config can
+    // be refreshed while reading files, but the status must remain coherent.
+    const expectedModel = binding?.model ?? null
+    try {
+      const text = await readFile(settings.configPath, 'utf8')
+      const active = readActiveOwnedProviderConfig(text)
+      if (!binding) {
+        if (active && active.topLevelProvider !== OWNED_PROVIDER_ID) {
+          return {
+            state: 'external_override' as const,
+            message: '检测到本项目的 provider 仍在配置中，但 Codex 的 provider/model 已被其他工具或配置层接管。',
+            configuredProvider: active.topLevelProvider,
+            configuredModel: active.model,
+            expectedModel: null,
+            catalogPath: active.modelCatalogJson
+          }
+        }
+        return {
+          state: 'not_bound' as const,
+          message: '尚未将 Codex 绑定到本地 API 服务。',
+          configuredProvider: active?.topLevelProvider ?? null,
+          configuredModel: active?.model ?? null,
+          expectedModel: null,
+          catalogPath: active?.modelCatalogJson ?? null
+        }
+      }
+      if (!active || active.topLevelProvider !== OWNED_PROVIDER_ID) {
+        return {
+          state: 'external_override' as const,
+          message: '检测到 Codex 的 provider/model 目前被其他工具或配置层接管；请点击“重新应用到 Codex”恢复本项目的模型目录。',
+          configuredProvider: active?.topLevelProvider ?? null,
+          configuredModel: active?.model ?? null,
+          expectedModel,
+          catalogPath: active?.modelCatalogJson ?? null
+        }
+      }
+      if (active.model !== binding.model) {
+        return {
+          state: 'model_mismatch' as const,
+          message: `Codex 当前模型为“${active.model ?? '未设置'}”，与本项目绑定的“${binding.model}”不一致。`,
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: active.modelCatalogJson
+        }
+      }
+      const expectedCatalogPath = modelCatalogConfigPath(dirname(settings.configPath))
+      const configuredCatalogPath = active.modelCatalogJson
+        ? (isAbsolute(active.modelCatalogJson)
+            ? active.modelCatalogJson
+            : resolve(dirname(settings.configPath), active.modelCatalogJson))
+        : null
+      if (!configuredCatalogPath || configuredCatalogPath !== expectedCatalogPath) {
+        return {
+          state: 'catalog_missing' as const,
+          message: 'Codex 没有使用本项目生成的模型目录，因此模型选择器不会显示公开模型。',
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: configuredCatalogPath
+        }
+      }
+      const catalog = JSON.parse(await readFile(configuredCatalogPath, 'utf8')) as { models?: Array<{ slug?: unknown }> }
+      const slugs = Array.isArray(catalog.models)
+        ? catalog.models.map((item) => typeof item?.slug === 'string' ? item.slug : '')
+        : []
+      if (!slugs.includes(binding.model)) {
+        return {
+          state: 'catalog_missing' as const,
+          message: '本项目模型目录缺少当前默认模型；请重新应用到 Codex 以重新生成目录。',
+          configuredProvider: active.topLevelProvider,
+          configuredModel: active.model,
+          expectedModel,
+          catalogPath: configuredCatalogPath
+        }
+      }
+      return {
+        state: 'active' as const,
+        message: `Codex 正在使用本地 API 服务和 ${slugs.length} 个公开模型。`,
+        configuredProvider: active.topLevelProvider,
+        configuredModel: active.model,
+        expectedModel,
+        catalogPath: configuredCatalogPath
+      }
+    } catch (error) {
+      return {
+        state: 'unavailable' as const,
+        message: `无法读取 Codex 配置：${error instanceof Error ? error.message : String(error)}`,
+        configuredProvider: null,
+        configuredModel: null,
+        expectedModel,
+        catalogPath: null
+      }
+    }
+  }
   const localApiServerState = async (): Promise<LocalApiServerState> => {
     const config = await apiServerStore.summary()
     return {
@@ -510,8 +610,15 @@ async function main(): Promise<void> {
           ? await credentialUpstreamRegistry.discover(config.credentialSources)
           : config.credentialSources
       },
-      status: localApiServer.status()
+      status: localApiServer.status(),
+      codexIntegration: await codexLocalApiIntegrationStatus()
     }
+  }
+  const clearCodexLocalApiBinding = async (): Promise<void> => {
+    const runtime = await apiServerStore.runtimeConfig()
+    if (!runtime.codexBinding) return
+    await apiServerStore.save({ ...runtime, codexBinding: null })
+    await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
   }
   const initialApiServerConfig = await apiServerStore.runtimeConfig()
   if (initialApiServerConfig.autoStart) {
@@ -570,14 +677,22 @@ async function main(): Promise<void> {
       // The reconciler below owns the missing-file behavior.
     }
     const runtime = await apiServerStore.runtimeConfig()
+    const requestedBinding = runtime.codexBinding?.enforce === true
+      ? runtime.codexBinding
+      : null
     const localAccessKey = runtime.accessKeys.find((entry) =>
-      entry.enabled && entry.key === active?.bearerToken
+      entry.enabled && (
+        entry.key === active?.bearerToken ||
+        entry.id === requestedBinding?.accessKeyId
+      )
     )
     if (localAccessKey) {
       const models = localAccessKey.allowedModels.length > 0
         ? runtime.routes.map((route) => route.publicModel).filter((model) => localAccessKey.allowedModels.includes(model))
         : runtime.routes.map((route) => route.publicModel)
-      const model = active?.model && models.includes(active.model) ? active.model : models[0] ?? ''
+      const model = requestedBinding?.model && models.includes(requestedBinding.model)
+        ? requestedBinding.model
+        : active?.model && models.includes(active.model) ? active.model : models[0] ?? ''
       if (!localApiServer.status().running) await localApiServer.start()
       return {
         authPath: settings.authPath,
@@ -1667,6 +1782,7 @@ async function main(): Promise<void> {
     try {
       const operation: { result?: Awaited<ReturnType<typeof manager.switchAccount>> } = {}
       const restartResult = await restartCodexAfterSessionSync(async () => {
+        await clearCodexLocalApiBinding()
         operation.result = await manager.switchAccount(payload.id)
         if (!operation.result.ok) throw new Error(operation.result.message)
       })
@@ -1693,6 +1809,7 @@ async function main(): Promise<void> {
     try {
       const operation: { result?: Awaited<ReturnType<typeof manager.restoreLatest>> } = {}
       const restartResult = await restartCodexAfterSessionSync(async () => {
+        await clearCodexLocalApiBinding()
         operation.result = await manager.restoreLatest()
         if (!operation.result.ok) throw new Error(operation.result.message)
       })
@@ -1713,6 +1830,7 @@ async function main(): Promise<void> {
     try {
       const operation: { result?: Awaited<ReturnType<typeof manager.restoreApiMode>> } = {}
       const restartResult = await restartCodexAfterSessionSync(async () => {
+        await clearCodexLocalApiBinding()
         operation.result = await manager.restoreApiMode()
         if (!operation.result.ok) throw new Error(operation.result.message)
       })
@@ -1833,6 +1951,7 @@ async function main(): Promise<void> {
 
     switchOperationActive = true
     try {
+      await clearCodexLocalApiBinding()
       let verifiedProbe: Awaited<ReturnType<typeof probeCustomApiModel>> | undefined
       let forceProbeFailure = ''
       try {
@@ -1907,6 +2026,11 @@ async function main(): Promise<void> {
       priority: z.number().finite(),
       enabled: z.boolean()
     })).max(20_000).default([]),
+    codexBinding: z.object({
+      accessKeyId: z.string().min(1).max(128),
+      model: z.string().min(1).max(128),
+      enforce: z.boolean()
+    }).nullable().optional(),
     routes: z.array(z.object({
       publicModel: z.string().min(1).max(128),
       strategy: z.enum(['single', 'priority', 'round_robin']),
@@ -2162,6 +2286,19 @@ async function main(): Promise<void> {
           supportsWebsockets: true
         })
         if (!operation.result.ok) throw new Error(operation.result.message)
+        // The user explicitly chose this app as Codex's provider. Remember the
+        // binding so a second local account manager cannot silently replace
+        // the top-level provider/model/catalog after the restart.
+        const boundRuntime = await apiServerStore.runtimeConfig()
+        await apiServerStore.save({
+          ...boundRuntime,
+          codexBinding: {
+            accessKeyId: accessKey.id,
+            model: payload.model,
+            enforce: true
+          }
+        })
+        await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
       }
       if (!payload.restart) {
         await apply()

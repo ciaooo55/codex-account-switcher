@@ -174,7 +174,17 @@ describe('ApiServerPage', () => {
     expect(screen.queryByDisplayValue('sk-cas-saved-secret-value')).not.toBeInTheDocument()
   })
 
-  it('显示并安全复制已保存的上游 Key，不将完整值写回页面状态', async () => {
+  it('在用户点击显示后展示完整本软件密钥', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('本软件访问密钥')
+
+    fireEvent.click(screen.getByRole('button', { name: '显示 Codex 专用' }))
+    await waitFor(() => expect(api.revealLocalApiAccessKey).toHaveBeenCalledWith('codex-key'))
+    expect(screen.getByDisplayValue('sk-cas-saved-secret-value')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '隐藏 Codex 专用' })).toBeInTheDocument()
+  })
+
+  it('支持显示并复制已保存的上游 Key', async () => {
     render(<ApiServerPage />)
     await screen.findByText('本软件访问密钥')
     fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
@@ -184,11 +194,12 @@ describe('ApiServerPage', () => {
     fireEvent.click(upstreamToggle!)
 
     expect(screen.getByDisplayValue('sk-up…wxyz')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '显示 上游 A 上游 API Key' }))
+    await waitFor(() => expect(api.revealLocalApiUpstreamKey).toHaveBeenCalledWith('upstream-a'))
+    expect(screen.getByDisplayValue('sk-upstream-saved-secret-value')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '复制 上游 A 上游 API Key' }))
 
-    await waitFor(() => expect(api.revealLocalApiUpstreamKey).toHaveBeenCalledWith('upstream-a'))
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-upstream-saved-secret-value')
-    expect(screen.queryByDisplayValue('sk-upstream-saved-secret-value')).not.toBeInTheDocument()
   })
 
   it('测试上游并同步模型列表', async () => {
@@ -209,7 +220,7 @@ describe('ApiServerPage', () => {
     render(<ApiServerPage />)
     await screen.findByText('本软件访问密钥')
     fireEvent.click(screen.getByRole('button', { name: /第三方上游/ }))
-    fireEvent.click(screen.getByRole('button', { name: '粘贴识别' }))
+    fireEvent.click(screen.getByRole('button', { name: '快速导入' }))
 
     const encoded = btoa(JSON.stringify({
       base_url: 'https://encoded.example.com/v1',

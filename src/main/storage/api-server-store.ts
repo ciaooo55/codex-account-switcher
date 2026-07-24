@@ -3,6 +3,7 @@ import {
   DEFAULT_LOCAL_API_SERVER_PORT,
   normalizeLocalApiServerConfig,
   type ApiUpstreamSummary,
+  type CodexLocalApiBinding,
   type CredentialSourceInput,
   type LocalApiAccessKeySummary,
   type LocalApiServerConfigInput,
@@ -37,6 +38,7 @@ interface ApiServerFile {
   accessKeys: StoredAccessKey[]
   upstreams: StoredUpstream[]
   credentialSources: CredentialSourceInput[]
+  codexBinding: CodexLocalApiBinding | null
   routes: LocalApiServerConfigInput['routes']
 }
 
@@ -47,6 +49,7 @@ const EMPTY_FILE: ApiServerFile = {
   accessKeys: [],
   upstreams: [],
   credentialSources: [],
+  codexBinding: null,
   routes: []
 }
 
@@ -109,6 +112,7 @@ export class ApiServerStore {
         accessKeys,
         upstreams,
         credentialSources: normalized.credentialSources ?? [],
+        codexBinding: normalized.codexBinding ?? null,
         routes: normalized.routes
       }
       await atomicWriteFile(this.path, `${JSON.stringify(file, null, 2)}\n`)
@@ -151,6 +155,7 @@ export class ApiServerStore {
           ...entry,
           models: [...entry.models]
         })),
+        codexBinding: file.codexBinding ? { ...file.codexBinding } : null,
         routes: file.routes.map((route) => ({
           ...route,
           targets: route.targets.map((target) => ({ ...target }))
@@ -223,6 +228,7 @@ export class ApiServerStore {
         ...entry,
         models: [...entry.models]
       })),
+      codexBinding: file.codexBinding ? { ...file.codexBinding } : null,
       routes: file.routes.map((route) => ({
         ...route,
         targets: route.targets.map((target) => ({ ...target }))
@@ -244,7 +250,10 @@ export class ApiServerStore {
       }
       return {
         ...parsed,
-        credentialSources: Array.isArray(parsed.credentialSources) ? parsed.credentialSources : []
+        credentialSources: Array.isArray(parsed.credentialSources) ? parsed.credentialSources : [],
+        codexBinding: parsed.codexBinding && typeof parsed.codexBinding === 'object'
+          ? parsed.codexBinding
+          : null
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return EMPTY_FILE

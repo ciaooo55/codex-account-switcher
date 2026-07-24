@@ -63,6 +63,17 @@ export interface CredentialSourceInput {
   enabled: boolean
 }
 
+/**
+ * The explicit, persisted choice to keep Codex on this app's loopback API.
+ * It prevents another installed account manager from silently replacing the
+ * selected provider and model catalog after the user has pressed Apply.
+ */
+export interface CodexLocalApiBinding {
+  accessKeyId: string
+  model: string
+  enforce: boolean
+}
+
 export interface ModelRouteTarget {
   sourceId: string
   upstreamModel: string
@@ -84,6 +95,8 @@ export interface LocalApiServerConfigInput {
   upstreams: ApiUpstreamInput[]
   /** Optional only for compatibility with 0.13.x configuration call sites. */
   credentialSources?: CredentialSourceInput[]
+  /** Optional only for compatibility with existing API-service files. */
+  codexBinding?: CodexLocalApiBinding | null
   routes: ModelRoute[]
 }
 
@@ -111,9 +124,28 @@ export interface LocalApiServerStatus {
   error: string | null
 }
 
+export type CodexLocalApiIntegrationState =
+  | 'not_bound'
+  | 'active'
+  | 'external_override'
+  | 'model_mismatch'
+  | 'catalog_missing'
+  | 'unavailable'
+
+/** Secret-free health record for the Codex configuration owned by this app. */
+export interface CodexLocalApiIntegrationStatus {
+  state: CodexLocalApiIntegrationState
+  message: string
+  configuredProvider: string | null
+  configuredModel: string | null
+  expectedModel: string | null
+  catalogPath: string | null
+}
+
 export interface LocalApiServerState {
   config: LocalApiServerConfigSummary
   status: LocalApiServerStatus
+  codexIntegration?: CodexLocalApiIntegrationStatus
 }
 
 /**
@@ -242,6 +274,17 @@ export function normalizeLocalApiServerConfig(
     }
   })
 
+  const codexBinding = input.codexBinding === null || input.codexBinding === undefined
+    ? null
+    : (() => {
+        const accessKeyId = input.codexBinding.accessKeyId.trim()
+        const model = input.codexBinding.model.trim()
+        if (!ID_PATTERN.test(accessKeyId) || !MODEL_PATTERN.test(model)) {
+          throw new Error('Codex API 服务绑定无效')
+        }
+        return { accessKeyId, model, enforce: Boolean(input.codexBinding.enforce) }
+      })()
+
   const publicModels = new Set<string>()
   const routes = input.routes.map((route) => {
     const publicModel = route.publicModel.trim()
@@ -281,12 +324,22 @@ export function normalizeLocalApiServerConfig(
     }
   })
 
+  if (codexBinding) {
+    const key = accessKeys.find((entry) => entry.id === codexBinding.accessKeyId && entry.enabled)
+    const routeExists = routes.some((route) => route.publicModel === codexBinding.model)
+    const keyAllowsModel = key && (key.allowedModels.length === 0 || key.allowedModels.includes(codexBinding.model))
+    if (!key || !routeExists || !keyAllowsModel) {
+      throw new Error('Codex API 服务绑定引用了不可用的密钥或公开模型')
+    }
+  }
+
   return {
     port: input.port,
     autoStart: Boolean(input.autoStart),
     accessKeys,
     upstreams,
     credentialSources,
+    codexBinding,
     routes
   }
 }

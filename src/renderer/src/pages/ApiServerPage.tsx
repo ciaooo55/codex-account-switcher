@@ -6,6 +6,8 @@ import {
   CircleAlert,
   Clipboard,
   Copy,
+  Eye,
+  EyeOff,
   KeyRound,
   LoaderCircle,
   Network,
@@ -22,6 +24,7 @@ import {
   WandSparkles
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type {
   ApiUpstreamInput,
   ApiUpstreamProtocol,
@@ -35,12 +38,24 @@ import type {
   ModelRouteTarget
 } from '../../../shared/api-server'
 import { parseCustomApiPaste } from '../../../shared/custom-api'
-import { Button, Input, PageView, Select } from '@/components/ui'
+import {
+  Button,
+  DialogActions,
+  DialogBackdrop,
+  DialogHeader,
+  DialogPanel,
+  Input,
+  PageView,
+  SegmentedButton,
+  SegmentedControl,
+  Select
+} from '@/components/ui'
 import { cn } from '@/lib/cn'
 import { codexApi } from '@/services/codexApi'
 
 type Notice = { kind: 'ok' | 'warn' | 'error'; text: string }
 type SectionId = 'access-keys' | 'upstreams' | 'credentials' | 'routes'
+type UpstreamDialogMode = 'quick' | 'manual' | null
 
 type AccessKeyDraft = LocalApiAccessKeyInput & {
   hasKey: boolean
@@ -53,6 +68,7 @@ type UpstreamDraft = ApiUpstreamInput & {
   hasApiKey: boolean
   keyPreview: string
   expanded: boolean
+  reveal: boolean
 }
 
 type ApiServerDraft = Omit<LocalApiServerConfigInput, 'accessKeys' | 'upstreams'> & {
@@ -86,8 +102,9 @@ function draftFromState(state: LocalApiServerState): ApiServerDraft {
   return {
     port: state.config.port,
     autoStart: state.config.autoStart,
+    codexBinding: state.config.codexBinding ?? null,
     accessKeys: state.config.accessKeys.map((entry) => ({ ...entry, reveal: false })),
-    upstreams: state.config.upstreams.map((entry) => ({ ...entry, expanded: false })),
+    upstreams: state.config.upstreams.map((entry) => ({ ...entry, expanded: false, reveal: false })),
     credentialSources: (state.config.credentialSources ?? []).map((entry) => ({ ...entry, models: [...entry.models] })),
     routes: state.config.routes.map((route) => ({
       ...route,
@@ -100,6 +117,7 @@ function configFromDraft(draft: ApiServerDraft): LocalApiServerConfigInput {
   return {
     port: draft.port,
     autoStart: draft.autoStart,
+    codexBinding: draft.codexBinding ?? null,
     accessKeys: draft.accessKeys.map(({
       hasKey: _hasKey,
       keyPreview: _keyPreview,
@@ -107,14 +125,26 @@ function configFromDraft(draft: ApiServerDraft): LocalApiServerConfigInput {
       reveal: _reveal,
       ...entry
     }) => entry),
-    upstreams: draft.upstreams.map(({ hasApiKey: _hasApiKey, keyPreview: _keyPreview, expanded: _expanded, ...entry }) => entry),
+    upstreams: draft.upstreams.map(({
+      hasApiKey: _hasApiKey,
+      keyPreview: _keyPreview,
+      expanded: _expanded,
+      reveal: _reveal,
+      ...entry
+    }) => entry),
     credentialSources: draft.credentialSources,
     routes: draft.routes
   }
 }
 
 function upstreamInputFromDraft(entry: UpstreamDraft): ApiUpstreamInput {
-  const { hasApiKey: _hasApiKey, keyPreview: _keyPreview, expanded: _expanded, ...upstream } = entry
+  const {
+    hasApiKey: _hasApiKey,
+    keyPreview: _keyPreview,
+    expanded: _expanded,
+    reveal: _reveal,
+    ...upstream
+  } = entry
   return upstream
 }
 
@@ -193,10 +223,11 @@ export function ApiServerPage(): React.JSX.Element {
   const [action, setAction] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [probes, setProbes] = useState<Record<string, UpstreamProbe>>({})
-  const [pasteOpen, setPasteOpen] = useState(false)
+  const [upstreamDialogMode, setUpstreamDialogMode] = useState<UpstreamDialogMode>(null)
   const [pasteText, setPasteText] = useState('')
   const [pasteTargetId, setPasteTargetId] = useState<'new' | string>('new')
   const [pasteNote, setPasteNote] = useState('')
+  const [manualUpstream, setManualUpstream] = useState<UpstreamDraft | null>(null)
   const [codexKeyId, setCodexKeyId] = useState('')
   const [codexModel, setCodexModel] = useState('')
   const [restartCodex, setRestartCodex] = useState(true)
@@ -205,12 +236,55 @@ export function ApiServerPage(): React.JSX.Element {
     setState(next)
     setDraft(draftFromState(next))
     setDirty(false)
+    const binding = next.config.codexBinding
     const usableKey = next.config.accessKeys.find((entry) => entry.enabled)
-    const visibleModels = usableKey?.allowedModels.length
-      ? next.config.routes.map((route) => route.publicModel).filter((model) => usableKey.allowedModels.includes(model))
+    const selectedKeyId = next.config.accessKeys.some((entry) => entry.id === codexKeyId && entry.enabled)
+      ? codexKeyId
+      : (next.config.accessKeys.some((entry) => entry.id === binding?.accessKeyId && entry.enabled)
+          ? binding?.accessKeyId ?? ''
+          : usableKey?.id ?? '')
+    const selectedKey = next.config.accessKeys.find((entry) => entry.id === selectedKeyId)
+    const visibleModels = selectedKey?.allowedModels.length
+      ? next.config.routes.map((route) => route.publicModel).filter((model) => selectedKey.allowedModels.includes(model))
       : next.config.routes.map((route) => route.publicModel)
-    setCodexKeyId((current) => next.config.accessKeys.some((entry) => entry.id === current && entry.enabled) ? current : (usableKey?.id ?? ''))
-    setCodexModel((current) => visibleModels.includes(current) ? current : (visibleModels[0] ?? ''))
+    setCodexKeyId(selectedKeyId)
+    setCodexModel(visibleModels.includes(codexModel)
+      ? codexModel
+      : (binding?.model && visibleModels.includes(binding.model) ? binding.model : visibleModels[0] ?? ''))
+  }
+
+  const createUpstreamDraft = (): UpstreamDraft => ({
+    id: uniqueId('api'),
+    name: `第三方 API ${(draft?.upstreams.length ?? 0) + 1}`,
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: undefined,
+    protocol: 'auto',
+    models: [],
+    priority: (draft?.upstreams.length ?? 0) + 1,
+    enabled: true,
+    hasApiKey: false,
+    keyPreview: '',
+    expanded: true,
+    reveal: true
+  })
+
+  const closeUpstreamDialog = (): void => {
+    setUpstreamDialogMode(null)
+    setPasteText('')
+    setPasteTargetId('new')
+    setPasteNote('')
+    setManualUpstream(null)
+  }
+
+  const openQuickImport = (): void => {
+    setPasteTargetId('new')
+    setPasteNote('')
+    setUpstreamDialogMode('quick')
+  }
+
+  const openManualUpstream = (): void => {
+    setManualUpstream(createUpstreamDraft())
+    setUpstreamDialogMode('manual')
   }
 
   const load = async (): Promise<void> => {
@@ -354,6 +428,38 @@ export function ApiServerPage(): React.JSX.Element {
     }
   }
 
+  const toggleAccessKeyVisibility = async (entry: AccessKeyDraft): Promise<void> => {
+    if (entry.key) {
+      updateDraft((current) => ({
+        ...current,
+        accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, reveal: !item.reveal } : item)
+      }))
+      return
+    }
+    const bridge = codexApi() as ReturnType<typeof codexApi> & {
+      revealLocalApiAccessKey?: (id: string) => Promise<string>
+    }
+    if (!bridge.revealLocalApiAccessKey) {
+      setNotice({ kind: 'warn', text: '当前主进程未提供明文显示能力；请重新生成后立即复制。' })
+      return
+    }
+    setAction(`reveal-${entry.id}`)
+    try {
+      const key = await bridge.revealLocalApiAccessKey(entry.id)
+      updateDraft((current) => ({
+        ...current,
+        accessKeys: current.accessKeys.map((item) => item.id === entry.id
+          ? { ...item, key, keyPreview: key, hasKey: true, reveal: true }
+          : item)
+      }))
+      setNotice({ kind: 'ok', text: '已显示完整本软件密钥。关闭或刷新页面后会重新脱敏显示。' })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAction(null)
+    }
+  }
+
   const copyUpstreamKey = async (entry: UpstreamDraft): Promise<void> => {
     if (entry.apiKey) {
       await copyText(entry.apiKey, '上游 API Key')
@@ -377,22 +483,39 @@ export function ApiServerPage(): React.JSX.Element {
     }
   }
 
-  const addUpstream = (): void => {
-    const entry: UpstreamDraft = {
-      id: uniqueId('api'),
-      name: `第三方 API ${draft ? draft.upstreams.length + 1 : 1}`,
-      baseUrl: 'https://api.example.com/v1',
-      apiKey: undefined,
-      protocol: 'auto',
-      models: [],
-      priority: (draft?.upstreams.length ?? 0) + 1,
-      enabled: true,
-      hasApiKey: false,
-      keyPreview: '',
-      expanded: true
+  const toggleUpstreamKeyVisibility = async (entry: UpstreamDraft): Promise<void> => {
+    if (entry.apiKey !== undefined) {
+      updateDraft((current) => ({
+        ...current,
+        upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, reveal: !item.reveal } : item)
+      }))
+      return
     }
-    updateDraft((current) => ({ ...current, upstreams: [...current.upstreams, entry] }))
+    const bridge = codexApi() as ReturnType<typeof codexApi> & {
+      revealLocalApiUpstreamKey?: (id: string) => Promise<string>
+    }
+    if (!bridge.revealLocalApiUpstreamKey) {
+      setNotice({ kind: 'warn', text: '当前主进程未提供上游 Key 明文显示能力；请重新填写后保存。' })
+      return
+    }
+    setAction(`reveal-upstream-${entry.id}`)
+    try {
+      const apiKey = await bridge.revealLocalApiUpstreamKey(entry.id)
+      updateDraft((current) => ({
+        ...current,
+        upstreams: current.upstreams.map((item) => item.id === entry.id
+          ? { ...item, apiKey, keyPreview: apiKey, hasApiKey: true, reveal: true }
+          : item)
+      }))
+      setNotice({ kind: 'ok', text: '已显示完整上游 API Key。关闭或刷新页面后会重新脱敏显示。' })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAction(null)
+    }
   }
+
+  const addUpstream = (): void => openManualUpstream()
 
   const refreshModels = async ({
     upstreams,
@@ -466,6 +589,19 @@ export function ApiServerPage(): React.JSX.Element {
     await refreshModels({ upstreams: [upstream], testUpstreams: true, refreshCredentials: false })
   }
 
+  const saveManualUpstream = async (andTest: boolean): Promise<void> => {
+    if (!manualUpstream) return
+    if (!manualUpstream.name.trim() || !manualUpstream.baseUrl.trim()) {
+      setNotice({ kind: 'error', text: '请填写上游名称和 API Base URL。' })
+      return
+    }
+    const next = { ...manualUpstream, expanded: true }
+    updateDraft((current) => ({ ...current, upstreams: [...current.upstreams, next] }))
+    closeUpstreamDialog()
+    setNotice({ kind: 'ok', text: `已添加 ${next.name}。${andTest ? '正在获取模型并进行真实测试…' : '保存后即可加入公开模型路由。'}` })
+    if (andTest) await testUpstream(next)
+  }
+
   const applyUpstreamPaste = async (andTest: boolean): Promise<void> => {
     if (!draft) return
     const parsed = parseCustomApiPaste(pasteText)
@@ -502,12 +638,13 @@ export function ApiServerPage(): React.JSX.Element {
         enabled: true,
         hasApiKey: Boolean(parsed.apiKey),
         keyPreview: parsed.apiKey ? '待保存的新密钥' : '',
-        expanded: true
+        expanded: true,
+        reveal: Boolean(parsed.apiKey)
       }
       updateDraft((value) => ({ ...value, upstreams: [...value.upstreams, next] }))
       setPasteTargetId(next.id)
     }
-    setPasteText('')
+    closeUpstreamDialog()
     setNotice({ kind: 'ok', text: `${parsed.note}，已填入 ${next.name}。${andTest ? '正在进行真实测试…' : ''}` })
     if (andTest) await testUpstream(next)
   }
@@ -601,6 +738,7 @@ export function ApiServerPage(): React.JSX.Element {
     setNotice(null)
     try {
       const result = await codexApi().applyLocalApiServerToCodex({ accessKeyId: codexKeyId, model: codexModel, restart: restartCodex })
+      if (result.ok) acceptState(await codexApi().getLocalApiServerState())
       setNotice({ kind: result.ok ? 'ok' : 'error', text: result.message })
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
@@ -634,6 +772,17 @@ export function ApiServerPage(): React.JSX.Element {
   const shortKeys = draft.accessKeys.filter((entry) =>
     entry.key ? entry.key.length < 20 : entry.isShort === true
   )
+  const codexIntegration = state.codexIntegration
+  const codexIntegrationTone = codexIntegration?.state === 'active'
+    ? 'is-active'
+    : codexIntegration?.state === 'external_override' || codexIntegration?.state === 'model_mismatch' || codexIntegration?.state === 'catalog_missing'
+      ? 'is-warning'
+      : codexIntegration?.state === 'unavailable'
+        ? 'is-error'
+        : 'is-neutral'
+  const codexActionLabel = codexIntegration && codexIntegration.state !== 'active' && codexIntegration.state !== 'not_bound'
+    ? '重新应用到 Codex'
+    : '应用到 Codex'
 
   return (
     <PageView className="api-server-view overflow-y-auto p-0">
@@ -777,7 +926,7 @@ export function ApiServerPage(): React.JSX.Element {
                 ) : (
                   <div className="divide-y divide-[var(--color-border)]">
                     {draft.accessKeys.map((entry) => {
-                      const storedKey = !entry.key && entry.hasKey
+                      const storedKey = entry.key === undefined && entry.hasKey
                       return (
                       <article key={entry.id} className="grid gap-2.5 px-3 py-3">
                         <div className="flex flex-wrap items-center gap-2">
@@ -789,17 +938,18 @@ export function ApiServerPage(): React.JSX.Element {
                           </div>
                         </div>
                         <div className="grid grid-cols-[minmax(210px,1fr)_minmax(220px,1.2fr)] gap-2.5">
-                          <Field label="本软件客户端密钥" hint={storedKey ? '已安全保存：显示开头和结尾；点击复制可取回完整值' : '保存后将显示脱敏摘要，仍可点击复制按钮安全取回'}>
+                          <Field label="本软件客户端密钥" hint={storedKey ? '已安全保存：当前显示脱敏摘要；点击眼睛可显示完整值，复制按钮可一键复制' : '可直接填写、显示完整值或一键复制'}>
                             <div className="flex gap-1">
                               <Input
                                 aria-label={`${entry.label} 密钥值`}
-                                type={storedKey || entry.reveal ? 'text' : 'password'}
+                                type={entry.reveal || storedKey ? 'text' : 'password'}
                                 className="font-[var(--font-mono)]"
                                 value={entry.key ?? entry.keyPreview}
                                 readOnly={storedKey}
                                 placeholder="sk-cas-… 或手动输入"
                                 onChange={(event) => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, key: event.target.value, keyPreview: event.target.value, reveal: true } : item) }))}
                               />
+                              <Button size="icon" variant="ghost" aria-label={entry.reveal ? `隐藏 ${entry.label}` : `显示 ${entry.label}`} title={entry.reveal ? '隐藏密钥' : '显示完整密钥'} disabled={action === `reveal-${entry.id}`} onClick={() => void toggleAccessKeyVisibility(entry)}>{action === `reveal-${entry.id}` ? <LoaderCircle className="spin" size={14} /> : entry.reveal ? <EyeOff size={14} /> : <Eye size={14} />}</Button>
                               <Button size="icon" aria-label={`复制 ${entry.label}`} title="复制密钥" disabled={action === `copy-${entry.id}`} onClick={() => void copyAccessKey(entry)}>{action === `copy-${entry.id}` ? <LoaderCircle className="spin" size={14} /> : <Copy size={14} />}</Button>
                               {storedKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, key: '', keyPreview: '', hasKey: false, reveal: true } : item) }))}>更换</Button> : null}
                             </div>
@@ -827,40 +977,17 @@ export function ApiServerPage(): React.JSX.Element {
                   <div><h2 id="upstreams-title" className="text-[13px] font-semibold">第三方 API 上游</h2><p className="mt-0.5 max-w-[72ch] text-[11px] text-[var(--color-text-muted)]">这里填写第三方服务自己的 URL 和 Key。本软件仅在转发请求时使用；测试会自动尝试带 /v1 与不带 /v1。</p></div>
                   <div className="flex items-center gap-1.5">
                     <Button variant="soft" disabled={isBusy || draft.upstreams.filter((entry) => entry.enabled).length === 0} onClick={() => void refreshModels({ upstreams: draft.upstreams.filter((entry) => entry.enabled), testUpstreams: true, refreshCredentials: true })}>{action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新全部模型并检查</Button>
-                    <Button onClick={() => setPasteOpen((open) => !open)} aria-expanded={pasteOpen}><Clipboard size={15} />粘贴识别</Button>
+                    <Button onClick={openQuickImport}><Clipboard size={15} />快速导入</Button>
                     <Button variant="soft" onClick={addUpstream}><Plus size={15} />添加上游</Button>
                   </div>
                 </header>
-                {pasteOpen ? (
-                  <div className="api-upstream-paste grid grid-cols-[minmax(260px,1.5fr)_minmax(180px,.7fr)_auto] items-end gap-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-3">
-                    <Field label="粘贴 URL + Key、JSON、url= key= 或 Base64">
-                      <textarea
-                        aria-label="上游粘贴内容"
-                        className={cn(textareaClass, 'min-h-16')}
-                        value={pasteText}
-                        placeholder={'https://api.example.com/v1\nsk-...'}
-                        onChange={(event) => { setPasteText(event.target.value); setPasteNote('') }}
-                      />
-                    </Field>
-                    <Field label="填入位置" hint={pasteNote || '原文不会写入日志'}>
-                      <Select className="w-full" value={pasteTargetId} onChange={(event) => setPasteTargetId(event.target.value)}>
-                        <option value="new">创建新上游</option>
-                        {draft.upstreams.map((entry) => <option key={entry.id} value={entry.id}>更新 · {entry.name}</option>)}
-                      </Select>
-                    </Field>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Button disabled={!pasteText.trim()} onClick={() => void applyUpstreamPaste(false)}>只识别填入</Button>
-                      <Button variant="default" disabled={!pasteText.trim()} onClick={() => void applyUpstreamPaste(true)}><Activity size={14} />识别并测试</Button>
-                    </div>
-                  </div>
-                ) : null}
                 {draft.upstreams.length === 0 ? (
-                  <EmptyState icon={Network} title="还没有第三方上游" detail="添加 OpenAI 兼容 API 后，公开模型路由才能将请求转发到真正的上游。" action={<Button variant="default" onClick={addUpstream}><Plus size={15} />添加第一条上游</Button>} />
+                  <EmptyState icon={Network} title="还没有第三方上游" detail="快速导入可识别 URL、Key、JSON 和 Base64；手动填写适合已知参数的上游。" action={<div className="flex gap-1.5"><Button onClick={openQuickImport}><Clipboard size={15} />快速导入上游</Button><Button variant="default" onClick={addUpstream}><Plus size={15} />手动添加</Button></div>} />
                 ) : (
                   <div className="divide-y divide-[var(--color-border)]">
                     {draft.upstreams.map((entry) => {
                       const probe = probes[entry.id]
-                      const storedUpstreamKey = !entry.apiKey && entry.hasApiKey
+                      const storedUpstreamKey = entry.apiKey === undefined && entry.hasApiKey
                       return (
                         <article key={entry.id}>
                           <div className="flex min-h-12 flex-wrap items-center gap-2 px-3 py-2">
@@ -879,11 +1006,12 @@ export function ApiServerPage(): React.JSX.Element {
                             <div className="grid grid-cols-2 gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-1)] px-3 py-3">
                               <Field label="名称"><Input value={entry.name} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, name: event.target.value } : item) }))} /></Field>
                               <Field label="API Base URL" hint="可填写到域名或 /v1"><Input className="font-[var(--font-mono)]" value={entry.baseUrl} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, baseUrl: event.target.value } : item) }))} /></Field>
-                              <Field label="上游 API Key" hint={storedUpstreamKey ? '已安全保存：显示开头和结尾；点击复制可取回完整值' : '留空不会覆盖已保存密钥；无鉴权上游（例如本地 Ollama）可保持为空'}>
+                              <Field label="上游 API Key" hint={storedUpstreamKey ? '已安全保存：当前显示脱敏摘要；点击眼睛可显示完整值，复制按钮可一键复制' : '留空不会覆盖已保存密钥；无鉴权上游（例如本地 Ollama）可保持为空'}>
                                 <div className="flex gap-1">
-                                  <Input type={storedUpstreamKey ? 'text' : 'password'} value={entry.apiKey ?? entry.keyPreview} readOnly={storedUpstreamKey} placeholder={entry.hasApiKey ? entry.keyPreview : 'sk-…'} autoComplete="off" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: event.target.value || undefined } : item) }))} />
+                                  <Input type={entry.reveal || storedUpstreamKey ? 'text' : 'password'} value={entry.apiKey ?? entry.keyPreview} readOnly={storedUpstreamKey} placeholder={entry.hasApiKey ? entry.keyPreview : 'sk-…'} autoComplete="off" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: event.target.value || undefined, reveal: true } : item) }))} />
+                                  <Button size="icon" variant="ghost" aria-label={entry.reveal ? `隐藏 ${entry.name} 上游 API Key` : `显示 ${entry.name} 上游 API Key`} title={entry.reveal ? '隐藏上游 API Key' : '显示完整上游 API Key'} disabled={action === `reveal-upstream-${entry.id}` || (!entry.apiKey && !entry.hasApiKey)} onClick={() => void toggleUpstreamKeyVisibility(entry)}>{action === `reveal-upstream-${entry.id}` ? <LoaderCircle className="spin" size={14} /> : entry.reveal ? <EyeOff size={14} /> : <Eye size={14} />}</Button>
                                   <Button size="icon" aria-label={`复制 ${entry.name} 上游 API Key`} title="复制上游 API Key" disabled={action === `copy-upstream-${entry.id}` || (!entry.apiKey && !entry.hasApiKey)} onClick={() => void copyUpstreamKey(entry)}>{action === `copy-upstream-${entry.id}` ? <LoaderCircle className="spin" size={14} /> : <Copy size={14} />}</Button>
-                                  {storedUpstreamKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: '', hasApiKey: false, keyPreview: '' } : item) }))}>更换</Button> : null}
+                                  {storedUpstreamKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, apiKey: '', hasApiKey: false, keyPreview: '', reveal: true } : item) }))}>更换</Button> : null}
                                 </div>
                               </Field>
                               <div className="grid grid-cols-[1fr_120px] gap-3">
@@ -891,9 +1019,9 @@ export function ApiServerPage(): React.JSX.Element {
                                 <Field label="优先级"><Input type="number" value={entry.priority} onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, priority: Number(event.target.value) } : item) }))} /></Field>
                               </div>
                               <Field label={`模型列表 · ${entry.models.length}`} hint="测试成功后自动填充，也可手动编辑" className="col-span-2">
-                                <textarea className={textareaClass} value={entry.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, models: parseModelList(event.target.value) } : item) }))} />
+                                <textarea className={cn(textareaClass, 'api-model-editor')} value={entry.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, models: parseModelList(event.target.value) } : item) }))} />
                               </Field>
-                              {probe?.message ? <p className={cn('col-span-2 text-[11px]', probe.catalogOk ? probe.probeOk === false ? 'text-[var(--color-warn)]' : 'text-[var(--color-text-muted)]' : 'text-[var(--color-danger)]')}>{probe.message}</p> : null}
+                              {probe?.message ? <details className={cn('api-probe-details col-span-2', probe.catalogOk ? probe.probeOk === false ? 'is-warning' : 'is-neutral' : 'is-error')}><summary>查看模型探测与协议诊断</summary><pre>{probe.message}</pre></details> : null}
                             </div>
                           ) : null}
                         </article>
@@ -1033,12 +1161,103 @@ export function ApiServerPage(): React.JSX.Element {
           <div className="self-center">
             <h2 id="codex-api-title" className="flex items-center gap-2 text-[13px] font-semibold"><Clipboard size={16} className="text-[var(--color-accent)]" />一键设置 Codex</h2>
             <p className="mt-1 max-w-[60ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">Codex 只保存本地地址与本软件密钥，不会拿到第三方上游 Key。切换上游或路由时地址保持不变。</p>
+            {codexIntegration ? (
+              <div className={cn('api-codex-integration mt-2', codexIntegrationTone)} role="status">
+                <span className="font-medium">{codexIntegration.state === 'active' ? '本项目正在控制 Codex' : codexIntegration.state === 'external_override' ? '检测到外部配置覆盖' : 'Codex 尚未完成本地 API 绑定'}</span>
+                <span>{codexIntegration.message}</span>
+                {codexIntegration.state === 'external_override' && codexIntegration.configuredProvider ? <span className="font-[var(--font-mono)]">当前：{codexIntegration.configuredProvider} / {codexIntegration.configuredModel ?? '未设置模型'}</span> : null}
+              </div>
+            ) : null}
           </div>
           <Field label="Codex 使用的本软件密钥"><Select className="w-full" value={codexKeyId} onChange={(event) => { setCodexKeyId(event.target.value); setCodexModel('') }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</Select></Field>
           <Field label="默认公开模型"><Select className="w-full" value={codexModel} onChange={(event) => setCodexModel(event.target.value)}><option value="">选择模型</option>{codexModels.map((model) => <option key={model} value={model}>{model}</option>)}</Select></Field>
           <Toggle checked={restartCodex} onChange={setRestartCodex} label="重启并修复会话" />
-          <Button variant="default" size="lg" disabled={isBusy || !codexKeyId || !codexModel} onClick={() => void applyToCodex()}>{action === 'codex' ? <LoaderCircle className="spin" size={15} /> : <ClipboardPasteIcon />}应用到 Codex</Button>
+          <Button variant="default" size="lg" disabled={isBusy || !codexKeyId || !codexModel} onClick={() => void applyToCodex()}>{action === 'codex' ? <LoaderCircle className="spin" size={15} /> : <ClipboardPasteIcon />}{codexActionLabel}</Button>
         </section>
+
+        {upstreamDialogMode ? createPortal(
+          <DialogBackdrop
+            className="api-upstream-dialog-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeUpstreamDialog()
+            }}
+          >
+            <DialogPanel className="api-upstream-dialog max-w-[820px]" role="dialog" aria-modal="true" aria-labelledby="upstream-dialog-title">
+              <DialogHeader>
+                <div>
+                  <h2 id="upstream-dialog-title" className="text-[15px] font-semibold text-[var(--color-text)]">添加第三方 API 上游</h2>
+                  <p className="mt-1 text-[12px] leading-5 text-[var(--color-text-muted)]">选择快速导入自动识别并测试，或手动填写已知的上游参数。</p>
+                </div>
+                <Button size="icon" variant="ghost" aria-label="关闭添加上游窗口" title="关闭" onClick={closeUpstreamDialog}><span aria-hidden="true" className="text-lg leading-none">×</span></Button>
+              </DialogHeader>
+
+              <div className="border-b border-[var(--color-border)] px-4 py-2.5">
+                <SegmentedControl aria-label="添加上游方式">
+                  <SegmentedButton selected={upstreamDialogMode === 'quick'} onClick={() => setUpstreamDialogMode('quick')}><WandSparkles size={14} />快速导入</SegmentedButton>
+                  <SegmentedButton selected={upstreamDialogMode === 'manual'} onClick={() => { if (!manualUpstream) setManualUpstream(createUpstreamDraft()); setUpstreamDialogMode('manual') }}><Plus size={14} />手动填写</SegmentedButton>
+                </SegmentedControl>
+              </div>
+
+              {upstreamDialogMode === 'quick' ? (
+                <div className="grid gap-4 px-4 py-4">
+                  <div className="api-import-guide">
+                    <ShieldCheck size={16} />
+                    <span>支持 URL + Key、JSON、<code>url=… key=…</code>、Base64 与 URL-safe Base64。会智能尝试根路径和 <code>/v1</code>，真实获取模型并可继续发送轻量测试。</span>
+                  </div>
+                  <Field label="粘贴内容" hint="原始内容仅用于本次识别与测试，不写入日志。">
+                    <textarea
+                      aria-label="上游粘贴内容"
+                      className={cn(textareaClass, 'api-import-textarea')}
+                      value={pasteText}
+                      placeholder={'https://api.example.com/v1\nsk-...\n\n或粘贴 JSON / Base64 文本'}
+                      autoFocus
+                      onChange={(event) => { setPasteText(event.target.value); setPasteNote('') }}
+                    />
+                  </Field>
+                  <Field label="导入位置" hint={pasteNote || '默认创建新上游；也可以更新已有上游。'}>
+                    <Select className="w-full" value={pasteTargetId} onChange={(event) => setPasteTargetId(event.target.value)}>
+                      <option value="new">创建新上游</option>
+                      {draft.upstreams.map((entry) => <option key={entry.id} value={entry.id}>更新 · {entry.name}</option>)}
+                    </Select>
+                  </Field>
+                </div>
+              ) : (
+                <div className="grid gap-4 px-4 py-4">
+                  <div className="api-import-guide">
+                    <Network size={16} />
+                    <span>手动填写后可先添加，或立即测试上游并自动填充模型。上游 Key 只用于本软件转发，不会写进 Codex 配置。</span>
+                  </div>
+                  {manualUpstream ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="名称"><Input autoFocus value={manualUpstream.name} onChange={(event) => setManualUpstream((current) => current ? { ...current, name: event.target.value } : current)} /></Field>
+                      <Field label="API Base URL" hint="可填域名或 /v1；测试会智能探测"><Input className="font-[var(--font-mono)]" value={manualUpstream.baseUrl} onChange={(event) => setManualUpstream((current) => current ? { ...current, baseUrl: event.target.value } : current)} /></Field>
+                      <Field label="上游 API Key" hint="可留空，例如本地 Ollama"><Input type={manualUpstream.reveal ? 'text' : 'password'} autoComplete="off" value={manualUpstream.apiKey ?? ''} placeholder="sk-…" onChange={(event) => setManualUpstream((current) => current ? { ...current, apiKey: event.target.value || undefined, hasApiKey: Boolean(event.target.value), keyPreview: event.target.value, reveal: true } : current)} /></Field>
+                      <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-3">
+                        <Field label="协议能力"><Select className="w-full" value={manualUpstream.protocol} onChange={(event) => setManualUpstream((current) => current ? { ...current, protocol: event.target.value as ApiUpstreamProtocol } : current)}><option value="auto">自动识别（OpenAI）</option><option value="responses">OpenAI Responses</option><option value="chat_completions">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini v1beta</option><option value="ollama">Ollama</option></Select></Field>
+                        <Field label="优先级"><Input type="number" value={manualUpstream.priority} onChange={(event) => setManualUpstream((current) => current ? { ...current, priority: Number(event.target.value) } : current)} /></Field>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              <DialogActions>
+                <Button variant="ghost" onClick={closeUpstreamDialog}>取消</Button>
+                {upstreamDialogMode === 'quick' ? (
+                  <>
+                    <Button disabled={!pasteText.trim() || isBusy} onClick={() => void applyUpstreamPaste(false)}>只识别填入</Button>
+                    <Button variant="default" disabled={!pasteText.trim() || isBusy} onClick={() => void applyUpstreamPaste(true)}><Activity size={14} />识别并测试</Button>
+                  </>
+                ) : (
+                  <>
+                    <Button disabled={!manualUpstream || isBusy} onClick={() => void saveManualUpstream(false)}>仅添加</Button>
+                    <Button variant="default" disabled={!manualUpstream || isBusy} onClick={() => void saveManualUpstream(true)}><Activity size={14} />添加并测试</Button>
+                  </>
+                )}
+              </DialogActions>
+            </DialogPanel>
+          </DialogBackdrop>
+        , document.body) : null}
       </div>
     </PageView>
   )

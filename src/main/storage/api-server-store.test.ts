@@ -35,6 +35,11 @@ function configuration() {
       priority: 2,
       enabled: true
     }],
+    codexBinding: {
+      accessKeyId: 'client',
+      model: 'xxx',
+      enforce: true
+    },
     routes: [{
       publicModel: 'xxx',
       strategy: 'priority' as const,
@@ -70,7 +75,8 @@ describe('ApiServerStore', () => {
       port: 8888,
       accessKeys: [{ key: 'sk-client-secret' }],
       upstreams: [{ apiKey: 'sk-upstream-secret' }],
-      credentialSources: [{ id: 'codex:credential-id', credentialId: 'credential-id' }]
+      credentialSources: [{ id: 'codex:credential-id', credentialId: 'credential-id' }],
+      codexBinding: { accessKeyId: 'client', model: 'xxx', enforce: true }
     })
   })
 
@@ -130,6 +136,6 @@ describe('ApiServerStore', () => {
     }))
     const store = new ApiServerStore(path, cipher)
     await expect(store.summary()).resolves.toMatchObject({ credentialSources: [] })
-    await expect(store.runtimeConfig()).resolves.toMatchObject({ credentialSources: [] })
+    await expect(store.runtimeConfig()).resolves.toMatchObject({ credentialSources: [], codexBinding: null })
   })
 })

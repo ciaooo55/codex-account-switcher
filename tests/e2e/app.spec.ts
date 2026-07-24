@@ -760,7 +760,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByLabel(/密钥值$/).fill('sk-e2e-local')
     await page.getByLabel('监听端口').fill('18888')
     await page.getByRole('button', { name: /第三方上游/ }).click()
-    await page.getByRole('button', { name: '粘贴识别' }).click()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-service-empty.png'), fullPage: true })
+    await page.getByRole('region', { name: '第三方 API 上游' }).getByRole('button', { name: '快速导入', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: '添加第三方 API 上游' })).toBeVisible()
+    await page.waitForTimeout(250)
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-import-dialog.png'), fullPage: true })
     await page.getByLabel('上游粘贴内容').fill(
       `url=${baseUrl} key=sk-e2e-upstream-123456`
     )

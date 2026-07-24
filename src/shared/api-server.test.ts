@@ -86,4 +86,22 @@ describe('api server shared configuration', () => {
       upstreams: [{ protocol: 'ollama', apiKey: '' }]
     })
   })
+
+  it('keeps an explicit Codex loopback binding and rejects malformed values', () => {
+    const input = {
+      port: 8888,
+      autoStart: false,
+      accessKeys: [{ id: 'codex-key', label: 'Codex', key: 'sk-local', enabled: true, allowedModels: [] }],
+      upstreams: [],
+      codexBinding: { accessKeyId: ' codex-key ', model: ' xxx ', enforce: true },
+      routes: [{ publicModel: 'xxx', strategy: 'single' as const, sourceMode: 'api_only' as const, targets: [] }]
+    }
+    expect(normalizeLocalApiServerConfig(input)).toMatchObject({
+      codexBinding: { accessKeyId: 'codex-key', model: 'xxx', enforce: true }
+    })
+    expect(() => normalizeLocalApiServerConfig({
+      ...input,
+      codexBinding: { accessKeyId: 'bad id', model: 'xxx', enforce: true }
+    })).toThrow('Codex API 服务绑定无效')
+  })
 })
