@@ -59,7 +59,18 @@ const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 429])
 const PROTOCOL_FALLBACK_STATUSES = new Set([400, 404, 405, 415, 422, 501])
 
 /** Endpoints that can be safely selected by a public-model route. */
-type SupportedEndpoint = '/v1/responses' | '/v1/responses/compact' | '/v1/chat/completions' | '/v1/completions' | '/v1/embeddings' | '/v1/images/generations' | '/v1/images/edits'
+type SupportedEndpoint =
+  | '/v1/responses'
+  | '/v1/responses/compact'
+  | '/v1/chat/completions'
+  | '/v1/completions'
+  | '/v1/embeddings'
+  | '/v1/images/generations'
+  | '/v1/images/edits'
+  | '/v1/videos'
+  | '/v1/videos/generations'
+  | '/v1/videos/edits'
+  | '/v1/videos/extensions'
 
 interface ApiRequestPlan {
   /** Endpoint to call on the selected upstream (not necessarily OpenAI). */
@@ -332,10 +343,17 @@ function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: strin
       || upstream.protocol === 'chat_completions'
       || upstream.protocol === 'completions'
   }
-  if (endpoint === '/v1/images/generations' || endpoint === '/v1/images/edits') {
-    // Native adapters do not implement the OpenAI Images schema. Responses is
-    // included because official OpenAI and compatible gateways commonly offer
-    // both APIs at the same base URL.
+  if (
+    endpoint === '/v1/images/generations'
+    || endpoint === '/v1/images/edits'
+    || endpoint === '/v1/videos'
+    || endpoint === '/v1/videos/generations'
+    || endpoint === '/v1/videos/edits'
+    || endpoint === '/v1/videos/extensions'
+  ) {
+    // Native chat adapters do not implement OpenAI media schemas. Responses
+    // is included because official OpenAI/xAI gateways commonly expose both
+    // APIs at the same base URL.
     return upstream.protocol === 'auto'
       || upstream.protocol === 'responses'
       || upstream.protocol === 'chat_completions'
@@ -384,7 +402,13 @@ function apiRequestPlans(
   upstreamModel: string
 ): ApiRequestPlan[] {
   if (endpoint === '/v1/embeddings') return [{ endpoint, requestBody: body }]
-  if (endpoint === '/v1/images/generations') return [{ endpoint, requestBody: body }]
+  if (
+    endpoint === '/v1/images/generations'
+    || endpoint === '/v1/videos'
+    || endpoint === '/v1/videos/generations'
+    || endpoint === '/v1/videos/edits'
+    || endpoint === '/v1/videos/extensions'
+  ) return [{ endpoint, requestBody: body }]
   const chatBody = endpoint === '/v1/chat/completions' || endpoint === '/v1/completions'
     ? body
     : translateResponsesRequestToChatCompletions(body)
@@ -458,6 +482,17 @@ function responseHeaders(upstream: Response): Record<string, string> {
     if (value) result[name] = value
   }
   return result
+}
+
+function videoResponseIds(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  const record = value as Record<string, unknown>
+  const ids = [record.id, record.video_id]
+  const data = record.data
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    ids.push((data as Record<string, unknown>).id, (data as Record<string, unknown>).video_id)
+  }
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()))]
 }
 
 /**
@@ -749,6 +784,12 @@ export class LocalApiServer {
   private lastError: string | null = null
   private readonly roundRobinOffsets = new Map<string, number>()
   private readonly sourceCooldowns = new Map<string, number>()
+  /** Affinity cache for asynchronous Videos retrieval/content requests. */
+  private readonly videoRouteCache = new Map<string, {
+    upstream: Required<ApiUpstreamInput>
+    publicModel: string
+    expiresAt: number
+  }>()
 
   constructor(
     initialConfig: LocalApiServerRuntimeConfig,
@@ -789,6 +830,7 @@ export class LocalApiServer {
     for (const client of this.websocketServer.clients) client.terminate()
     if (server) await this.closeServer(server)
     this.startedAt = null
+    this.videoRouteCache.clear()
     return this.status()
   }
 
@@ -807,6 +849,7 @@ export class LocalApiServer {
       this.config = normalized
       this.roundRobinOffsets.clear()
       this.sourceCooldowns.clear()
+      this.videoRouteCache.clear()
       this.lastError = null
       return this.status()
     }
@@ -825,6 +868,7 @@ export class LocalApiServer {
     this.startedAt = new Date().toISOString()
     this.roundRobinOffsets.clear()
     this.sourceCooldowns.clear()
+    this.videoRouteCache.clear()
     this.lastError = null
     await this.closeServer(previous)
     return this.status()
@@ -1138,7 +1182,7 @@ export class LocalApiServer {
     }
 
     if (method === 'GET' && requestUrl.pathname === '/api/version') {
-      writeJson(response, 200, { version: '0.14.1-local-router' })
+      writeJson(response, 200, { version: '0.14.2-local-router' })
       return
     }
 
@@ -1178,6 +1222,21 @@ export class LocalApiServer {
       return
     }
 
+    const videoLookup = method === 'GET'
+      ? /^\/(?:v1\/)?videos\/([^/]+)(\/content)?$/i.exec(requestUrl.pathname)
+      : null
+    if (videoLookup) {
+      let videoId = ''
+      try {
+        videoId = decodeURIComponent(videoLookup[1])
+      } catch {
+        writeOpenAiError(response, 400, '视频 ID 编码无效', 'invalid_request_error')
+        return
+      }
+      await this.forwardCachedVideo(request, response, key, videoId, Boolean(videoLookup[2]))
+      return
+    }
+
     if (method === 'POST' && [
       '/v1/alpha/search', '/alpha/search', '/backend-api/codex/alpha/search'
     ].includes(requestUrl.pathname)) {
@@ -1206,7 +1265,15 @@ export class LocalApiServer {
                 ? '/v1/images/generations'
                 : requestUrl.pathname === '/v1/images/edits' || requestUrl.pathname === '/images/edits'
                   ? '/v1/images/edits'
-                : null
+                  : requestUrl.pathname === '/v1/videos' || requestUrl.pathname === '/videos'
+                    ? '/v1/videos'
+                    : requestUrl.pathname === '/v1/videos/generations' || requestUrl.pathname === '/videos/generations'
+                      ? '/v1/videos/generations'
+                      : requestUrl.pathname === '/v1/videos/edits' || requestUrl.pathname === '/videos/edits'
+                        ? '/v1/videos/edits'
+                        : requestUrl.pathname === '/v1/videos/extensions' || requestUrl.pathname === '/videos/extensions'
+                          ? '/v1/videos/extensions'
+                          : null
     const anthropicEndpoint = requestUrl.pathname === '/v1/messages' || requestUrl.pathname === '/messages'
     const ollamaChatEndpoint = requestUrl.pathname === '/api/chat'
     const ollamaGenerateEndpoint = requestUrl.pathname === '/api/generate'
@@ -1217,9 +1284,14 @@ export class LocalApiServer {
       return
     }
 
-    if (directEndpoint === '/v1/images/edits') {
-      const contentTypeValue = request.headers['content-type']
-      const contentType = (Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue) ?? ''
+    const contentTypeValue = request.headers['content-type']
+    const contentType = (Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue) ?? ''
+    const rawMultipartEndpoint: '/v1/images/edits' | '/v1/videos' | null = directEndpoint === '/v1/images/edits'
+      ? directEndpoint
+      : directEndpoint === '/v1/videos' && /^multipart\/form-data\b/i.test(contentType)
+        ? directEndpoint
+        : null
+    if (rawMultipartEndpoint) {
       if (!/^multipart\/form-data\b/i.test(contentType)) {
         writeOpenAiError(response, 415, 'images/edits 需要 multipart/form-data 请求体', 'unsupported_media_type')
         return
@@ -1228,12 +1300,12 @@ export class LocalApiServer {
       try {
         rawBody = await readRequestBody(request)
       } catch (error) {
-        writeOpenAiError(response, (error as Error).message === 'request_too_large' ? 413 : 400, 'images/edits 请求体无效或过大', 'invalid_request_error')
+        writeOpenAiError(response, (error as Error).message === 'request_too_large' ? 413 : 400, `${rawMultipartEndpoint === '/v1/videos' ? 'videos' : 'images/edits'} 请求体无效或过大`, 'invalid_request_error')
         return
       }
       const publicModel = multipartTextField(rawBody, contentType, 'model') ?? ''
       if (!publicModel) {
-        writeOpenAiError(response, 400, 'images/edits 必须提供 model 字段', 'missing_model')
+        writeOpenAiError(response, 400, `${rawMultipartEndpoint === '/v1/videos' ? 'videos' : 'images/edits'} 必须提供 model 字段`, 'missing_model')
         return
       }
       if (key.allowedModels.length > 0 && !key.allowedModels.includes(publicModel)) {
@@ -1245,12 +1317,12 @@ export class LocalApiServer {
         writeOpenAiError(response, 404, `模型“${publicModel}”未配置`, 'model_not_found')
         return
       }
-      const candidates = this.routeCandidates(route, directEndpoint)
+      const candidates = this.routeCandidates(route, rawMultipartEndpoint)
       if (candidates.length === 0) {
-        writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的 Images 上游`, 'no_available_upstream')
+        writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的 ${rawMultipartEndpoint === '/v1/videos' ? 'Videos' : 'Images'} 上游`, 'no_available_upstream')
         return
       }
-      await this.forwardRawWithFailover(request, response, directEndpoint, rawBody, contentType, candidates)
+      await this.forwardRawWithFailover(request, response, rawMultipartEndpoint, rawBody, contentType, candidates, publicModel)
       return
     }
 
@@ -1366,8 +1438,16 @@ export class LocalApiServer {
       ) return []
       // Existing account credentials are Responses-only upstreams. Do not
       // pretend their access tokens can serve provider-specific embeddings or
-      // the OpenAI Images endpoint.
-      if (endpoint === '/v1/embeddings' || endpoint === '/v1/images/generations' || endpoint === '/v1/images/edits') return []
+      // OpenAI-compatible Images / Videos endpoints.
+      if (
+        endpoint === '/v1/embeddings'
+        || endpoint === '/v1/images/generations'
+        || endpoint === '/v1/images/edits'
+        || endpoint === '/v1/videos'
+        || endpoint === '/v1/videos/generations'
+        || endpoint === '/v1/videos/edits'
+        || endpoint === '/v1/videos/extensions'
+      ) return []
       const cooldownUntil = this.sourceCooldowns.get(source.id) ?? 0
       if (cooldownUntil > Date.now()) return []
       if (cooldownUntil) this.sourceCooldowns.delete(source.id)
@@ -1391,6 +1471,87 @@ export class LocalApiServer {
       candidates = [...candidates.slice(offset), ...candidates.slice(0, offset)]
     }
     return candidates
+  }
+
+  private async rememberVideoRoute(
+    upstream: Response,
+    candidate: ApiRouteCandidate,
+    publicModel: string
+  ): Promise<void> {
+    if (!/application\/json/i.test(upstream.headers.get('content-type') ?? '')) return
+    try {
+      const payload = await upstream.clone().json()
+      const expiresAt = Date.now() + 3 * 60 * 60_000
+      for (const id of videoResponseIds(payload)) {
+        this.videoRouteCache.set(id, { upstream: candidate.upstream, publicModel, expiresAt })
+      }
+    } catch {
+      // A video creation response can be vendor-specific. It remains relayed
+      // unchanged; only the optional future retrieval affinity is unavailable.
+    }
+  }
+
+  private videoRoute(id: string): { upstream: Required<ApiUpstreamInput>; publicModel: string } | null {
+    const entry = this.videoRouteCache.get(id)
+    if (!entry) return null
+    if (entry.expiresAt <= Date.now()) {
+      this.videoRouteCache.delete(id)
+      return null
+    }
+    return entry
+  }
+
+  private async forwardCachedVideo(
+    incoming: IncomingMessage,
+    outgoing: ServerResponse,
+    key: LocalApiServerRuntimeConfig['accessKeys'][number],
+    videoId: string,
+    content: boolean
+  ): Promise<void> {
+    const cached = this.videoRoute(videoId)
+    if (!cached) {
+      writeOpenAiError(outgoing, 404, '未找到该视频的上游路由；请先通过本地 API 创建该视频', 'video_not_found')
+      return
+    }
+    if (key.allowedModels.length > 0 && !key.allowedModels.includes(cached.publicModel)) {
+      writeOpenAiError(outgoing, 404, `视频所属模型“${cached.publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
+      return
+    }
+    try {
+      const suffix = content ? '/content' : ''
+      const rawUrl = buildProviderUpstreamUrl(
+        cached.upstream,
+        `/v1/videos/${encodeURIComponent(videoId)}${suffix}`
+      )
+      const upstreamUrl = applyApiUpstreamAuthQuery(rawUrl, cached.upstream)
+      const upstream = await this.fetchImpl(upstreamUrl, {
+        method: 'GET',
+        headers: {
+          accept: incoming.headers.accept ?? '*/*',
+          ...apiUpstreamAuthHeaders(cached.upstream)
+        }
+      })
+      if (upstream.ok) {
+        await relayResponse(upstream, outgoing)
+        return
+      }
+      const status = upstream.status
+      writeOpenAiError(
+        outgoing,
+        status === 401 || status === 403 || status === 404 || status === 429 ? status : 502,
+        parseUpstreamError(await upstream.text(), status),
+        status === 404 ? 'video_not_found' : status === 429 ? 'rate_limit_exceeded' : 'upstream_error',
+        status === 429 ? 'rate_limit_error' : 'server_error'
+      )
+    } catch (error) {
+      writeOpenAiError(
+        outgoing,
+        502,
+        error instanceof Error && error.name !== 'TypeError' ? error.message.slice(0, 1000) : '无法连接视频上游 API',
+        'upstream_error',
+        'server_error'
+      )
+    }
   }
 
   private async forwardWithFailover(
@@ -1465,6 +1626,10 @@ export class LocalApiServer {
             this.sourceCooldowns.delete(
               candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id
             )
+            if (candidate.kind === 'api' && (endpoint === '/v1/videos' || endpoint.startsWith('/v1/videos/'))) {
+              const publicModel = typeof body.model === 'string' ? body.model.trim() : ''
+              if (publicModel) await this.rememberVideoRoute(upstream, candidate, publicModel)
+            }
             await relayPlanResponse(
               upstream,
               outgoing,
@@ -1535,17 +1700,18 @@ export class LocalApiServer {
 
   /**
    * Forward a multipart API request without re-encoding its binary fields.
-   * Image edit requests are intentionally API-upstream-only: imported Codex
-   * and Grok account credentials are Responses credentials and cannot be
-   * represented truthfully as an Images credential.
+   * Image edits and multipart Video creation are intentionally API-upstream-
+   * only: imported Codex and Grok account credentials are Responses
+   * credentials and cannot be represented truthfully as media credentials.
    */
   private async forwardRawWithFailover(
     incoming: IncomingMessage,
     outgoing: ServerResponse,
-    endpoint: '/v1/images/edits',
+    endpoint: '/v1/images/edits' | '/v1/videos',
     rawBody: Buffer,
     contentType: string,
-    candidates: RouteCandidate[]
+    candidates: RouteCandidate[],
+    publicModel: string
   ): Promise<void> {
     let lastStatus = 502
     let lastMessage = '所有上游均请求失败'
@@ -1574,6 +1740,7 @@ export class LocalApiServer {
         })
         if (upstream.ok) {
           this.sourceCooldowns.delete(candidate.upstream.id)
+          if (endpoint === '/v1/videos') await this.rememberVideoRoute(upstream, candidate, publicModel)
           await relayResponse(upstream, outgoing)
           return
         }

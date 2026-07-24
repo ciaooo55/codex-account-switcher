@@ -396,6 +396,134 @@ describe('LocalApiServer', () => {
     }))
   })
 
+  it.each([
+    '/v1/videos',
+    '/v1/videos/generations',
+    '/v1/videos/edits',
+    '/v1/videos/extensions'
+  ] as const)('relays %s through the selected third-party model route', async (endpoint) => {
+    let seen: { path: string; authorization: string | undefined; body: Record<string, unknown> } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '',
+        authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'video_e2e', model: 'real-1', status: 'queued' }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('video', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const result = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', prompt: 'animate a local API service dashboard', seconds: 4 })
+    })
+
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toEqual({ id: 'video_e2e', model: 'real-1', status: 'queued' })
+    expect(seen).toEqual(expect.objectContaining({
+      path: endpoint,
+      authorization: 'Bearer sk-video',
+      body: { model: 'real-1', prompt: 'animate a local API service dashboard', seconds: 4 }
+    }))
+  })
+
+  it('keeps a video upstream affinity for retrieval and binary content requests', async () => {
+    const calls: Array<{ path: string; authorization: string | undefined; body: string }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      const path = request.url ?? ''
+      calls.push({ path, authorization: request.headers.authorization, body: Buffer.concat(chunks).toString('utf8') })
+      if (path === '/v1/videos/generations') {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ id: 'video_local_123', model: 'real-1', status: 'queued' }))
+        return
+      }
+      if (path === '/v1/videos/video_local_123') {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ id: 'video_local_123', model: 'real-1', status: 'completed' }))
+        return
+      }
+      if (path === '/v1/videos/video_local_123/content') {
+        const bytes = Buffer.from([0, 1, 2, 3, 4, 255])
+        response.writeHead(200, { 'content-type': 'video/mp4', 'content-length': bytes.length })
+        response.end(bytes)
+        return
+      }
+      response.writeHead(404, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error: { message: 'unexpected upstream path' } }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('video-cache', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const headers = { authorization: 'Bearer sk-local', 'content-type': 'application/json' }
+    const create = await fetch(`http://127.0.0.1:${port}/v1/videos/generations`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'xxx', prompt: 'create a clip' })
+    })
+    expect(create.status).toBe(200)
+    const status = await fetch(`http://127.0.0.1:${port}/v1/videos/video_local_123`, {
+      headers: { authorization: 'Bearer sk-local' }
+    })
+    expect(status.status).toBe(200)
+    await expect(status.json()).resolves.toMatchObject({ id: 'video_local_123', status: 'completed' })
+    const content = await fetch(`http://127.0.0.1:${port}/v1/videos/video_local_123/content`, {
+      headers: { authorization: 'Bearer sk-local' }
+    })
+    expect(content.headers.get('content-type')).toContain('video/mp4')
+    expect(Buffer.from(await content.arrayBuffer())).toEqual(Buffer.from([0, 1, 2, 3, 4, 255]))
+    expect(calls).toEqual([
+      expect.objectContaining({ path: '/v1/videos/generations', authorization: 'Bearer sk-video-cache', body: JSON.stringify({ model: 'real-1', prompt: 'create a clip' }) }),
+      expect.objectContaining({ path: '/v1/videos/video_local_123', authorization: 'Bearer sk-video-cache', body: '' }),
+      expect.objectContaining({ path: '/v1/videos/video_local_123/content', authorization: 'Bearer sk-video-cache', body: '' })
+    ])
+  })
+
+  it('relays multipart OpenAI video creation without re-encoding binary media', async () => {
+    let seen: { path: string; authorization: string | undefined; body: Buffer } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = { path: request.url ?? '', authorization: request.headers.authorization, body: Buffer.concat(chunks) }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'video_multipart_1', status: 'queued' }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('video-multipart', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const boundary = '----codex-switcher-video-boundary'
+    const sourceBytes = Buffer.from([0, 255, 1, 2, 3])
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nxxx\r\n`, 'utf8'),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nmake a clip\r\n`, 'utf8'),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="input_reference"; filename="source.mp4"\r\nContent-Type: video/mp4\r\n\r\n`, 'utf8'),
+      sourceBytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
+    ])
+    const result = await fetch(`http://127.0.0.1:${port}/v1/videos`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': `multipart/form-data; boundary=${boundary}` },
+      body: new Uint8Array(body)
+    })
+
+    expect(result.status).toBe(200)
+    expect(seen).toEqual(expect.objectContaining({ path: '/v1/videos', authorization: 'Bearer sk-video-multipart' }))
+    const multipartSeen = seen as unknown as { body: Buffer }
+    expect(multipartSeen.body.includes(Buffer.from('\r\nreal-1\r\n'))).toBe(true)
+    expect(multipartSeen.body.includes(sourceBytes)).toBe(true)
+  })
+
   it('relays OpenAI image edits without corrupting multipart image bytes or leaking the client key', async () => {
     type SeenImageEdit = { path: string; authorization: string | undefined; contentType: string | undefined; body: Buffer }
     const seen: SeenImageEdit[] = []

@@ -132,7 +132,10 @@ function tryDecodeBase64(raw: string): string | null {
   try {
     const decoded = typeof Buffer !== 'undefined' ? Buffer.from(padded, 'base64').toString('utf8') : (function(){const b=atob(padded);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++){u[i]=b.charCodeAt(i)}return new TextDecoder('utf-8').decode(u)})()
     // Heuristic: only accept if it looks like text/JSON, not random bytes.
-    if (!decoded || /[\x00-\x08\x0e-\x1f]/.test(decoded)) return null
+    // Buffer's UTF-8 conversion replaces invalid binary with U+FFFD. Treat
+    // that (and ASCII controls) as non-text so ordinary `sk-*` values that
+    // happen to use Base64 characters are never mangled.
+    if (!decoded || /[\x00-\x08\x0e-\x1f\ufffd]/.test(decoded)) return null
     return decoded
   } catch {
     return null
@@ -152,6 +155,82 @@ function extractKey(text: string): string | null {
   const withoutUrl = text.replace(URL_REGEX, ' ')
   const m = withoutUrl.match(KEY_REGEX)
   return m ? m[0] : null
+}
+
+const URL_FIELD_NAMES = new Set(['baseurl', 'url', 'endpoint', 'apiurl'])
+const KEY_FIELD_NAMES = new Set(['apikey', 'key', 'token', 'secret', 'bearer', 'authorization'])
+
+/**
+ * Produces the literal and (when applicable) decoded form of a user-provided
+ * field.  Whole-paste Base64 was already supported, but many subscription
+ * exports Base64-encode URL and key *individually* inside JSON or `url=…`
+ * pairs.  Keep this small and local so random text is never decoded as a
+ * credential unless it appears in an explicitly named credential field.
+ */
+function encodedFieldCandidates(value: string): string[] {
+  const literal = value.trim().replace(/^['"]|['"]$/g, '')
+  if (!literal) return []
+  const decoded = tryDecodeBase64(literal)?.trim()
+  return decoded && decoded !== literal ? [literal, decoded] : [literal]
+}
+
+function normalizedKeyCandidate(value: string): string | null {
+  const trimmed = value.trim().replace(/^Bearer\s+/i, '')
+  return trimmed.length >= 8 && !/^https?:\/\//i.test(trimmed) && !/\s/.test(trimmed) ? trimmed : null
+}
+
+/** Walk a compact pasted JSON document for common nested URL/key fields. */
+function namedJsonValues(
+  value: unknown,
+  expectedNames: ReadonlySet<string>,
+  values: string[] = [],
+  depth = 0
+): string[] {
+  if (depth > 5 || !value || typeof value !== 'object') return values
+  if (Array.isArray(value)) {
+    for (const item of value) namedJsonValues(item, expectedNames, values, depth + 1)
+    return values
+  }
+  for (const [rawName, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const name = rawName.replace(/[^a-z0-9]/gi, '').toLowerCase()
+    if (typeof rawValue === 'string' && expectedNames.has(name)) values.push(rawValue)
+    if (rawValue && typeof rawValue === 'object') namedJsonValues(rawValue, expectedNames, values, depth + 1)
+  }
+  return values
+}
+
+function labelledValue(text: string, pattern: RegExp): string | null {
+  const match = text.match(pattern)
+  return match?.[1] ? match[1].trim() : null
+}
+
+function decodedUrl(value: string | null): string | null {
+  if (!value) return null
+  return encodedFieldCandidates(value).find((candidate) => /^https?:\/\//i.test(candidate)) ?? null
+}
+
+function decodedKey(value: string | null): string | null {
+  if (!value) return null
+  const candidates = encodedFieldCandidates(value)
+  // Prefer an individually decoded printable secret. Otherwise an encoded URL
+  // appearing before a key in one JSON blob could be mistaken for the key.
+  const decoded = candidates.slice(1)
+    .map((candidate) => normalizedKeyCandidate(candidate))
+    .find((candidate): candidate is string => Boolean(candidate))
+  if (decoded) return decoded
+  const literal = candidates[0] ?? ''
+  const decodedLiteral = tryDecodeBase64(literal)?.trim()
+  if (decodedLiteral && /^https?:\/\//i.test(decodedLiteral)) return null
+  return normalizedKeyCandidate(literal)
+}
+
+function urlWasBase64Decoded(value: string, resolved: string): boolean {
+  return tryDecodeBase64(value)?.trim() === resolved && value.trim() !== resolved
+}
+
+function keyWasBase64Decoded(value: string, resolved: string): boolean {
+  const decoded = tryDecodeBase64(value)?.trim()
+  return Boolean(decoded && normalizedKeyCandidate(decoded) === resolved && value.trim() !== resolved)
 }
 
 /**
@@ -176,22 +255,53 @@ export function parseCustomApiPaste(raw: string): ParsedCustomApiPaste {
     if (!baseUrl) {
       const url = extractUrl(candidate)
       if (url) { baseUrl = url; notes.push('已识别 API 地址') }
+      if (!baseUrl) {
+        const labelledUrl = labelledValue(
+          candidate,
+          /(?:base[_-]?url|api[_-]?url|url|endpoint)\s*[:=]\s*["']?([^"'\s,;]+)["']?/i
+        )
+        const decoded = decodedUrl(labelledUrl)
+        if (decoded) { baseUrl = decoded; notes.push('已解码 API 地址') }
+      }
     }
     if (!apiKey) {
-      const key = extractKey(candidate)
-      if (key) { apiKey = key; notes.push('已识别 API Key') }
+      const labelledKey = labelledValue(
+        candidate,
+        /(?:api[_-]?key|key|token|secret|bearer|authorization)\s*[:=]\s*["']?([^"'\s,;]+)["']?/i
+      )
+      const labelledDecoded = decodedKey(labelledKey)
+      if (labelledDecoded) {
+        apiKey = labelledDecoded
+        notes.push(labelledDecoded === labelledKey ? '已识别 API Key' : '已解码 API Key')
+      }
+      if (!apiKey) {
+        const key = extractKey(candidate)
+        const decoded = decodedKey(key)
+        if (decoded) { apiKey = decoded; notes.push(decoded === key ? '已识别 API Key' : '已解码 API Key') }
+      }
     }
     if (!baseUrl || !apiKey) {
-      // Try JSON object form: {"base_url":"...","api_key":"..."}
+      // Try JSON object form, including nested exports such as
+      // {"connection":{"base_url":"…"},"credentials":{"api_key":"…"}}.
       try {
         const obj = JSON.parse(candidate) as Record<string, unknown>
         if (!baseUrl) {
-          const v = obj.base_url ?? obj.baseUrl ?? obj.url ?? obj.endpoint
-          if (typeof v === 'string' && /^https?:\/\//.test(v)) { baseUrl = v; notes.push('已识别 API 地址（JSON）') }
+          const rawValues = namedJsonValues(obj, URL_FIELD_NAMES)
+          const rawValue = rawValues.find((value) => Boolean(decodedUrl(value)))
+          const decoded = decodedUrl(rawValue ?? null)
+          if (decoded) {
+            baseUrl = decoded
+            notes.push(rawValue && urlWasBase64Decoded(rawValue, decoded) ? '已解码 API 地址（JSON）' : '已识别 API 地址（JSON）')
+          }
         }
         if (!apiKey) {
-          const v = obj.api_key ?? obj.apiKey ?? obj.key ?? obj.token ?? obj.secret
-          if (typeof v === 'string' && v.length >= 8) { apiKey = v; notes.push('已识别 API Key（JSON）') }
+          const rawValues = namedJsonValues(obj, KEY_FIELD_NAMES)
+          const rawValue = rawValues.find((value) => Boolean(decodedKey(value)))
+          const decoded = decodedKey(rawValue ?? null)
+          if (decoded) {
+            apiKey = decoded
+            notes.push(rawValue && keyWasBase64Decoded(rawValue, decoded) ? '已解码 API Key（JSON）' : '已识别 API Key（JSON）')
+          }
         }
       } catch { /* not JSON */ }
     }

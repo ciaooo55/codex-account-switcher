@@ -40,6 +40,29 @@ describe('custom API URL helpers', () => {
     expect(r.apiKey).toBe('sk-urlsafekey1234567890')
   })
 
+  it('decodes individually Base64-encoded URL and key fields from a nested JSON export', () => {
+    const url = 'https://encoded.example.com/openai/v1'
+    const key = 'sk-nested-encoded-key-1234567890'
+    const r = parseCustomApiPaste(JSON.stringify({
+      connection: { base_url: Buffer.from(url).toString('base64url') },
+      credentials: { api_key: Buffer.from(key).toString('base64') }
+    }))
+    expect(r.baseUrl).toBe(url)
+    expect(r.apiKey).toBe(key)
+    expect(r.note).toContain('已解码')
+  })
+
+  it('decodes individually Base64-encoded url= and key= pairs before probing', () => {
+    const url = 'https://pairs.example.com/v1'
+    const key = 'sk-pairs-encoded-key-1234567890'
+    const r = parseCustomApiPaste([
+      `url=${Buffer.from(url).toString('base64url')}`,
+      `key=${Buffer.from(key).toString('base64url')}`
+    ].join('\n'))
+    expect(r.baseUrl).toBe(url)
+    expect(r.apiKey).toBe(key)
+  })
+
   it('handles a lone url', () => {
     const r = parseCustomApiPaste('https://api.example.com/v1')
     expect(r.baseUrl).toBe('https://api.example.com/v1')

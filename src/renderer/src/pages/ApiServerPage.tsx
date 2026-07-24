@@ -901,7 +901,7 @@ export function ApiServerPage(): React.JSX.Element {
         <section className="api-service-settings flex flex-wrap items-end gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-3" aria-labelledby="service-settings-title">
           <div className="mr-auto min-w-[210px] self-center">
             <h2 id="service-settings-title" className="flex items-center gap-2 text-[13px] font-semibold"><Activity size={16} className="text-[var(--color-accent)]" />服务设置</h2>
-            <p className="mt-1 max-w-[68ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">始终监听 127.0.0.1。支持 Responses、Chat、Legacy Completions、Embeddings、Images Generation 与原生 Anthropic / Gemini / Ollama；端口被占用时明确失败，不会偷偷切换到其他端口。</p>
+            <p className="mt-1 max-w-[68ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">始终监听 127.0.0.1。支持 Responses、Chat、Legacy Completions、Embeddings、Images / Video Generation 与原生 Anthropic / Gemini / Ollama；端口被占用时明确失败，不会偷偷切换到其他端口。</p>
           </div>
           <Field label="监听端口" hint={state.status.running && draft.port !== state.status.port ? `当前 ${state.status.port}；保存成功后安全切换` : '1–65535，默认 8888'} className="w-[190px]">
             <Input aria-label="监听端口" type="number" min={1} max={65535} value={draft.port} onChange={(event) => updateDraft((current) => ({ ...current, port: Number(event.target.value) }))} />
