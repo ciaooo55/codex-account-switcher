@@ -765,7 +765,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       `url=${baseUrl} key=sk-e2e-upstream-123456`
     )
     await page.getByRole('button', { name: '识别并测试' }).click()
-    await expect(page.getByText(/测试成功，获取到 1 个模型/)).toBeVisible()
+    await expect(page.getByText(/已获取 1\/1 个上游的模型/)).toBeVisible()
     await page.getByRole('button', { name: /公开模型路由/ }).click()
     await page.getByRole('button', { name: '添加公开模型' }).click()
     await page.getByLabel('公开模型名').fill('e2e-public-model')
