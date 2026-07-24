@@ -1,5 +1,6 @@
 import { LoaderCircle } from 'lucide-react'
 import type { AccountSummary } from '../../../../shared/types'
+import { cn } from '@/lib/cn'
 import { dateTime, resetCountdown, resetMoment } from '../../lib/format'
 
 export function Quota({
@@ -27,7 +28,7 @@ export function Quota({
     resetCreditsAvailable == null
   ) return <span className="muted">-</span>
   return (
-    <div className="quota-list">
+    <div className="quota-list flex min-w-[140px] flex-col gap-1.5">
       {windows.slice(0, 3).map((window) => {
         const remaining = window.remainingPercent
         const className = remaining !== null && remaining <= 10 ? 'danger' : remaining !== null && remaining <= 30 ? 'warn' : ''
@@ -38,8 +39,8 @@ export function Quota({
               <span>{window.label}</span>
               <span className="quota-values"><strong>{remaining === null ? '-' : `${Math.round(remaining)}%`}</strong>{countdown && <em>{countdown}</em>}</span>
             </div>
-            <div className="quota-track">
-              <div className={`quota-fill ${className}`} style={{ width: `${remaining ?? 0}%` }} />
+            <div className="quota-track h-1.5 overflow-hidden rounded-full bg-[var(--color-surface-3)]">
+              <div className={cn('quota-fill h-full rounded-full bg-[var(--color-accent)] transition-[width]', className === 'danger' && 'bg-[var(--color-danger)]', className === 'warn' && 'bg-[var(--color-warn)]')} style={{ width: `${remaining ?? 0}%` }} />
             </div>
             <span className="quota-reset">重置 {resetMoment(window, account.usage!.checkedAt)}</span>
           </div>

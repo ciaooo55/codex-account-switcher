@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import './styles/tokens.css'
 import './styles/tailwind.css'
+import './styles/components.css'
 import './styles.css'
 import './styles/layout-polish.css'
 

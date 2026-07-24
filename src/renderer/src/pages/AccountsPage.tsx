@@ -39,10 +39,11 @@ import {
 import { CurrentAccountOverview } from '../components/CurrentAccountOverview'
 import { StatusFilterStrip, type StatusCategoryAction } from '../components/StatusFilterStrip'
 import { AccountMetadataChips } from '../components/accounts/AccountMetadataChips'
+import { AccountStatusBadge } from '../components/accounts/AccountStatusBadge'
 import { Quota } from '../components/accounts/Quota'
 import type { useVirtualTableRows } from '../hooks/useVirtualTableRows'
 import { dateTime, sourceFileName } from '../lib/format'
-import { Button, PageView, SearchField, Select, Toolbar, ToolbarGroup } from '@/components/ui'
+import { Button, EmptyTableRow, PageView, SearchField, Select, TableWrap, Toolbar, ToolbarGroup } from '@/components/ui'
 import { cn } from '@/lib/cn'
 import { codexApi } from '../services/codexApi'
 
@@ -267,7 +268,7 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
         <span className="selection-count">显示 {accounts.length} / {snapshot.accounts.length} · 已选 {selected.size}</span>
       </div>
 
-      <div className="table-wrap min-h-0 flex-1 overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)]" ref={virtualAccounts.scrollRef}>
+      <TableWrap ref={virtualAccounts.scrollRef}>
         <table>
           <thead>
             <tr>
@@ -306,11 +307,12 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
                   <div className="compact-row-meta">{account.planType ?? '未知'} · {sourceFileName(account.sourcePath)}</div>
                 </td>
                 <td>
-                  {running ? (
-                    <><span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span><div className="status-detail">{CODEX_TEST_MODE_RUNNING[testMode]}</div></>
-                  ) : (
-                    <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail" title={account.detail}>{account.detail}</div></>
-                  )}
+                  <>
+                      <AccountStatusBadge status={displayStatus(account.status)} running={running} />
+                      <div className="status-detail" title={running ? CODEX_TEST_MODE_RUNNING[testMode] : account.detail}>
+                        {running ? CODEX_TEST_MODE_RUNNING[testMode] : account.detail}
+                      </div>
+                    </>
                 </td>
                 <td>{account.planType ?? '-'}</td>
                 <td><Quota account={account} running={running} now={clock} /></td>
@@ -320,10 +322,10 @@ export function AccountsPage(props: AccountsPageProps): React.JSX.Element {
               )
             })}
             {virtualAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={7} style={{ height: virtualAccounts.paddingBottom }} /></tr>}
-            {accounts.length === 0 && <tr><td colSpan={7} className="empty-state">没有匹配的账号</td></tr>}
+            {accounts.length === 0 && <EmptyTableRow colSpan={7} />}
           </tbody>
         </table>
-      </div>
+      </TableWrap>
     </PageView>
   )
 }

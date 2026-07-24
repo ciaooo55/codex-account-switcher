@@ -18,7 +18,7 @@ Legacy `styles.css` remains during migration; new UI prefers Tailwind utilities 
 src/renderer/src/
   main.tsx
   App.tsx
-  components/ui/          # Button, Badge, Input, Select, Card, Progress, PageView, Toolbar, Dialog*, Segmented*
+  components/ui/          # Button, Badge, Input, Select, Card, Progress, PageView, Toolbar, Dialog*, Segmented*, Table*, ContextMenu*
   components/layout/
   pages/
   hooks/
@@ -27,6 +27,7 @@ src/renderer/src/
     tokens.css
     tailwind.css
     layout-polish.css
+    components.css       # status/table bridge styles
   styles.css              # legacy (phasing out)
 ```
 

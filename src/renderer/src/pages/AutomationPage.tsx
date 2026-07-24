@@ -7,7 +7,8 @@ import { displayStatus, STATUS_LABELS } from '../account-status'
 import { AccountMetadataChips } from '../components/accounts/AccountMetadataChips'
 import { Quota } from '../components/accounts/Quota'
 import type { useVirtualTableRows } from '../hooks/useVirtualTableRows'
-import { Button, PageView, SearchField, Select } from '@/components/ui'
+import { Button, EmptyTableRow, PageView, SearchField, Select, TableWrap } from '@/components/ui'
+import { AccountStatusBadge } from '../components/accounts/AccountStatusBadge'
 import { dateTime } from '../lib/format'
 
 type VirtualAccounts = ReturnType<typeof useVirtualTableRows<AccountSummary>>
@@ -87,7 +88,7 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
             <Button onClick={() => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: [] })}>清空</Button>
           </div>
 
-          <div className="table-wrap automation-table-wrap min-h-0 flex-1 overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)]" ref={virtualAutomationAccounts.scrollRef}>
+          <TableWrap className="automation-table-wrap" ref={virtualAutomationAccounts.scrollRef}>
             <table className="automation-table">
               <thead><tr><th className="select-column">候选</th><th>账号</th><th>状态</th><th>等级</th><th>当前额度</th><th>最后检测</th></tr></thead>
               <tbody>
@@ -102,7 +103,7 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
                     }}>
                       <td><input type="checkbox" aria-label={`自动切换候选 ${account.email ?? account.id}`} disabled={!account.switchable} checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => setSettingsDraft({ ...settingsDraft, autoSwitchAccountIds: event.target.checked ? [...settingsDraft.autoSwitchAccountIds, account.id] : settingsDraft.autoSwitchAccountIds.filter((id) => id !== account.id) })} /></td>
                       <td><div className="account-email">{account.alias ?? account.email ?? '邮箱未知'} {account.active && <span className="active-badge">当前</span>}</div>{account.alias && <div className="account-secondary-email">{account.email ?? '邮箱未知'}</div>}<div className="workspace-id">{switchCapability(account)}</div><AccountMetadataChips account={account} /></td>
-                      <td>{running ? <span className="status status-testing"><LoaderCircle className="spin" size={13} />检测中</span> : <><span className={`status status-${displayStatus(account.status)}`}>{STATUS_LABELS[displayStatus(account.status)]}</span><div className="status-detail">{account.detail}</div></>}</td>
+                      <td><><AccountStatusBadge status={displayStatus(account.status)} running={running} /><div className="status-detail">{running ? '' : account.detail}</div></></td>
                       <td>{account.planType ?? '未知'}</td>
                       <td><Quota account={account} running={running} now={clock} /></td>
                       <td>{dateTime(account.lastCheckedAt)}</td>
@@ -110,10 +111,10 @@ export function AutomationPage(props: AutomationPageProps): React.JSX.Element {
                   )
                 })}
                 {virtualAutomationAccounts.paddingBottom > 0 && <tr className="virtual-spacer" aria-hidden="true"><td colSpan={6} style={{ height: virtualAutomationAccounts.paddingBottom }} /></tr>}
-                {automationAccounts.length === 0 && <tr><td colSpan={6} className="empty-state">没有匹配的账号</td></tr>}
+                {automationAccounts.length === 0 && <EmptyTableRow colSpan={6} />}
               </tbody>
             </table>
-          </div>
+          </TableWrap>
     </PageView>
   )
 }

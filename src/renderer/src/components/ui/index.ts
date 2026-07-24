@@ -16,3 +16,5 @@ export {
   SegmentedControl,
   SegmentedButton
 } from './surface'
+export { TableWrap, DataTable, EmptyTableRow } from './table'
+export { ContextMenu, ContextMenuLabel, ContextMenuItem } from './context-menu'
