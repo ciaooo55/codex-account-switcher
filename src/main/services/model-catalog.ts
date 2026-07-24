@@ -501,10 +501,13 @@ export async function discoverApiUpstream(input: {
   const fetchImpl = input.fetchImpl ?? fetch
   const selectedNative = input.protocol === 'gemini' || input.protocol === 'gemini_interactions'
     || input.protocol === 'anthropic_messages' || input.protocol === 'ollama'
+  const explicitOpenAiProtocol = input.protocol === 'responses' || input.protocol === 'chat_completions' || input.protocol === 'completions'
+    ? input.protocol
+    : null
   const openai = selectedNative
     ? { models: [] as string[], baseUrl: input.baseUrl, modelsUrl: input.baseUrl, errors: [] as string[] }
-    : await fetchOpenAiCompatibleModelIds({ ...input, protocol: 'auto', timeoutMs, fetchImpl })
-  if (openai.models.length) return { protocol: 'auto', models: openai.models, baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors: openai.errors }
+    : await fetchOpenAiCompatibleModelIds({ ...input, protocol: explicitOpenAiProtocol ?? 'auto', timeoutMs, fetchImpl })
+  if (openai.models.length) return { protocol: explicitOpenAiProtocol ?? 'auto', models: openai.models, baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors: openai.errors }
   const root = providerRootUrl(input.baseUrl)
   const errors = [...openai.errors]
 
@@ -553,7 +556,7 @@ export async function discoverApiUpstream(input: {
     errors.push(`${anthropicUrl} → ${result.ok ? '模型列表为空' : `HTTP ${result.status}`}`)
   } catch (error) { errors.push(`${anthropicUrl} → ${error instanceof Error ? error.message : '请求失败'}`) }
 
-  return { protocol: 'auto', models: [], baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors }
+  return { protocol: explicitOpenAiProtocol ?? 'auto', models: [], baseUrl: openai.baseUrl, modelsUrl: openai.modelsUrl, errors }
 }
 
 function optionalArrayRecord(value: unknown, key: string): unknown[] {
@@ -585,7 +588,12 @@ export async function probeApiUpstreamModel(input: {
   let url: string
   let headers: Record<string, string>
   let body: JsonSerializable
-  if (input.protocol === 'anthropic_messages') {
+  if (input.protocol === 'completions') {
+    const auth = upstreamAuthentication(input, 'completions')
+    url = applyApiUpstreamAuthQuery(`${root}/v1/completions`, auth)
+    headers = apiUpstreamAuthHeaders(auth)
+    body = { model: input.model, prompt: 'hi', max_tokens: 32, stream: false }
+  } else if (input.protocol === 'anthropic_messages') {
     const auth = upstreamAuthentication(input, 'anthropic_messages')
     url = applyApiUpstreamAuthQuery(`${root}/v1/messages`, auth)
     headers = { ...apiUpstreamAuthHeaders(auth), 'anthropic-version': '2023-06-01' }
@@ -608,7 +616,9 @@ export async function probeApiUpstreamModel(input: {
   }
   const result = await postJson({ url, apiKey: '', timeoutMs, fetchImpl, body, headers })
   if (!result.ok) throw new Error(`模型测试失败（${url} HTTP ${result.status}）：${errorMessageFromBody(result.body, result.text || '上游拒绝请求')}`)
-  const output = input.protocol === 'anthropic_messages'
+  const output = input.protocol === 'completions'
+    ? stringValue(optionalRecord(arrayAt(optionalRecord(result.body)?.choices, 0))?.text)
+    : input.protocol === 'anthropic_messages'
     ? arrayText(optionalRecord(result.body)?.content, 'text')
     : input.protocol === 'gemini'
       ? arrayText(optionalRecord(optionalRecord(arrayAt(optionalRecord(result.body)?.candidates, 0))?.content)?.parts, 'text')
@@ -633,6 +643,14 @@ function chatCompletionsOutputText(body: unknown): string {
     const text = (part as Record<string, unknown>).text
     return typeof text === 'string' && text.trim() ? [text.trim()] : []
   }).join('\n')
+}
+
+function legacyCompletionsOutputText(body: unknown): string {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return ''
+  const choices = (body as Record<string, unknown>).choices
+  if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== 'object') return ''
+  const text = (choices[0] as Record<string, unknown>).text
+  return typeof text === 'string' ? text.trim() : ''
 }
 
 async function postJson(input: {
@@ -700,15 +718,22 @@ interface CustomApiChatProbeResult {
   output: string
 }
 
+interface CustomApiCompletionsProbeResult {
+  endpoint: 'completions'
+  baseUrl: string
+  probeUrl: string
+  output: string
+}
+
 export function probeCustomApiModel(
   input: CustomApiProbeInput & { allowChatCompletions: true }
-): Promise<CustomApiResponsesProbeResult | CustomApiChatProbeResult>
+): Promise<CustomApiResponsesProbeResult | CustomApiChatProbeResult | CustomApiCompletionsProbeResult>
 export function probeCustomApiModel(
   input: CustomApiProbeInput
 ): Promise<CustomApiResponsesProbeResult>
 export async function probeCustomApiModel(
   input: CustomApiProbeInput
-): Promise<CustomApiResponsesProbeResult | CustomApiChatProbeResult> {
+): Promise<CustomApiResponsesProbeResult | CustomApiChatProbeResult | CustomApiCompletionsProbeResult> {
   const model = normalizeModelId(input.model)
   if (!model) throw new Error('模型名称无效')
   const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 12_000))
@@ -718,7 +743,7 @@ export async function probeCustomApiModel(
   let hardError: Error | null = null
 
   for (const target of targets) {
-    if (target.endpoint === 'chat_completions' && input.allowChatCompletions !== true) continue
+    if ((target.endpoint === 'chat_completions' || target.endpoint === 'completions') && input.allowChatCompletions !== true) continue
     const body = target.endpoint === 'responses'
       ? {
           model,
@@ -727,9 +752,14 @@ export async function probeCustomApiModel(
           store: false,
           stream: false
         }
-      : {
+      : target.endpoint === 'chat_completions' ? {
           model,
           messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 64,
+          stream: false
+        } : {
+          model,
+          prompt: 'hi',
           max_tokens: 64,
           stream: false
         }
@@ -746,7 +776,9 @@ export async function probeCustomApiModel(
       })
       const output = target.endpoint === 'responses'
         ? responsesOutputText(result.body)
-        : chatCompletionsOutputText(result.body)
+        : target.endpoint === 'chat_completions'
+          ? chatCompletionsOutputText(result.body)
+          : legacyCompletionsOutputText(result.body)
       const validShape = target.endpoint === 'responses'
         ? isResponsesProbeResult(result.body)
         : output.length > 0
@@ -759,7 +791,10 @@ export async function probeCustomApiModel(
         }
       }
       if (result.ok) {
-        softErrors.push(`${target.url} → ${target.endpoint === 'responses' ? 'Responses' : 'Chat Completions'} 返回成功，但没有可读的模型回复`)
+        const label = target.endpoint === 'responses'
+          ? 'Responses'
+          : target.endpoint === 'chat_completions' ? 'Chat Completions' : 'Legacy Completions'
+        softErrors.push(`${target.url} → ${label} 返回成功，但没有可读的模型回复`)
         continue
       }
       if (result.status === 404 || result.status === 405) {
@@ -788,7 +823,7 @@ export async function probeCustomApiModel(
   if (hardError) throw hardError
   throw new Error(
     input.allowChatCompletions === true
-      ? `模型测试失败：已尝试 Responses 与 Chat Completions 的常见路径。${softErrors.slice(0, 6).join('；')}`
+      ? `模型测试失败：已尝试 Responses、Chat Completions 与 Legacy Completions 的常见路径。${softErrors.slice(0, 6).join('；')}`
       : `模型测试失败：Codex 直连第三方 API 需要有效的 Responses 响应（已尝试 /v1、/api/v1、/openai/v1）。仅支持 chat/completions 的服务需要本地 API 服务转换。${softErrors.slice(0, 5).join('；')}`
   )
 }

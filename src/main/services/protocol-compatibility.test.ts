@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   translateAnthropicRequestToChat,
+  translateChatRequestToCompletions,
   translateChatResponseForClient,
+  translateChatResponseToCompletions,
+  translateChatSseToCompletions,
   translateChatSseForClient,
+  translateCompletionsRequestToChat,
+  translateCompletionsResponseToChat,
+  translateCompletionsSseToChat,
   translateGeminiSseToChat,
   translateInteractionsRequestToChat,
   translateInteractionsSseToChat,
@@ -95,5 +101,40 @@ describe('native protocol compatibility', () => {
     expect(native).toContain('"text":"hi"')
     expect(native).toContain('event: interaction.completed')
     expect(native).toContain('event: done')
+  })
+
+  it('adapts legacy OpenAI Completions in both client and upstream directions', async () => {
+    expect(translateCompletionsRequestToChat({
+      model: 'public-model', prompt: 'hello', max_tokens: 24, temperature: 0.2, stream: true
+    })).toMatchObject({
+      model: 'public-model', messages: [{ role: 'user', content: 'hello' }], max_tokens: 24, temperature: 0.2, stream: true
+    })
+    expect(translateChatRequestToCompletions({
+      model: 'real-model', messages: [{ role: 'system', content: 'be concise' }, { role: 'user', content: 'hello' }], max_tokens: 24
+    })).toMatchObject({ model: 'real-model', prompt: 'System: be concise\nUser: hello', max_tokens: 24 })
+    expect(translateCompletionsResponseToChat({
+      id: 'cmpl_1', model: 'real-model', choices: [{ text: 'hi back', index: 0, finish_reason: 'stop' }]
+    })).toMatchObject({ choices: [{ message: { role: 'assistant', content: 'hi back' }, finish_reason: 'stop' }] })
+    expect(translateChatResponseToCompletions({
+      id: 'chat_1', model: 'public-model', choices: [{ index: 0, message: { role: 'assistant', content: 'hi back' }, finish_reason: 'stop' }]
+    })).toMatchObject({ object: 'text_completion', choices: [{ text: 'hi back', finish_reason: 'stop' }] })
+
+    const upstreamChat = await new Response(translateCompletionsSseToChat(byteStream(
+      `data: ${JSON.stringify({ id: 'cmpl_1', model: 'real-model', choices: [{ text: 'hel', finish_reason: null }] })}\n\n`
+      + `data: ${JSON.stringify({ id: 'cmpl_1', model: 'real-model', choices: [{ text: 'lo', finish_reason: 'stop' }] })}\n\n`
+    ))).text()
+    expect(upstreamChat).toContain('"content":"hel"')
+    expect(upstreamChat).toContain('"content":"lo"')
+    expect(upstreamChat).toContain('data: [DONE]')
+
+    const clientCompletion = await new Response(translateChatSseToCompletions(byteStream(
+      `data: ${JSON.stringify({ id: 'chat_1', model: 'public-model', choices: [{ delta: { role: 'assistant', content: 'hi' }, finish_reason: null }] })}\n\n`
+      + `data: ${JSON.stringify({ id: 'chat_1', model: 'public-model', choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`
+    ))).text()
+    expect(clientCompletion).toContain('"object":"text_completion"')
+    expect(clientCompletion).toContain('"text":"hi"')
+    expect(clientCompletion).toContain('data: [DONE]')
+
+    expect(() => translateCompletionsRequestToChat({ model: 'x', prompt: ['one', 'two'] })).toThrow('多个 prompt')
   })
 })

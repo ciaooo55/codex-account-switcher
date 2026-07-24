@@ -24,6 +24,7 @@ export type NativeClientProtocol =
 export type UpstreamResponseProtocol =
   | 'responses'
   | 'chat_completions'
+  | 'completions'
   | 'anthropic_messages'
   | 'gemini'
   | 'gemini_interactions'
@@ -73,6 +74,16 @@ function chatContentText(content: unknown): string {
     if (item.type === 'text') return string(item.text)
     return ''
   }).join('')
+}
+
+function legacyCompletionPrompt(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) throw new Error('Legacy Completions 的 prompt 必须是字符串')
+  if (value.length > 1) throw new Error('Legacy Completions 暂不支持一次传入多个 prompt')
+  if (value.length === 0) return ''
+  if (typeof value[0] !== 'string') throw new Error('Legacy Completions 的 prompt 必须是字符串')
+  return value[0]
 }
 
 function chatChoice(bodyValue: unknown): { body: JsonObject; choice: JsonObject; message: JsonObject } {
@@ -435,6 +446,23 @@ export function translateInteractionsRequestToChat(bodyValue: unknown): JsonObje
   return result
 }
 
+/** Convert the legacy OpenAI Completions request into the router Chat wire. */
+export function translateCompletionsRequestToChat(bodyValue: unknown): JsonObject {
+  const body = object(bodyValue, 'Legacy Completions 请求')
+  const model = string(body.model).trim()
+  if (!model) throw new Error('Legacy Completions 请求必须提供 model')
+  const count = number(body.n)
+  if (count !== undefined && count !== 1) throw new Error('Legacy Completions 暂不支持 n 不等于 1')
+  if (body.echo === true) throw new Error('Legacy Completions 暂不支持 echo=true')
+  const result: JsonObject = {
+    model,
+    messages: [{ role: 'user', content: legacyCompletionPrompt(body.prompt) }]
+  }
+  copyDefined(body, result, ['temperature', 'top_p', 'max_tokens', 'stop', 'seed', 'stream_options', 'user'])
+  if (body.stream === true) result.stream = true
+  return result
+}
+
 /** Convert an Ollama chat request into an OpenAI Chat request. */
 export function translateOllamaChatRequestToChat(bodyValue: unknown): JsonObject {
   const body = object(bodyValue, 'Ollama chat 请求')
@@ -663,6 +691,33 @@ export function translateChatRequestToInteractions(bodyValue: unknown): JsonObje
   return result
 }
 
+/** Convert the router Chat wire to an OpenAI-compatible legacy Completions request. */
+export function translateChatRequestToCompletions(bodyValue: unknown): JsonObject {
+  const body = object(bodyValue, 'Chat 请求')
+  if (array(body.tools).length > 0 || body.tool_choice !== undefined) {
+    throw new Error('Legacy Completions 上游不支持 tools')
+  }
+  const lines: string[] = []
+  for (const value of array(body.messages)) {
+    const message = object(value, 'Chat message')
+    const role = string(message.role) || 'user'
+    const text = chatContentText(message.content)
+    if (text) lines.push(`${role === 'assistant' ? 'Assistant' : role === 'system' || role === 'developer' ? 'System' : role === 'tool' ? 'Tool' : 'User'}: ${text}`)
+  }
+  const result: JsonObject = {
+    model: string(body.model),
+    prompt: lines.join('\n')
+  }
+  if (body.stream === true) result.stream = true
+  if (body.temperature !== undefined) result.temperature = body.temperature
+  if (body.top_p !== undefined) result.top_p = body.top_p
+  if (body.max_tokens ?? body.max_completion_tokens) result.max_tokens = body.max_tokens ?? body.max_completion_tokens
+  if (body.stop !== undefined) result.stop = body.stop
+  if (body.seed !== undefined) result.seed = body.seed
+  if (body.user !== undefined) result.user = body.user
+  return result
+}
+
 /** Convert a Chat request into an Ollama /api/chat request. */
 export function translateChatRequestToOllama(bodyValue: unknown): JsonObject {
   const body = object(bodyValue, 'Chat 请求')
@@ -793,6 +848,33 @@ export function translateInteractionsResponseToChat(bodyValue: unknown): JsonObj
   }
 }
 
+/** Convert a completed legacy OpenAI Completions response into Chat Completions. */
+export function translateCompletionsResponseToChat(bodyValue: unknown): JsonObject {
+  const body = object(bodyValue, 'Legacy Completions 响应')
+  const choices = array(body.choices)
+  if (!choices.length) throw new Error('Legacy Completions 响应缺少 choices')
+  const chatChoices = choices.map((value, index) => {
+    const choice = object(value, `Legacy Completions choices[${index}]`)
+    const message = optionalObject(choice.message)
+    const text = string(choice.text ?? message?.content)
+    return {
+      index: number(choice.index) ?? index,
+      message: { role: 'assistant', content: text },
+      logprobs: null,
+      finish_reason: choice.finish_reason ?? 'stop'
+    }
+  })
+  const result: JsonObject = {
+    id: string(body.id) || 'chatcmpl_completions',
+    object: 'chat.completion',
+    created: number(body.created) ?? Math.floor(Date.now() / 1000),
+    model: string(body.model),
+    choices: chatChoices
+  }
+  if (optionalObject(body.usage)) result.usage = body.usage
+  return result
+}
+
 /** Convert a successful Ollama /api/chat response into Chat Completions. */
 export function translateOllamaResponseToChat(bodyValue: unknown): JsonObject {
   const body = object(bodyValue, 'Ollama 响应')
@@ -877,6 +959,32 @@ export function translateChatResponseForClient(
   return { ...base, response: text }
 }
 
+/** Convert a completed Chat response into the legacy OpenAI Completions shape. */
+export function translateChatResponseToCompletions(bodyValue: unknown): JsonObject {
+  const body = object(bodyValue, 'Chat 响应')
+  const choices = array(body.choices)
+  if (!choices.length) throw new Error('Chat 响应缺少 choices')
+  const completionChoices = choices.map((value, index) => {
+    const choice = object(value, `Chat choices[${index}]`)
+    const message = optionalObject(choice.message) ?? {}
+    return {
+      text: chatContentText(message.content),
+      index: number(choice.index) ?? index,
+      logprobs: null,
+      finish_reason: choice.finish_reason ?? 'stop'
+    }
+  })
+  const result: JsonObject = {
+    id: string(body.id) || 'cmpl_local',
+    object: 'text_completion',
+    created: number(body.created) ?? Math.floor(Date.now() / 1000),
+    model: string(body.model),
+    choices: completionChoices
+  }
+  if (optionalObject(body.usage)) result.usage = body.usage
+  return result
+}
+
 interface SseEvent { event?: string; data: string }
 
 class SseDecoder {
@@ -949,6 +1057,101 @@ function transformBytes(
       for (const output of flush()) controller.enqueue(encoder.encode(output))
     }
   })
+}
+
+/** Convert a legacy OpenAI Completions SSE stream into Chat Completions SSE. */
+export function translateCompletionsSseToChat(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  let id = 'chatcmpl_completions'
+  let model = ''
+  let started = false
+  let finished = false
+  const start = (out: string[]): void => {
+    if (!started) {
+      started = true
+      out.push(chatChunk(id, model, { role: 'assistant', content: '' }))
+    }
+  }
+  const complete = (out: string[], reason: unknown = 'stop'): void => {
+    if (finished) return
+    finished = true
+    out.push(chatChunk(id, model, {}, reason), 'data: [DONE]\n\n')
+  }
+  return source.pipeThrough(transformBytes((item) => {
+    const out: string[] = []
+    if (item.data === '[DONE]') {
+      start(out)
+      complete(out)
+      return out
+    }
+    let payload: JsonObject
+    try { payload = object(JSON.parse(item.data), 'Legacy Completions stream') } catch { return [] }
+    if (optionalObject(payload.error)) return [`data: ${JSON.stringify({ error: payload.error })}\n\n`, 'data: [DONE]\n\n']
+    id = string(payload.id) || id
+    model = string(payload.model) || model
+    const choice = optionalObject(array(payload.choices)[0])
+    if (!choice) return out
+    const text = string(choice.text)
+    if (text) {
+      start(out)
+      out.push(chatChunk(id, model, { content: text }))
+    }
+    if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
+      start(out)
+      complete(out, choice.finish_reason)
+    }
+    return out
+  }, () => {
+    if (finished) return []
+    const out: string[] = []
+    start(out)
+    complete(out)
+    return out
+  }))
+}
+
+/** Convert a Chat Completions SSE stream into legacy OpenAI Completions SSE. */
+export function translateChatSseToCompletions(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  let id = 'cmpl_local'
+  let model = ''
+  let created = Math.floor(Date.now() / 1000)
+  let finished = false
+  const complete = (out: string[], reason: unknown = 'stop'): void => {
+    if (finished) return
+    finished = true
+    out.push(`data: ${JSON.stringify({ id, object: 'text_completion', created, model, choices: [{ text: '', index: 0, logprobs: null, finish_reason: reason }] })}\n\n`, 'data: [DONE]\n\n')
+  }
+  return source.pipeThrough(transformBytes((item) => {
+    if (item.data === '[DONE]') {
+      const out: string[] = []
+      complete(out)
+      return out
+    }
+    let payload: JsonObject
+    try { payload = object(JSON.parse(item.data), 'Chat stream') } catch { return [] }
+    if (optionalObject(payload.error)) return [`data: ${JSON.stringify({ error: payload.error })}\n\n`, 'data: [DONE]\n\n']
+    id = string(payload.id) || id
+    model = string(payload.model) || model
+    created = number(payload.created) ?? created
+    const choice = optionalObject(array(payload.choices)[0])
+    if (!choice) return []
+    const delta = optionalObject(choice.delta) ?? {}
+    const text = string(delta.content)
+    const done = choice.finish_reason !== null && choice.finish_reason !== undefined
+    const out: string[] = []
+    if (text || done) {
+      out.push(`data: ${JSON.stringify({ id, object: 'text_completion', created, model, choices: [{ text, index: number(choice.index) ?? 0, logprobs: null, finish_reason: done ? choice.finish_reason : null }] })}\n\n`)
+    }
+    if (done) {
+      finished = true
+      out.push('data: [DONE]\n\n')
+    }
+    return out
+  }, () => {
+    if (finished) return []
+    const out: string[] = []
+    complete(out)
+    return out
+  }))
 }
 
 /** Convert a native Anthropic event stream to OpenAI Chat SSE. */

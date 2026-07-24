@@ -240,6 +240,28 @@ describe('model catalog helpers', () => {
     })
   })
 
+  it('automatically detects a Legacy Completions-only provider for the local API server', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === 'http://127.0.0.1:18317/v1/completions') {
+        expect(init?.body).toContain('"prompt":"hi"')
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ choices: [{ text: 'legacy works' }] })
+        }
+      }
+      return { ok: false, status: 404, text: async () => 'not found' }
+    })
+    const result = await probeCustomApiModel({
+      baseUrl: 'http://127.0.0.1:18317/v1', apiKey: 'sk-test', model: 'legacy-model',
+      allowChatCompletions: true, fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    expect(result).toEqual({
+      endpoint: 'completions', baseUrl: 'http://127.0.0.1:18317/v1',
+      probeUrl: 'http://127.0.0.1:18317/v1/completions', output: 'legacy works'
+    })
+  })
+
   it('accepts pasted full chat completions URLs and still probes', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
@@ -340,6 +362,28 @@ describe('model catalog helpers', () => {
     await expect(probeApiUpstreamModel({
       ...listed, apiKey: 'interaction-key', model: 'gemini-interactions', fetchImpl: fetchImpl as unknown as typeof fetch
     })).resolves.toMatchObject({ output: 'interaction works', probeUrl: 'https://interactions.example/v1beta/interactions' })
+  })
+
+  it('preserves explicit Legacy Completions protocol and probes its endpoint', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === 'https://legacy.example/v1/models') {
+        expect(init?.headers).toMatchObject({ Authorization: 'Bearer legacy-key' })
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'legacy-model' }] }) }
+      }
+      if (url === 'https://legacy.example/v1/completions') {
+        expect(init?.body).toContain('"prompt":"hi"')
+        return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ text: 'legacy works' }] }) }
+      }
+      return { ok: false, status: 404, text: async () => '{}' }
+    })
+    const listed = await discoverApiUpstream({
+      baseUrl: 'https://legacy.example/v1', apiKey: 'legacy-key', protocol: 'completions',
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    expect(listed).toMatchObject({ protocol: 'completions', models: ['legacy-model'] })
+    await expect(probeApiUpstreamModel({
+      ...listed, apiKey: 'legacy-key', model: 'legacy-model', fetchImpl: fetchImpl as unknown as typeof fetch
+    })).resolves.toMatchObject({ output: 'legacy works', probeUrl: 'https://legacy.example/v1/completions' })
   })
 
   it('fails model probe when every common path is rejected', async () => {

@@ -271,6 +271,120 @@ describe('LocalApiServer', () => {
     ])
   })
 
+  it('accepts legacy OpenAI Completions clients and normalizes them through Chat', async () => {
+    const seen: Array<{ path: string; body: Record<string, unknown> }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen.push({ path: request.url ?? '', body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'chatcmpl-legacy', object: 'chat.completion', created: 1, model: 'real-1',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'legacy works' }, finish_reason: 'stop' }]
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'chat_completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/completions`, {
+      method: 'POST', headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', prompt: 'hello legacy', max_tokens: 32 })
+    })
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toMatchObject({
+      object: 'text_completion', choices: [{ text: 'legacy works', finish_reason: 'stop' }]
+    })
+    expect(seen).toEqual([expect.objectContaining({
+      path: '/v1/chat/completions',
+      body: expect.objectContaining({ model: 'real-1', messages: [{ role: 'user', content: 'hello legacy' }] })
+    })])
+  })
+
+  it('uses legacy Completions-only third-party upstreams for public Responses routes', async () => {
+    let seen: { path: string; body: Record<string, unknown>; authorization: string | undefined } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '',
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>,
+        authorization: request.headers.authorization
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'cmpl-upstream', object: 'text_completion', model: 'real-1',
+        choices: [{ index: 0, text: 'from legacy upstream', finish_reason: 'stop' }]
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('legacy', mock.baseUrl, 'completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hello' })
+    })
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toMatchObject({
+      object: 'response', output: [{ type: 'message', content: [{ type: 'output_text', text: 'from legacy upstream' }] }]
+    })
+    expect(seen).toEqual(expect.objectContaining({
+      path: '/v1/completions', authorization: 'Bearer sk-legacy',
+      body: expect.objectContaining({ model: 'real-1', prompt: 'User: hello' })
+    }))
+  })
+
+  it('relays OpenAI Embeddings through a routed third-party upstream without exposing its key', async () => {
+    let seen: { path: string; authorization: string | undefined; body: Record<string, unknown> } | null = null
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '', authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ object: 'list', data: [{ object: 'embedding', embedding: [0.1, 0.2], index: 0 }], model: 'real-1', usage: { prompt_tokens: 1, total_tokens: 1 } }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('embed', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/embeddings`, {
+      method: 'POST', headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'embedding text', dimensions: 2 })
+    })
+    expect(result.status).toBe(200)
+    await expect(result.json()).resolves.toMatchObject({ data: [{ embedding: [0.1, 0.2] }] })
+    expect(seen).toEqual(expect.objectContaining({
+      path: '/v1/embeddings', authorization: 'Bearer sk-embed',
+      body: { model: 'real-1', input: 'embedding text', dimensions: 2 }
+    }))
+  })
+
+  it('returns legacy Completion SSE while its selected upstream streams Chat chunks', async () => {
+    const mock = await mockUpstream((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write(`data: ${JSON.stringify({ id: 'chat-stream', model: 'real-1', choices: [{ index: 0, delta: { role: 'assistant', content: 'hel' }, finish_reason: null }] })}\n\n`)
+      response.end(`data: ${JSON.stringify({ id: 'chat-stream', model: 'real-1', choices: [{ index: 0, delta: { content: 'lo' }, finish_reason: 'stop' }] })}\n\n`)
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'chat_completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const result = await fetch(`http://127.0.0.1:${port}/v1/completions`, {
+      method: 'POST', headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', prompt: 'stream it', stream: true })
+    })
+    expect(result.headers.get('content-type')).toContain('text/event-stream')
+    const text = await result.text()
+    expect(text).toContain('"object":"text_completion"')
+    expect(text).toContain('"text":"hel"')
+    expect(text).toContain('"text":"lo"')
+    expect(text).toContain('data: [DONE]')
+  })
+
   it('accepts Gemini Interactions clients and routes them through the public model', async () => {
     const seen: Array<{ path: string; body: Record<string, unknown> }> = []
     const mock = await mockUpstream(async (request, response) => {

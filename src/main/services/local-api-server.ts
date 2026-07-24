@@ -29,11 +29,17 @@ import {
   translateAnthropicResponseToChat,
   translateAnthropicSseToChat,
   translateChatRequestToAnthropic,
+  translateChatRequestToCompletions,
   translateChatRequestToGemini,
   translateChatRequestToInteractions,
   translateChatRequestToOllama,
   translateChatResponseForClient,
+  translateChatResponseToCompletions,
+  translateChatSseToCompletions,
   translateChatSseForClient,
+  translateCompletionsRequestToChat,
+  translateCompletionsResponseToChat,
+  translateCompletionsSseToChat,
   translateGeminiRequestToChat,
   translateGeminiResponseToChat,
   translateGeminiSseToChat,
@@ -52,7 +58,7 @@ const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 429])
 const PROTOCOL_FALLBACK_STATUSES = new Set([400, 404, 405, 415, 422, 501])
 
-type SupportedEndpoint = '/v1/responses' | '/v1/responses/compact' | '/v1/chat/completions'
+type SupportedEndpoint = '/v1/responses' | '/v1/responses/compact' | '/v1/chat/completions' | '/v1/completions' | '/v1/embeddings'
 
 interface ApiRequestPlan {
   /** Endpoint to call on the selected upstream (not necessarily OpenAI). */
@@ -264,6 +270,12 @@ function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: strin
   if (endpoint === '/v1/responses/compact') {
     return upstream.protocol === 'auto' || upstream.protocol === 'responses'
   }
+  if (endpoint === '/v1/embeddings') {
+    return upstream.protocol === 'auto'
+      || upstream.protocol === 'responses'
+      || upstream.protocol === 'chat_completions'
+      || upstream.protocol === 'completions'
+  }
   return true
 }
 
@@ -273,6 +285,16 @@ function translatedPlan(
   upstreamProtocol: Required<ApiUpstreamInput>['protocol']
 ): ApiRequestPlan {
   if (endpoint === '/v1/responses/compact') return { endpoint, requestBody: body }
+  if (endpoint === '/v1/completions' && upstreamProtocol === 'chat_completions') {
+    return { endpoint: '/v1/chat/completions', requestBody: body }
+  }
+  if (endpoint === '/v1/completions' && upstreamProtocol === 'responses') {
+    return {
+      endpoint: '/v1/responses',
+      requestBody: translateChatCompletionsRequestToResponses(body),
+      responseDirection: 'responses_to_chat'
+    }
+  }
   if (endpoint === '/v1/responses' && upstreamProtocol === 'chat_completions') {
     return {
       endpoint: '/v1/chat/completions',
@@ -296,9 +318,17 @@ function apiRequestPlans(
   body: Record<string, unknown>,
   upstreamModel: string
 ): ApiRequestPlan[] {
-  const chatBody = endpoint === '/v1/chat/completions'
+  if (endpoint === '/v1/embeddings') return [{ endpoint, requestBody: body }]
+  const chatBody = endpoint === '/v1/chat/completions' || endpoint === '/v1/completions'
     ? body
     : translateResponsesRequestToChatCompletions(body)
+  if (upstream.protocol === 'completions') {
+    return [{
+      endpoint: '/v1/completions',
+      requestBody: translateChatRequestToCompletions(chatBody),
+      responseProtocol: 'completions'
+    }]
+  }
   if (upstream.protocol === 'anthropic_messages') {
     return [{
       endpoint: '/v1/messages',
@@ -331,10 +361,21 @@ function apiRequestPlans(
   if (upstream.protocol !== 'auto' || endpoint === '/v1/responses/compact') {
     return [translatedPlan(endpoint, body, upstream.protocol)]
   }
+  if (endpoint === '/v1/completions') {
+    return [
+      { endpoint: '/v1/chat/completions', requestBody: body },
+      translatedPlan('/v1/chat/completions', body, 'responses'),
+      { endpoint: '/v1/completions', requestBody: translateChatRequestToCompletions(body), responseProtocol: 'completions' }
+    ]
+  }
   const alternate = endpoint === '/v1/responses'
     ? translatedPlan(endpoint, body, 'chat_completions')
     : translatedPlan(endpoint, body, 'responses')
-  return [{ endpoint, requestBody: body }, alternate]
+  return [
+    { endpoint, requestBody: body },
+    alternate,
+    { endpoint: '/v1/completions', requestBody: translateChatRequestToCompletions(chatBody), responseProtocol: 'completions' }
+  ]
 }
 
 function responseHeaders(upstream: Response): Record<string, string> {
@@ -364,7 +405,7 @@ function buildProviderUpstreamUrl(
   endpoint: string,
   query?: string
 ): string {
-  if (upstream.protocol === 'auto' || upstream.protocol === 'responses' || upstream.protocol === 'chat_completions') {
+  if (upstream.protocol === 'auto' || upstream.protocol === 'responses' || upstream.protocol === 'chat_completions' || upstream.protocol === 'completions') {
     const url = new URL(buildOpenAiUpstreamUrl(upstream.baseUrl, endpoint))
     if (query) url.search = query
     return url.toString()
@@ -467,6 +508,7 @@ function nativeResponseToChat(
   protocol: UpstreamResponseProtocol
 ): Record<string, unknown> {
   if (protocol === 'anthropic_messages') return translateAnthropicResponseToChat(payload)
+  if (protocol === 'completions') return translateCompletionsResponseToChat(payload)
   if (protocol === 'gemini') return translateGeminiResponseToChat(payload)
   if (protocol === 'gemini_interactions') return translateInteractionsResponseToChat(payload)
   if (protocol === 'ollama') return translateOllamaResponseToChat(payload)
@@ -478,6 +520,7 @@ function nativeStreamToChat(
   protocol: UpstreamResponseProtocol
 ): ReadableStream<Uint8Array> {
   if (protocol === 'anthropic_messages') return translateAnthropicSseToChat(stream)
+  if (protocol === 'completions') return translateCompletionsSseToChat(stream)
   if (protocol === 'gemini') return translateGeminiSseToChat(stream)
   if (protocol === 'gemini_interactions') return translateInteractionsSseToChat(stream)
   if (protocol === 'ollama') return translateOllamaStreamToChat(stream)
@@ -526,7 +569,7 @@ async function relayPlanResponse(
   const streaming = contentType.includes('text/event-stream')
     || (plan.responseProtocol === 'ollama' && contentType.includes('application/x-ndjson'))
 
-  if (clientProtocol === 'openai' && !plan.responseProtocol) {
+  if (clientProtocol === 'openai' && canonicalEndpoint !== '/v1/completions' && !plan.responseProtocol) {
     if (plan.responseDirection) {
       await relayTranslatedResponse(upstream, response, plan.responseDirection, upstreamModel)
     } else {
@@ -557,6 +600,15 @@ async function relayPlanResponse(
         upstream,
         response,
         clientResponseContentType(clientProtocol)
+      )
+      return
+    }
+    if (canonicalEndpoint === '/v1/completions') {
+      await relayStream(
+        translateChatSseToCompletions(chatStream),
+        upstream,
+        response,
+        'text/event-stream; charset=utf-8'
       )
       return
     }
@@ -592,6 +644,10 @@ async function relayPlanResponse(
       throw new Error('原生客户端只能通过 Chat 兼容路由转发')
     }
     writeJson(response, upstream.status, translateChatResponseForClient(chatPayload, clientProtocol))
+    return
+  }
+  if (canonicalEndpoint === '/v1/completions') {
+    writeJson(response, upstream.status, translateChatResponseToCompletions(chatPayload))
     return
   }
   if (canonicalEndpoint === '/v1/responses' && plan.responseProtocol) {
@@ -1062,6 +1118,10 @@ export class LocalApiServer {
         ? '/v1/responses/compact'
         : requestUrl.pathname === '/v1/chat/completions' || requestUrl.pathname === '/chat/completions'
           ? '/v1/chat/completions'
+          : requestUrl.pathname === '/v1/completions' || requestUrl.pathname === '/completions'
+            ? '/v1/completions'
+            : requestUrl.pathname === '/v1/embeddings' || requestUrl.pathname === '/embeddings'
+              ? '/v1/embeddings'
           : null
     const anthropicEndpoint = requestUrl.pathname === '/v1/messages' || requestUrl.pathname === '/messages'
     const ollamaChatEndpoint = requestUrl.pathname === '/api/chat'
@@ -1094,6 +1154,8 @@ export class LocalApiServer {
       if (anthropicEndpoint) {
         body = translateAnthropicRequestToChat(body)
         clientProtocol = 'anthropic'
+      } else if (directEndpoint === '/v1/completions') {
+        body = translateCompletionsRequestToChat(body)
       } else if (geminiEndpoint) {
         body = {
           ...translateGeminiRequestToChat(body, decodeURIComponent(geminiEndpoint[1])),
@@ -1181,6 +1243,9 @@ export class LocalApiServer {
         !target.enabled ||
         !source.enabled
       ) return []
+      // Existing account credentials are Responses-only upstreams. Do not
+      // pretend their access tokens can serve provider-specific embeddings.
+      if (endpoint === '/v1/embeddings') return []
       const cooldownUntil = this.sourceCooldowns.get(source.id) ?? 0
       if (cooldownUntil > Date.now()) return []
       if (cooldownUntil) this.sourceCooldowns.delete(source.id)
@@ -1227,7 +1292,7 @@ export class LocalApiServer {
         const credentialResolution = candidate.kind === 'credential'
           ? await this.resolveCredentialUpstream?.({
               source: candidate.source,
-              endpoint: endpoint === '/v1/chat/completions' ? '/v1/responses' : endpoint
+              endpoint: endpoint === '/v1/responses/compact' ? '/v1/responses/compact' : '/v1/responses'
             })
           : undefined
         if (candidate.kind === 'credential' && !credentialResolution) {
@@ -1240,7 +1305,7 @@ export class LocalApiServer {
           : credentialResolution!.headers
         const plans: ApiRequestPlan[] = candidate.kind === 'api'
           ? apiRequestPlans(candidate.upstream, endpoint, body, candidate.target.upstreamModel)
-          : endpoint === '/v1/chat/completions'
+          : endpoint === '/v1/chat/completions' || endpoint === '/v1/completions'
             ? [{
                 endpoint: '/v1/responses',
                 requestBody: {

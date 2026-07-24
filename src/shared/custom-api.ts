@@ -210,7 +210,11 @@ export function customApiChatCompletionsUrl(value: string): string {
   return `${normalizeCustomApiBaseUrl(value)}/chat/completions`
 }
 
-export type CustomApiProbeEndpoint = 'responses' | 'chat_completions'
+export function customApiCompletionsUrl(value: string): string {
+  return `${normalizeCustomApiBaseUrl(value)}/completions`
+}
+
+export type CustomApiProbeEndpoint = 'responses' | 'chat_completions' | 'completions'
 
 export interface CustomApiProbeTarget {
   endpoint: CustomApiProbeEndpoint
@@ -220,7 +224,7 @@ export interface CustomApiProbeTarget {
   url: string
 }
 
-/** Ordered probe targets: responses first (Codex wire), then chat completions; all base variants. */
+/** Ordered probe targets: Responses first (Codex wire), then Chat and legacy Completions; all base variants. */
 export function customApiProbeTargets(value: string): CustomApiProbeTarget[] {
   const bases = expandCustomApiBaseUrls(value)
   const targets: CustomApiProbeTarget[] = []
@@ -235,5 +239,6 @@ export function customApiProbeTargets(value: string): CustomApiProbeTarget[] {
 
   for (const base of bases) push('responses', base, '/responses')
   for (const base of bases) push('chat_completions', base, '/chat/completions')
+  for (const base of bases) push('completions', base, '/completions')
   return targets
 }

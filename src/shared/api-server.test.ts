@@ -89,6 +89,23 @@ describe('api server shared configuration', () => {
     })
   })
 
+  it('accepts explicit OpenAI Legacy Completions upstreams', () => {
+    const normalized = normalizeLocalApiServerConfig({
+      port: 8888,
+      autoStart: false,
+      accessKeys: [],
+      upstreams: [{
+        id: 'legacy', name: 'Legacy', baseUrl: 'https://legacy.example/v1', apiKey: 'key',
+        protocol: 'completions' as const, models: ['legacy-model'], priority: 1, enabled: true
+      }],
+      routes: [{
+        publicModel: 'legacy-public', strategy: 'single' as const, sourceMode: 'api_only' as const,
+        targets: [{ sourceId: 'legacy', upstreamModel: 'legacy-model', priority: 1, enabled: true }]
+      }]
+    })
+    expect(normalized.upstreams[0]).toMatchObject({ protocol: 'completions', apiKey: 'key' })
+  })
+
   it('uses the Gemini standard key header for explicit Interactions upstreams', () => {
     expect(apiUpstreamAuthHeaders({ protocol: 'gemini_interactions', apiKey: 'gem-key' })).toEqual({
       'x-goog-api-key': 'gem-key'

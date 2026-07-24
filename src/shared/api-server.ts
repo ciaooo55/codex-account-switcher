@@ -11,6 +11,7 @@ export type ApiUpstreamProtocol =
   | 'auto'
   | 'responses'
   | 'chat_completions'
+  | 'completions'
   | 'anthropic_messages'
   | 'gemini'
   | 'gemini_interactions'
@@ -329,7 +330,7 @@ export function normalizeLocalApiServerConfig(
     if (apiKey !== undefined && apiKey.length > 16_384) throw new Error('上游 API Key 过长')
     const priority = Number.isFinite(entry.priority) ? Math.trunc(entry.priority) : 0
     const protocol = (() => {
-      if (!['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini', 'gemini_interactions', 'ollama'].includes(entry.protocol)) {
+      if (!['auto', 'responses', 'chat_completions', 'completions', 'anthropic_messages', 'gemini', 'gemini_interactions', 'ollama'].includes(entry.protocol)) {
         throw new Error('上游协议类型无效')
       }
       return entry.protocol
