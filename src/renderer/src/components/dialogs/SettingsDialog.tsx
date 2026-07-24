@@ -8,12 +8,14 @@ import {
   RefreshCw,
   X
 } from 'lucide-react'
+import { useState } from 'react'
 import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type { AppSnapshot, UpdateState } from '../../../../shared/ipc'
 import type { AppSettings } from '../../../../shared/types'
 import type { RequestConfirmation } from '../../hooks/useConfirmation'
 import { Button, DialogActions, DialogBackdrop, DialogHeader, DialogPanel } from '@/components/ui'
 import { customApiCatalogStatus, parseCustomApiModels } from '@/lib/custom-api-form'
+import { parseCustomApiPaste } from '../../../../shared/custom-api'
 import { codexApi } from '../../services/codexApi'
 
 export type SettingsDialogProps = {
@@ -71,6 +73,8 @@ export function SettingsDialog({
   installUpdate,
   checkForUpdates
 }: SettingsDialogProps): React.JSX.Element | null {
+  const [pasteText, setPasteText] = useState('')
+  const [pasteNote, setPasteNote] = useState('')
   if (!open) return null
 
   const parsedModels = parseCustomApiModels(customApiModelsText)
@@ -139,6 +143,55 @@ export function SettingsDialog({
                 </label>
                 <label>API Key<input type="password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} placeholder={snapshot.customApi.hasApiKey ? '留空继续使用已保存 Key' : '输入 API Key'} autoComplete="new-password" /></label>
               </div>
+              <details className="paste-recognizer rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2">
+                <summary className="cursor-pointer select-none text-[13px] font-medium text-[var(--color-text)]">粘贴识别（URL / Key / Base64 / JSON）</summary>
+                <div className="mt-2 space-y-2">
+                  <textarea
+                    aria-label="粘贴识别输入"
+                    rows={3}
+                    value={pasteText}
+                    onChange={(event) => setPasteText(event.target.value)}
+                    placeholder="可粘贴完整 URL + Key、url=...&key=...、JSON 或 Base64 数据；会自动解码并测试 /v1 与无后缀两种写法"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" variant="secondary" disabled={busy || !pasteText.trim()} onClick={() => void run(async () => {
+                      const parsed = parseCustomApiPaste(pasteText)
+                      if (parsed.baseUrl) setSettingsDraft({ ...settingsDraft, customApiBaseUrl: parsed.baseUrl })
+                      if (parsed.apiKey) setCustomApiKey(parsed.apiKey)
+                      setPasteNote(parsed.note)
+                      if (!parsed.baseUrl && !parsed.apiKey) throw new Error(parsed.note)
+                    }, '已识别并填入字段', false)}>
+                      识别并填入
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy || (!settingsDraft.customApiBaseUrl.trim() && !pasteText.trim())} onClick={() => void run(async () => {
+                      let baseUrl = settingsDraft.customApiBaseUrl.trim()
+                      let apiKey = customApiKey.trim()
+                      if (pasteText.trim()) {
+                        const parsed = parseCustomApiPaste(pasteText)
+                        if (parsed.baseUrl) { baseUrl = parsed.baseUrl; setSettingsDraft({ ...settingsDraft, customApiBaseUrl: parsed.baseUrl }) }
+                        if (parsed.apiKey) { apiKey = parsed.apiKey; setCustomApiKey(parsed.apiKey) }
+                        setPasteNote(parsed.note)
+                      }
+                      if (!baseUrl) throw new Error('未识别到 API 地址')
+                      const listed = await codexApi().listCustomApiModels({ baseUrl, ...(apiKey ? { apiKey } : {}) })
+                      setPasteNote(listed.message)
+                      setCustomApiModelsNote(listed.message)
+                      if (!listed.ok) throw new Error(listed.message)
+                      const listedModels = parseCustomApiModels(listed.models.join('\n')).models
+                      replaceEditedModels(listedModels)
+                      if (listedModels.length > 0 && !settingsDraft.customApiModel.trim()) {
+                        setSettingsDraft({ ...settingsDraft, customApiModel: listedModels[0] })
+                        setPasteNote(`${listed.message}；默认模型已设为“${listedModels[0]}”`)
+                      }
+                    }, '已识别并获取模型列表', false)}>
+                      识别并获取模型
+                    </Button>
+                    {pasteNote ? <span className="custom-api-models-note">{pasteNote}</span> : null}
+                  </div>
+                </div>
+              </details>
+
+
               <label className="check-option"><input type="checkbox" checked={customApiSyncCatalog} onChange={(event) => setCustomApiSyncCatalog(event.target.checked)} />将下面目录作为 Codex 的完整模型列表（精确覆盖）</label>
               <label>Codex 模型目录（每行一个，顺序保留）
                 <textarea
