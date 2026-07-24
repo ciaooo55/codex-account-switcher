@@ -23,7 +23,9 @@ import type {
   UsageSummary
 } from '../../../shared/types'
 import { STATUS_LABELS } from '../account-status'
-import { useDialogFocus } from '../hooks/useDialogFocus'
+import { Button, DialogActions, DialogHeader, SearchField, Select } from '@/components/ui'
+import { cn } from '@/lib/cn'
+import { useDialogFocus } from '@/hooks/useDialogFocus'
 import { useVirtualTableRows } from '../hooks/useVirtualTableRows'
 
 const DISPOSITION_LABELS: Record<ImportPreviewDisposition, string> = {
@@ -186,13 +188,13 @@ export function ImportPreviewDialog({
   return (
     <section
       ref={dialogRef}
-      className={`compact-dialog import-dialog import-preview-dialog${preview.items.length > 4 || hasUnrecognized ? ' import-preview-dialog-tall' : ''}`}
+      className={cn('compact-dialog import-dialog import-preview-dialog my-6 w-full max-w-[980px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]', (preview.items.length > 4 || hasUnrecognized) && 'import-preview-dialog-tall')}
       role="dialog"
       aria-modal="true"
       aria-label="导入预检"
       tabIndex={-1}
     >
-      <div className="panel-header">
+      <DialogHeader>
         <div>
           <h2>确认导入账号</h2>
           <div className="provider-detection">
@@ -203,47 +205,47 @@ export function ImportPreviewDialog({
             {counts.conflict > 0 && <span className="preview-count conflict">冲突 {counts.conflict}</span>}
           </div>
         </div>
-        <button className="icon-button" title="关闭" aria-label="关闭导入预检" onClick={onClose} disabled={interactionLocked}><X size={18} /></button>
-      </div>
+        <Button variant="ghost" size="icon" title="关闭" aria-label="关闭导入预检" onClick={onClose} disabled={interactionLocked}><X size={18} /></Button>
+      </DialogHeader>
 
-      <div className="preview-toolbar">
-        <label className="search-field"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、等级或来源" /></label>
-        <select aria-label="导入账号类型" value={provider} onChange={(event) => setProvider(event.target.value as typeof provider)} disabled={interactionLocked}>
+      <div className="preview-toolbar flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] px-4 py-3">
+        <SearchField icon={<Search size={16} />} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索邮箱、等级或来源" />
+        <Select aria-label="导入账号类型" value={provider} onChange={(event) => setProvider(event.target.value as typeof provider)} disabled={interactionLocked}>
           <option value="all">全部类型</option><option value="codex">Codex</option><option value="grok">Grok</option>
-        </select>
-        <select aria-label="导入处理状态" value={disposition} onChange={(event) => setDisposition(event.target.value as typeof disposition)} disabled={interactionLocked}>
+        </Select>
+        <Select aria-label="导入处理状态" value={disposition} onChange={(event) => setDisposition(event.target.value as typeof disposition)} disabled={interactionLocked}>
           <option value="all">全部结果</option>
           {Object.entries(DISPOSITION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <select aria-label="凭证检测结果" value={testStatus} onChange={(event) => setTestStatus(event.target.value as typeof testStatus)} disabled={interactionLocked}>
+        </Select>
+        <Select aria-label="凭证检测结果" value={testStatus} onChange={(event) => setTestStatus(event.target.value as typeof testStatus)} disabled={interactionLocked}>
           <option value="all">全部检测状态</option>
           {TEST_STATUS_ORDER.filter((status) => testStatusCounts.has(status)).map((status) => (
             <option key={status} value={status}>{STATUS_LABELS[status]} {testStatusCounts.get(status)}</option>
           ))}
-        </select>
-        <button onClick={applySuggestions} disabled={interactionLocked}><RotateCcw size={15} />采用建议</button>
-        <button onClick={importUseful} disabled={interactionLocked}><CheckCircle2 size={15} />新增/更新</button>
+        </Select>
+        <Button onClick={applySuggestions} disabled={interactionLocked}><RotateCcw size={15} />采用建议</Button>
+        <Button onClick={importUseful} disabled={interactionLocked}><CheckCircle2 size={15} />新增/更新</Button>
       </div>
 
-      <div className="preview-selection-bar">
-        <div className="preview-selection-actions">
-          <button onClick={() => setFilteredSelected(true)} disabled={interactionLocked || items.length === 0}><SquareCheckBig size={15} />全选当前</button>
-          <button onClick={() => setFilteredSelected(false)} disabled={interactionLocked || selectedFilteredCount === 0}><Square size={15} />清空当前</button>
+      <div className="preview-selection-bar flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-4 py-2">
+        <div className="preview-selection-actions flex flex-wrap items-center gap-1.5">
+          <Button onClick={() => setFilteredSelected(true)} disabled={interactionLocked || items.length === 0}><SquareCheckBig size={15} />全选当前</Button>
+          <Button onClick={() => setFilteredSelected(false)} disabled={interactionLocked || selectedFilteredCount === 0}><Square size={15} />清空当前</Button>
           <span>已选 {selectedCount} / {preview.items.length}</span>
         </div>
-        <div className="preview-test-actions">
+        <div className="preview-test-actions flex flex-wrap items-center gap-1.5">
           {testing?.active ? (
             <>
               <div className="preview-test-progress" aria-label={`导入凭证检测进度 ${testing.done}/${testing.total}`}>
                 <span><LoaderCircle className="spin" size={14} />检测中 {testing.done}/{testing.total}</span>
                 <progress max={Math.max(1, testing.total)} value={testing.done} />
               </div>
-              <button className="secondary-button" onClick={onCancelTest}><X size={15} />取消检测</button>
+              <Button variant="secondary" onClick={onCancelTest}><X size={15} />取消检测</Button>
             </>
           ) : (
             <>
-              <button onClick={() => void onTest(selectedKeys)} disabled={busy || selectedCount === 0}><TestTube2 size={15} />检测选中</button>
-              <button onClick={() => void onTest()} disabled={busy || preview.items.length === 0}><TestTube2 size={15} />一键检测全部</button>
+              <Button onClick={() => void onTest(selectedKeys)} disabled={busy || selectedCount === 0}><TestTube2 size={15} />检测选中</Button>
+              <Button onClick={() => void onTest()} disabled={busy || preview.items.length === 0}><TestTube2 size={15} />一键检测全部</Button>
             </>
           )}
         </div>
@@ -274,7 +276,7 @@ export function ImportPreviewDialog({
                   <em>{source.sourceFormat.toUpperCase()}</em>
                 </div>
                 <div className="preview-unrecognized-refine">
-                  <select
+                  <Select
                     aria-label={`${source.key} 的手动识别方式`}
                     value={manualModes[source.key] ?? ''}
                     onChange={(event) => setManualModes((current) => ({
@@ -288,8 +290,8 @@ export function ImportPreviewDialog({
                     <option value="grok">Grok JSON / AT</option>
                     <option value="codex_rt">Codex RT</option>
                     <option value="mobile_rt">移动端 RT</option>
-                  </select>
-                  <button
+                  </Select>
+                  <Button
                     type="button"
                     onClick={() => {
                       const mode = manualModes[source.key]
@@ -301,13 +303,13 @@ export function ImportPreviewDialog({
                   >
                     {refiningKey === source.key ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}
                     重新识别
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}
           </div>
           <div className="preview-unrecognized-actions">
-            <button onClick={onBack} disabled={interactionLocked}><RotateCcw size={15} />返回重新选择</button>
+            <Button onClick={onBack} disabled={interactionLocked}><RotateCcw size={15} />返回重新选择</Button>
             <label><input type="checkbox" checked={skipUnrecognized} onChange={(event) => setSkipUnrecognized(event.target.checked)} disabled={interactionLocked} />我确认跳过以上未识别内容</label>
           </div>
         </section>
@@ -377,7 +379,7 @@ export function ImportPreviewDialog({
                   </td>
                   <td><div className="source-path" title={item.sourcePath}>{item.sourcePath.split(/[\\/]/).at(-1)}</div><div className="muted">{item.sourceDialect.toUpperCase()} · {item.sourceFormat.toUpperCase()}</div></td>
                   <td>
-                    <select
+                    <Select
                       aria-label={`${item.email ?? item.identity} 的导入方式`}
                       value={decisions[item.key] ?? item.suggestedDecision}
                       onClick={(event) => event.stopPropagation()}
@@ -387,7 +389,7 @@ export function ImportPreviewDialog({
                       <option value="add" disabled={item.disposition !== 'new'}>{DECISION_LABELS.add}</option>
                       <option value="replace">{DECISION_LABELS.replace}</option>
                       <option value="skip">{DECISION_LABELS.skip}</option>
-                    </select>
+                    </Select>
                   </td>
                 </tr>
               )
@@ -398,13 +400,13 @@ export function ImportPreviewDialog({
         </table>
       </div>
 
-      <div className="panel-actions import-preview-actions">
-        <span>将处理 <strong>{selectedCount}</strong> 个账号，跳过 {preview.items.length - selectedCount} 个{hasUnrecognized ? `，另有 ${preview.unrecognized.length} 个来源待处理` : ''}</span>
-        <button className="secondary-button" onClick={onBack} disabled={interactionLocked}><RotateCcw size={16} />返回修改</button>
-        <button className="primary-button" onClick={() => onCommit(decisions, skipUnrecognized)} disabled={interactionLocked || !canCommit || (hasUnrecognized && !skipUnrecognized)}>
+      <DialogActions className="import-preview-actions">
+        <span className="mr-auto text-[12px] text-[var(--color-text-secondary)]">将处理 <strong>{selectedCount}</strong> 个账号，跳过 {preview.items.length - selectedCount} 个{hasUnrecognized ? `，另有 ${preview.unrecognized.length} 个来源待处理` : ''}</span>
+        <Button variant="secondary" onClick={onBack} disabled={interactionLocked}><RotateCcw size={16} />返回修改</Button>
+        <Button variant="default" onClick={() => onCommit(decisions, skipUnrecognized)} disabled={interactionLocked || !canCommit || (hasUnrecognized && !skipUnrecognized)}>
           {busy ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}确认写入 aa
-        </button>
-      </div>
+        </Button>
+      </DialogActions>
     </section>
   )
 }

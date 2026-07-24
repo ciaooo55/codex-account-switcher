@@ -12,7 +12,7 @@ import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type { AppSnapshot, UpdateState } from '../../../../shared/ipc'
 import type { AppSettings } from '../../../../shared/types'
 import type { RequestConfirmation } from '../../hooks/useConfirmation'
-import { Button } from '@/components/ui'
+import { Button, DialogActions, DialogBackdrop, DialogHeader, DialogPanel } from '@/components/ui'
 import { codexApi } from '../../services/codexApi'
 
 export type SettingsDialogProps = {
@@ -73,9 +73,9 @@ export function SettingsDialog({
   if (!open) return null
 
   return (
-        <div className="modal-backdrop fixed inset-0 z-[70] flex items-start justify-center overflow-auto bg-black/50 p-4 backdrop-blur-[2px]" role="presentation">
-          <section ref={settingsDialogRef} className="settings-panel my-6 w-full max-w-[720px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
-            <div className="panel-header flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3"><h2 className="text-[15px] font-semibold text-[var(--color-text)]">设置</h2><Button variant="ghost" size="icon" title="关闭" aria-label="关闭设置" onClick={() => closeSettingsDialog()} disabled={busy}><X size={18} /></Button></div>
+        <DialogBackdrop className="modal-backdrop">
+          <DialogPanel ref={settingsDialogRef} className="settings-panel max-w-[760px]" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
+            <DialogHeader className="panel-header flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3"><h2 className="text-[15px] font-semibold text-[var(--color-text)]">设置</h2><Button variant="ghost" size="icon" title="关闭" aria-label="关闭设置" onClick={() => closeSettingsDialog()} disabled={busy}><X size={18} /></Button></DialogHeader>
             <label>aa 托管凭证库<input aria-label="应用凭证库" value={snapshot.importDirectory} readOnly /></label>
             <label>导入文件默认目录<div className="path-input"><input value={settingsDraft.accountDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, accountDirectory: event.target.value })} /><Button title="选择目录" onClick={async () => { const path = await codexApi().chooseAccountDirectory(); if (path) setSettingsDraft({ ...settingsDraft, accountDirectory: path }) }}><FolderOpen size={17} /></Button></div></label>
             <label>CPA 共享账号目录（Codex + Grok）<div className="path-input"><input value={settingsDraft.grokDirectory} onChange={(event) => setSettingsDraft({ ...settingsDraft, grokDirectory: event.target.value })} /><Button title="选择 CPA 共享目录" onClick={async () => { const path = await codexApi().chooseGrokDirectory(); if (path) setSettingsDraft({ ...settingsDraft, grokDirectory: path }) }}><FolderOpen size={17} /></Button></div></label>
@@ -266,8 +266,8 @@ export function SettingsDialog({
                 </Button>
               )}
             </section>
-            <div className="panel-actions flex items-center justify-end gap-2 border-t border-[var(--color-border)] px-4 py-3"><Button variant="secondary" onClick={() => closeSettingsDialog()} disabled={busy}><X size={16} />取消</Button><Button variant="default" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await codexApi().updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}><CheckCircle2 size={16} />保存设置</Button></div>
-          </section>
-        </div>
+            <DialogActions className="panel-actions flex items-center justify-end gap-2 border-t border-[var(--color-border)] px-4 py-3"><Button variant="secondary" onClick={() => closeSettingsDialog()} disabled={busy}><X size={16} />取消</Button><Button variant="default" disabled={busy} onClick={() => void run(async () => { if (settingsDraft.autoSwitchEnabled && settingsDraft.autoSwitchAccountIds.length === 0) throw new Error('启用自动切换前至少选择一个候选账号'); await codexApi().updateSettings(settingsDraft); closeSettingsDialog(true) }, '设置已保存')}><CheckCircle2 size={16} />保存设置</Button></DialogActions>
+          </DialogPanel>
+        </DialogBackdrop>
   )
 }

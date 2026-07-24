@@ -94,6 +94,7 @@ import { applyTheme, initialTheme, toggleTheme, type ThemeMode } from './lib/the
 import { codexApi, type CodexSwitcherApi } from './services/codexApi'
 import { AppSessionProvider } from './context/AppSessionContext'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
+import { Button, DialogActions, DialogHeader, Progress, SegmentedButton, SegmentedControl } from '@/components/ui'
 
 type PasteImportMode = RefreshTokenClientMode | 'oauth'
 
@@ -998,7 +999,7 @@ export function App(): React.JSX.Element {
 
   if (!snapshot || !settingsDraft) {
     return (
-      <main className="loading-screen">
+      <main className="loading-screen flex min-h-screen flex-col items-center justify-center gap-3 bg-[var(--color-bg)] text-[var(--color-text-secondary)]">
         <LoaderCircle className="spin" size={28} />
         <span>正在读取本地账号</span>
       </main>
@@ -1124,7 +1125,7 @@ export function App(): React.JSX.Element {
       )}
 
       {importOpen && (
-        <div className="repair-backdrop" role="presentation">
+        <div className="repair-backdrop fixed inset-0 z-[70] flex items-start justify-center overflow-auto bg-black/50 p-4 backdrop-blur-[2px]" role="presentation">
           {importPreview ? (
             <ImportPreviewDialog
               preview={importPreview}
@@ -1138,34 +1139,34 @@ export function App(): React.JSX.Element {
               onCancelTest={cancelImportPreviewTests}
             />
           ) : (
-          <section ref={importDialogRef} className="compact-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入账号" tabIndex={-1}>
-            <div className="panel-header">
+          <section ref={importDialogRef} className="compact-dialog import-dialog my-6 w-full max-w-[720px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]" role="dialog" aria-modal="true" aria-label="导入账号" tabIndex={-1}>
+            <DialogHeader>
               <div><h2>导入账号到本地库</h2><div className="provider-detection"><span className="provider-label codex"><Code2 size={11} />Codex</span><span className="provider-label grok"><Zap size={11} />Grok</span><span>自动分类保存到 aa，不修改 CPA 目录</span></div></div>
-              <button className="icon-button" title="关闭" aria-label="关闭导入账号" onClick={() => closeImportDialog()} disabled={busy}>
+              <Button variant="ghost" size="icon" title="关闭" aria-label="关闭导入账号" onClick={() => closeImportDialog()} disabled={busy}>
                 <X size={18} />
-              </button>
-            </div>
+              </Button>
+            </DialogHeader>
             <div className="import-source-actions">
-              <button aria-label="导入多个文件" onClick={() => void runImportPreview(() => codexApi().previewAnyFiles())} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>先识别、去重并预览</small></span></button>
-              <button aria-label="导入文件夹" onClick={() => void runImportPreview(() => codexApi().previewAnyDirectory())} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别后确认写入</small></span></button>
+              <Button aria-label="导入多个文件" onClick={() => void runImportPreview(() => codexApi().previewAnyFiles())} disabled={busy}><Import size={17} /><span><strong>导入文件</strong><small>先识别、去重并预览</small></span></Button>
+              <Button aria-label="导入文件夹" onClick={() => void runImportPreview(() => codexApi().previewAnyDirectory())} disabled={busy}><FolderInput size={17} /><span><strong>导入文件夹</strong><small>递归识别后确认写入</small></span></Button>
             </div>
             <div className="import-divider"><span>或粘贴凭据</span></div>
             <div className="option-group import-method-group">
               <span>识别方式</span>
-              <div className="segmented-control import-mode-control">
-                <button className={pasteImportMode === 'auto' ? 'selected' : ''} onClick={() => setPasteImportMode('auto')}>智能识别</button>
-                <button className={pasteImportMode === 'oauth' ? 'selected' : ''} onClick={() => setPasteImportMode('oauth')}>浏览器授权</button>
-                <button className={pasteImportMode === 'codex' ? 'selected' : ''} onClick={() => setPasteImportMode('codex')}>Codex RT</button>
-                <button className={pasteImportMode === 'mobile' ? 'selected' : ''} onClick={() => setPasteImportMode('mobile')}>移动端 RT</button>
-              </div>
+              <SegmentedControl className="import-mode-control">
+                <SegmentedButton selected={pasteImportMode === 'auto'} onClick={() => setPasteImportMode('auto')}>智能识别</SegmentedButton>
+                <SegmentedButton selected={pasteImportMode === 'oauth'} onClick={() => setPasteImportMode('oauth')}>浏览器授权</SegmentedButton>
+                <SegmentedButton selected={pasteImportMode === 'codex'} onClick={() => setPasteImportMode('codex')}>Codex RT</SegmentedButton>
+                <SegmentedButton selected={pasteImportMode === 'mobile'} onClick={() => setPasteImportMode('mobile')}>移动端 RT</SegmentedButton>
+              </SegmentedControl>
               <small>{pasteImportMode === 'auto' ? '同时识别 Codex 与 Grok 的 JSON、JSONL、CPA、Sub2API、裸 AT/PAT；仅写入本地 aa 分类目录' : pasteImportMode === 'oauth' ? '使用 Codex CLI 的 PKCE 参数打开 OpenAI 官方授权页，token 仅在主进程中交换' : pasteImportMode === 'codex' ? '每行一个 rt.1...，使用 Codex CLI 客户端刷新并保存旋转后的新 RT' : '每行一个 rt.1...，使用 OpenAI 移动端客户端刷新并保存对应 client_id'}</small>
             </div>
             {pasteImportMode === 'oauth' && (
               <div className="oauth-import-step">
-                <button onClick={() => void startOAuthAuthorization()} disabled={busy}>
+                <Button onClick={() => void startOAuthAuthorization()} disabled={busy}>
                   {busy ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
                   {oauthSession ? '重新打开授权页' : '打开 OpenAI 授权页'}
-                </button>
+                </Button>
                 <span>{oauthSession ? '授权会话已就绪，粘贴回调 URL 后完成导入' : '授权会话保留 30 分钟'}</span>
               </div>
             )}
@@ -1177,41 +1178,41 @@ export function App(): React.JSX.Element {
                 placeholder={pasteImportMode === 'auto' ? '粘贴 Codex / Grok JSON、JSONL、CPA、SubAPI、裸 AT/PAT/RT、键值文本或静态 JS' : pasteImportMode === 'oauth' ? '粘贴浏览器最后的 http://localhost:1455/auth/callback?code=...&state=... 地址' : '每行粘贴一个 OpenAI Refresh Token（rt.1...）'}
               />
             </label>
-            <div className="panel-actions">
-              <button className="secondary-button" onClick={() => closeImportDialog()} disabled={busy}><X size={16} />取消</button>
-              <button className="primary-button" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim() || (pasteImportMode === 'oauth' && !oauthSession)}>
+            <DialogActions>
+              <Button variant="secondary" onClick={() => closeImportDialog()} disabled={busy}><X size={16} />取消</Button>
+              <Button variant="default" onClick={() => void submitPaste()} disabled={busy || !pasteText.trim() || (pasteImportMode === 'oauth' && !oauthSession)}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
                 {pasteImportMode === 'oauth' ? '完成授权并导入' : '清洗并导入'}
-              </button>
-            </div>
-          </section>
+              </Button>
+          </DialogActions>
+        </section>
           )}
         </div>
       )}
 
       {exportDialog && (
-        <div className="repair-backdrop" role="presentation">
-          <section ref={exportDialogRef} className="compact-dialog" role="dialog" aria-modal="true" aria-label="导出账号" tabIndex={-1}>
-            <div className="panel-header">
+        <div className="repair-backdrop fixed inset-0 z-[70] flex items-start justify-center overflow-auto bg-black/50 p-4 backdrop-blur-[2px]" role="presentation">
+          <section ref={exportDialogRef} className="compact-dialog my-6 w-full max-w-[720px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]" role="dialog" aria-modal="true" aria-label="导出账号" tabIndex={-1}>
+            <DialogHeader>
               <h2>导出 {exportDialog.accountIds.length} 个账号</h2>
-              <button className="icon-button" title="关闭" aria-label="关闭账号导出" onClick={closeExportDialog} disabled={busy}>
+              <Button variant="ghost" size="icon" title="关闭" aria-label="关闭账号导出" onClick={closeExportDialog} disabled={busy}>
                 <X size={18} />
-              </button>
-            </div>
+              </Button>
+            </DialogHeader>
             <div className="option-group">
               <span>目标格式</span>
-              <div className="segmented-control format-control">
-                <button className={exportDialog.format === 'cpa' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'cpa' })}>CPA</button>
-                <button className={exportDialog.format === 'sub2api' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'sub2api' })}>SubAPI</button>
-                <button className={exportDialog.format === 'codex' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, format: 'codex' })}>Codex auth.json</button>
-              </div>
+              <SegmentedControl className="format-control">
+                <SegmentedButton selected={exportDialog.format === 'cpa'} onClick={() => setExportDialog({ ...exportDialog, format: 'cpa' })}>CPA</SegmentedButton>
+                <SegmentedButton selected={exportDialog.format === 'sub2api'} onClick={() => setExportDialog({ ...exportDialog, format: 'sub2api' })}>SubAPI</SegmentedButton>
+                <SegmentedButton selected={exportDialog.format === 'codex'} onClick={() => setExportDialog({ ...exportDialog, format: 'codex' })}>Codex auth.json</SegmentedButton>
+              </SegmentedControl>
             </div>
             <div className="option-group">
               <span>文件布局</span>
-              <div className="segmented-control">
-                <button className={exportDialog.layout === 'separate' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'separate' })}>每账号一文件</button>
-                <button className={exportDialog.layout === 'bundle' ? 'selected' : ''} onClick={() => setExportDialog({ ...exportDialog, layout: 'bundle' })}>{exportDialog.format === 'sub2api' ? '合并单文件' : '合并 ZIP'}</button>
-              </div>
+              <SegmentedControl>
+                <SegmentedButton selected={exportDialog.layout === 'separate'} onClick={() => setExportDialog({ ...exportDialog, layout: 'separate' })}>每账号一文件</SegmentedButton>
+                <SegmentedButton selected={exportDialog.layout === 'bundle'} onClick={() => setExportDialog({ ...exportDialog, layout: 'bundle' })}>{exportDialog.format === 'sub2api' ? '合并单文件' : '合并 ZIP'}</SegmentedButton>
+              </SegmentedControl>
             </div>
             {exportDialog.format !== 'codex' && (
               <div className="priority-editor">
@@ -1287,24 +1288,24 @@ export function App(): React.JSX.Element {
               <CircleAlert size={17} />
               <span>{exportDialog.format === 'codex' ? 'Codex auth.json 没有优先级字段；多账号只能打包为 ZIP。' : '普通导出可选择任意目录；直接导出到 CPA 时，同账号不会重复创建文件，只更新凭证和优先级。'}</span>
             </div>
-            <div className="panel-actions">
-              <button className="secondary-button" onClick={closeExportDialog} disabled={busy}><X size={16} />取消</button>
-              {exportDialog.format === 'cpa' && <button onClick={() => void submitExportToCpa()} disabled={busy}>
+            <DialogActions>
+              <Button variant="secondary" onClick={closeExportDialog} disabled={busy}><X size={16} />取消</Button>
+              {exportDialog.format === 'cpa' && <Button onClick={() => void submitExportToCpa()} disabled={busy}>
                 <Zap size={16} />直接导出到 CPA
-              </button>}
-              <button className="primary-button" onClick={() => void submitExport()} disabled={busy}>
+              </Button>}
+              <Button variant="default" onClick={() => void submitExport()} disabled={busy}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={16} />}
                 选择目录并导出
-              </button>
-            </div>
-          </section>
+              </Button>
+          </DialogActions>
+        </section>
         </div>
       )}
 
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="account-context-menu"
+          className="account-context-menu fixed z-50 min-w-[220px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)] p-1 shadow-[var(--shadow-lg)]"
           role="menu"
           aria-label="账号管理"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -1352,18 +1353,18 @@ export function App(): React.JSX.Element {
       )}
 
       {repairPreview && (
-        <div className="repair-backdrop" role="presentation">
+        <div className="repair-backdrop fixed inset-0 z-[70] flex items-start justify-center overflow-auto bg-black/50 p-4 backdrop-blur-[2px]" role="presentation">
           <section
             ref={repairDialogRef}
-            className="repair-dialog"
+            className="repair-dialog my-6 w-full max-w-[720px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="repair-title"
             tabIndex={-1}
           >
-            <div className="panel-header">
+            <DialogHeader>
               <h2 id="repair-title">修复历史会话</h2>
-              <button
+              <Button
                 className="icon-button"
                 title="关闭"
                 aria-label="关闭会话修复"
@@ -1371,8 +1372,8 @@ export function App(): React.JSX.Element {
                 disabled={busy}
               >
                 <X size={18} />
-              </button>
-            </div>
+              </Button>
+            </DialogHeader>
             <label className="repair-provider">
               目标供应商
               <select
@@ -1418,25 +1419,25 @@ export function App(): React.JSX.Element {
                 : '将快速同步官方状态库引用的历史对话，仅检查每个对话的首条元数据。'}应用会自动关闭正在运行的 Codex；写入前会校验快照并创建备份，写入后会再次扫描确认结果。
             </div>
             {repairProgress && (
-              <div className="repair-progress" aria-live="polite">
-                <div className="task-progress">
-                  <div style={{ width: `${Math.round((repairProgress.done / Math.max(1, repairProgress.total)) * 100)}%` }} />
-                  <span>{repairProgress.message}（{repairProgress.done}/{repairProgress.total}）</span>
-                </div>
+              <div className="repair-progress px-4 pb-2" aria-live="polite">
+                <Progress
+                  value={Math.round((repairProgress.done / Math.max(1, repairProgress.total)) * 100)}
+                  label={`${repairProgress.message}（${repairProgress.done}/${repairProgress.total}）`}
+                />
               </div>
             )}
-            <div className="panel-actions">
-              <button className="secondary-button" onClick={closeRepairDialog} disabled={busy}><X size={16} />取消</button>
-              <button
+            <DialogActions>
+              <Button variant="secondary" onClick={closeRepairDialog} disabled={busy}><X size={16} />取消</Button>
+              <Button
                 className="primary-button"
                 onClick={() => void applySessionRepair()}
                 disabled={busy}
               >
                 {busy ? <LoaderCircle className="spin" size={16} /> : <Wrench size={16} />}
                 确认修复
-              </button>
-            </div>
-          </section>
+              </Button>
+          </DialogActions>
+        </section>
         </div>
       )}
 

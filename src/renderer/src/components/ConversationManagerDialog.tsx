@@ -33,6 +33,7 @@ import type {
 } from '../../../shared/types'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import type { RequestConfirmation } from '../hooks/useConfirmation'
+import { Button, DialogHeader, SearchField, Select } from '@/components/ui'
 
 interface Props {
   onClose: () => void
@@ -292,95 +293,95 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
   }
 
   return (
-    <div className="repair-backdrop" role="presentation">
-      <section ref={dialogRef} className="conversation-dialog" role="dialog" aria-modal="true" aria-labelledby="conversation-title" tabIndex={-1}>
-        <header className="panel-header">
+    <div className="repair-backdrop fixed inset-0 z-[70] flex items-start justify-center overflow-auto bg-black/50 p-4 backdrop-blur-[2px]" role="presentation">
+      <section ref={dialogRef} className="conversation-dialog my-6 w-full max-w-[1100px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]" role="dialog" aria-modal="true" aria-labelledby="conversation-title" tabIndex={-1}>
+        <DialogHeader>
           <div>
-            <h2 id="conversation-title">Codex 对话管理</h2>
-            <span>{result ? `${result.total} 个结果 / ${result.allTotal} 个对话` : '正在读取对话索引'}</span>
+            <h2 id="conversation-title" className="text-[15px] font-semibold text-[var(--color-text)]">Codex 对话管理</h2>
+            <span className="text-[12px] text-[var(--color-text-muted)]">{result ? `${result.total} 个结果 / ${result.allTotal} 个对话` : '正在读取对话索引'}</span>
           </div>
-          <button className="icon-button" title="关闭" aria-label="关闭对话管理" onClick={closeDialog} disabled={busy}>
+          <Button variant="ghost" size="icon" title="关闭" aria-label="关闭对话管理" onClick={closeDialog} disabled={busy}>
             <X size={18} />
-          </button>
-        </header>
+          </Button>
+        </DialogHeader>
 
-        <div className="conversation-controls">
-          <div className="conversation-search-row">
+        <div className="conversation-controls space-y-2 border-b border-[var(--color-border)] px-4 py-3">
+          <div className="conversation-search-row flex flex-wrap items-center gap-2">
             <label className="search-field">
               <Search size={16} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、任务 ID、工作区、代理或正文" />
             </label>
-            <select aria-label="搜索范围" value={searchScope} onChange={(event) => setSearchScope(event.target.value as ConversationSearchScope)}>
+            <Select aria-label="搜索范围" value={searchScope} onChange={(event) => setSearchScope(event.target.value as ConversationSearchScope)}>
               <option value="metadata">资料</option>
               <option value="content">正文</option>
-            </select>
-            <button title="重新扫描" aria-label="重新扫描对话" onClick={() => void load(true, false)} disabled={loadingList || busy}>
+            </Select>
+            <Button title="重新扫描" aria-label="重新扫描对话" onClick={() => void load(true, false)} disabled={loadingList || busy}>
               {loadingList ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-            </button>
-            <button className="safe-cleanup-button" onClick={() => void cleanupSafeConversations()} disabled={busy || loadingList}>
+            </Button>
+            <Button variant="soft" className="safe-cleanup-button" onClick={() => void cleanupSafeConversations()} disabled={busy || loadingList}>
               {cleaning ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
               {cleaning ? '正在清理' : `保守清理 ${result?.safeCleanupCount ?? 0}`}
-            </button>
+            </Button>
           </div>
 
-          <div className="conversation-filter-row">
-            <select aria-label="对话来源" value={kind} onChange={(event) => setKind(event.target.value)}>
+          <div className="conversation-filter-row flex flex-wrap items-center gap-2">
+            <Select aria-label="对话来源" value={kind} onChange={(event) => setKind(event.target.value)}>
               <option value="all">全部来源</option>
               {result?.facets.kinds.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
-            </select>
-            <select aria-label="子代理类型" value={subagentKind} onChange={(event) => setSubagentKind(event.target.value)}>
+            </Select>
+            <Select aria-label="子代理类型" value={subagentKind} onChange={(event) => setSubagentKind(event.target.value)}>
               <option value="all">全部代理类型</option>
               {result?.facets.subagentKinds.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
-            </select>
-            <select aria-label="代理状态" value={lifecycleStatus} onChange={(event) => setLifecycleStatus(event.target.value)}>
+            </Select>
+            <Select aria-label="代理状态" value={lifecycleStatus} onChange={(event) => setLifecycleStatus(event.target.value)}>
               <option value="all">全部代理状态</option>
               {result?.facets.lifecycleStatuses.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
-            </select>
-            <select aria-label="归档状态" value={archive} onChange={(event) => setArchive(event.target.value)}>
+            </Select>
+            <Select aria-label="归档状态" value={archive} onChange={(event) => setArchive(event.target.value)}>
               <option value="all">全部归档状态</option>
               {result?.facets.archives.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
-            </select>
-            <select aria-label="对话供应商" value={provider} onChange={(event) => setProvider(event.target.value)}>
+            </Select>
+            <Select aria-label="对话供应商" value={provider} onChange={(event) => setProvider(event.target.value)}>
               <option value="">全部供应商</option>
               {result?.facets.providers.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
-            </select>
-            <select aria-label="对话工作区" value={workspace} onChange={(event) => setWorkspace(event.target.value)}>
+            </Select>
+            <Select aria-label="对话工作区" value={workspace} onChange={(event) => setWorkspace(event.target.value)}>
               <option value="">全部工作区</option>
               {result?.facets.workspaces.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
-            </select>
-            <select aria-label="更新时间" value={updatedWithinDays} onChange={(event) => setUpdatedWithinDays(event.target.value)}>
+            </Select>
+            <Select aria-label="更新时间" value={updatedWithinDays} onChange={(event) => setUpdatedWithinDays(event.target.value)}>
               <option value="">全部时间</option>
               <option value="1">最近 1 天</option>
               <option value="7">最近 7 天</option>
               <option value="30">最近 30 天</option>
               <option value="90">最近 90 天</option>
-            </select>
-            <select aria-label="对话排序" value={sort} onChange={(event) => setSort(event.target.value as 'updated' | 'hierarchy')}>
+            </Select>
+            <Select aria-label="对话排序" value={sort} onChange={(event) => setSort(event.target.value as 'updated' | 'hierarchy')}>
               <option value="updated">按更新时间</option>
               <option value="hierarchy">按父任务分组</option>
-            </select>
-            <button title="清除筛选" aria-label="清除对话筛选" onClick={clearFilters} disabled={activeFilterCount === 0}>
+            </Select>
+            <Button title="清除筛选" aria-label="清除对话筛选" onClick={clearFilters} disabled={activeFilterCount === 0}>
               <FilterX size={16} />
-            </button>
+            </Button>
           </div>
 
-          <div className="conversation-action-row">
-            <button onClick={togglePage} disabled={pageIds.length === 0 || busy}>
+          <div className="conversation-action-row flex flex-wrap items-center gap-2">
+            <Button onClick={togglePage} disabled={pageIds.length === 0 || busy}>
               {pageSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}
               {pageSelected ? '取消本页' : '选择本页'}
-            </button>
+            </Button>
             <span className="conversation-selection">已选 {selected.size}</span>
-            <button onClick={() => onSync([...selected])} disabled={selected.size === 0 || busy}>
+            <Button onClick={() => onSync([...selected])} disabled={selected.size === 0 || busy}>
               <Wrench size={16} />同步选中
-            </button>
-            <button className="danger-button" onClick={() => void deleteConversations([...selected])} disabled={selected.size === 0 || busy}>
+            </Button>
+            <Button variant="danger" onClick={() => void deleteConversations([...selected])} disabled={selected.size === 0 || busy}>
               {deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
               {deleting ? '正在删除' : '删除选中'}
-            </button>
+            </Button>
             <span className="conversation-action-spacer" />
-            <button className="primary-button" onClick={() => onSync()} disabled={busy}>
+            <Button variant="default" onClick={() => onSync()} disabled={busy}>
               <Wrench size={16} />同步全部
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -394,7 +395,7 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
           </div>
         )}
         {error && <div className="conversation-error"><CircleAlert size={15} /><span>{error}</span></div>}
-        <div className="conversation-layout">
+        <div className="conversation-layout grid min-h-[480px] grid-cols-[minmax(280px,0.95fr)_minmax(0,1.2fr)] gap-0 border-t border-[var(--color-border)]">
           <aside className="conversation-list" aria-label="Codex 对话列表">
             {visibleItems.map((conversation) => (
               <div
@@ -407,14 +408,14 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
                   if (event.key === 'Enter' || event.key === ' ') void openById(conversation.id)
                 }}
               >
-                <button
+                <Button
                   className="conversation-check"
                   aria-label={`${selected.has(conversation.id) ? '取消选择' : '选择'} ${conversation.title}`}
                   disabled={busy}
                   onClick={(event) => { event.stopPropagation(); toggle(conversation.id) }}
                 >
                   {selected.has(conversation.id) ? <CheckSquare2 size={17} /> : <Square size={17} />}
-                </button>
+                </Button>
                 <div className="conversation-row-main">
                   <div className="conversation-title-line">
                     {conversation.kind === 'subagent' ? <GitBranch size={14} /> : <UserRound size={14} />}
@@ -425,7 +426,7 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
                     )}
                     {conversation.safeToClean && <ShieldCheck className="safe-cleanup-mark" size={14} aria-label="可保守清理" />}
                     {conversation.childCount > 0 && sort === 'hierarchy' && (
-                      <button
+                      <Button
                         className="conversation-collapse"
                         title={collapsedParents.has(conversation.id) ? '展开子代理' : '收起子代理'}
                         aria-label={collapsedParents.has(conversation.id) ? '展开子代理' : '收起子代理'}
@@ -433,7 +434,7 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
                       >
                         {collapsedParents.has(conversation.id) ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                         {conversation.childCount}
-                      </button>
+                      </Button>
                     )}
                   </div>
                   {conversation.kind === 'subagent' && (
@@ -445,13 +446,13 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
                     </span>
                   )}
                   {conversation.parentId && (
-                    <button
+                    <Button
                       className="conversation-parent-link"
                       title="查看父任务"
                       onClick={(event) => { event.stopPropagation(); void openById(conversation.parentId!) }}
                     >
                       <CornerUpLeft size={12} />{conversation.parentTitle ?? `父任务 ${conversation.parentId.slice(0, 8)}`}
-                    </button>
+                    </Button>
                   )}
                   <span>{conversation.cwd ?? '无工作区'} · {conversation.provider}</span>
                   <small>{dateTime(conversation.updatedAt)} · {fileSize(conversation.sizeBytes)}{conversation.archived ? ' · 已归档' : ''}</small>
@@ -463,9 +464,9 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
               <div className="conversation-empty">没有匹配的对话</div>
             )}
             {result?.hasMore && (
-              <button className="conversation-more" onClick={() => void load(false, true)} disabled={loadingList}>
+              <Button className="conversation-more" onClick={() => void load(false, true)} disabled={loadingList}>
                 加载更多
-              </button>
+              </Button>
             )}
           </aside>
 
@@ -484,16 +485,16 @@ export function ConversationManagerDialog({ onClose, onSync, requestConfirmation
                   </div>
                   <div className="conversation-detail-actions">
                     {detail.conversation.parentId && (
-                      <button title="查看父任务" aria-label="查看父任务" disabled={busy} onClick={() => void openById(detail.conversation.parentId!)}>
+                      <Button title="查看父任务" aria-label="查看父任务" disabled={busy} onClick={() => void openById(detail.conversation.parentId!)}>
                         <CornerUpLeft size={16} />
-                      </button>
+                      </Button>
                     )}
-                    <button title="打开文件位置" aria-label="打开对话文件位置" disabled={busy} onClick={() => void window.codexSwitcher.revealConversation(detail.conversation.id)}>
+                    <Button title="打开文件位置" aria-label="打开对话文件位置" disabled={busy} onClick={() => void window.codexSwitcher.revealConversation(detail.conversation.id)}>
                       <FolderOpen size={16} />
-                    </button>
-                    <button className="danger-button" title="删除当前对话" aria-label="删除当前对话" disabled={busy} onClick={() => void deleteConversations([detail.conversation.id])}>
+                    </Button>
+                    <Button variant="danger" title="删除当前对话" aria-label="删除当前对话" disabled={busy} onClick={() => void deleteConversations([detail.conversation.id])}>
                       {deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 {detail.truncated && <div className="conversation-warning">对话较大，仅显示前 {detail.messages.length} 条和限定长度的正文。</div>}

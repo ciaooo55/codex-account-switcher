@@ -18,7 +18,7 @@ Legacy `styles.css` remains during migration; new UI prefers Tailwind utilities 
 src/renderer/src/
   main.tsx
   App.tsx
-  components/ui/          # Button, Badge, Input, Select, Card, Progress, PageView, Toolbar…
+  components/ui/          # Button, Badge, Input, Select, Card, Progress, PageView, Toolbar, Dialog*, Segmented*
   components/layout/
   pages/
   hooks/
@@ -35,3 +35,5 @@ src/renderer/src/
 1. New components: Tailwind + `cn()` + CVA variants.
 2. Reuse CSS variables from `tokens.css` for light/dark.
 3. Keep IPC / snapshot state in `App.tsx` + page props for now.
+4. Dialogs use `DialogBackdrop` / `DialogPanel` / `DialogHeader` / `DialogActions`.
+5. Segmented toggles use `SegmentedControl` + `SegmentedButton`.

@@ -4,4 +4,15 @@ export { Input, type InputProps } from './input'
 export { Select, type SelectProps } from './select'
 export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './card'
 export { Progress } from './progress'
-export { PageView, Toolbar, ToolbarGroup, SearchField } from './surface'
+export {
+  PageView,
+  Toolbar,
+  ToolbarGroup,
+  SearchField,
+  DialogBackdrop,
+  DialogPanel,
+  DialogHeader,
+  DialogActions,
+  SegmentedControl,
+  SegmentedButton
+} from './surface'
