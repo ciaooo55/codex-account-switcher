@@ -756,30 +756,36 @@ test.describe('Codex Account Switcher Electron workflow', () => {
 
     await page.getByRole('button', { name: 'API 服务' }).click()
     await expect(page.getByText('http://127.0.0.1:8888/v1')).toBeVisible()
-    await page.getByRole('button', { name: '手动添加' }).first().click()
-    await page.getByLabel(/密钥值$/).fill('sk-e2e-local')
     await page.getByLabel('监听端口').fill('18888')
-    await page.getByRole('button', { name: /第三方上游/ }).click()
+    await page.getByRole('button', { name: '打开 客户端密钥' }).click()
+    const accessKeyDialog = page.getByRole('dialog', { name: '客户端密钥' })
+    await accessKeyDialog.getByRole('button', { name: '手动添加' }).first().click()
+    await accessKeyDialog.getByLabel(/密钥值$/).fill('sk-e2e-local')
+    await accessKeyDialog.getByRole('button', { name: '完成' }).click()
+    await page.getByRole('button', { name: '打开 API' }).click()
+    const apiDialog = page.getByRole('dialog', { name: 'API' })
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-service-empty.png'), fullPage: true })
-    await page.getByRole('region', { name: '第三方 API 上游' }).getByRole('button', { name: '快速导入', exact: true }).click()
-    await expect(page.getByRole('dialog', { name: '添加第三方 API 上游' })).toBeVisible()
+    await apiDialog.getByRole('button', { name: '快速导入', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: '添加 API' })).toBeVisible()
     await page.waitForTimeout(250)
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-import-dialog.png'), fullPage: true })
-    await page.getByLabel('上游粘贴内容').fill(
+    await page.getByLabel('API 粘贴内容').fill(
       `url=${baseUrl} key=sk-e2e-upstream-123456`
     )
     await page.getByRole('button', { name: '识别并测试' }).click()
-    await expect(page.getByText(/已获取 1\/1 个上游的模型/)).toBeVisible()
+    await expect(page.getByText(/已获取 1\/1 个 API 的模型/)).toBeVisible()
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-upstream-config.png'), fullPage: true })
     const apiLayoutWidths = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(
       '.api-server-view, .api-server-workbench, .api-codex-panel'
     )).map((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })))
     expect(apiLayoutWidths.every(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth + 1)).toBe(true)
-    await page.getByRole('button', { name: /公开模型路由/ }).click()
-    await page.getByRole('button', { name: '添加公开模型' }).click()
-    await page.getByLabel('公开模型名').fill('e2e-public-model')
-    await page.getByRole('button', { name: '保存并热更新' }).click()
-    await expect(page.getByText('配置已安全保存并热更新。')).toBeVisible()
+    await apiDialog.getByRole('button', { name: '关闭API' }).click()
+    await page.getByRole('button', { name: '打开 公开模型路由' }).click()
+    const routeDialog = page.getByRole('dialog', { name: '公开模型路由' })
+    await expect(routeDialog.getByLabel('公开模型名').first()).toHaveValue('e2e-upstream-model')
+    await routeDialog.getByRole('button', { name: '保存更改' }).click()
+    await expect(page.getByText('API 服务配置已安全保存并热更新。')).toBeVisible()
+    await routeDialog.getByRole('button', { name: '完成' }).click()
     await page.getByRole('button', { name: '启动', exact: true }).click()
     await expect(page.getByText('http://127.0.0.1:18888/v1')).toBeVisible()
 
@@ -788,7 +794,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     })
     expect(localModels.status).toBe(200)
     expect(await localModels.json()).toMatchObject({
-      data: [{ id: 'e2e-public-model' }]
+      data: [{ id: 'e2e-upstream-model' }]
     })
     const localResponse = await fetch('http://127.0.0.1:18888/v1/responses', {
       method: 'POST',
@@ -796,7 +802,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
         authorization: 'Bearer sk-e2e-local',
         'content-type': 'application/json'
       },
-      body: JSON.stringify({ model: 'e2e-public-model', input: 'hello' })
+      body: JSON.stringify({ model: 'e2e-upstream-model', input: 'hello' })
     })
     expect(localResponse.status).toBe(200)
     expect(await localResponse.json()).toMatchObject({
@@ -815,12 +821,12 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       '.api-server-view, .api-server-workbench, .api-codex-panel'
     )).map((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })))
     expect(compactApiLayoutWidths.every(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth + 1)).toBe(true)
-    await page.getByRole('button', { name: /第三方上游/ }).click()
-    await page.getByRole('region', { name: '第三方 API 上游' }).getByRole('button', { name: '快速导入', exact: true }).click()
-    await expect(page.getByRole('dialog', { name: '添加第三方 API 上游' })).toBeVisible()
+    await page.getByRole('button', { name: '打开 API' }).click()
+    await page.getByRole('dialog', { name: 'API' }).getByRole('button', { name: '快速导入', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: '添加 API' })).toBeVisible()
     await page.waitForTimeout(250)
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-import-dialog-compact.png'), fullPage: true })
-    await page.getByRole('button', { name: '关闭添加上游窗口' }).click()
+    await page.getByRole('button', { name: '关闭添加 API 窗口' }).click()
 
     await electronApp.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]

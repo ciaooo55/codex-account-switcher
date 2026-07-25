@@ -26,6 +26,21 @@ describe('custom API URL helpers', () => {
     expect(r.apiKey).toBe('sk-secret-key-1234567890')
   })
 
+  it('parses a base64 export that mixes TOML assignments with a JSON credential block', () => {
+    const exported = [
+      'name = "OpenAI"',
+      'base_url = "https://sub2.laoyou.dpdns.org"',
+      '{',
+      '  "OPENAI_API_KEY": "sk-1510212a371a34ed7c3bf820790feabe62fde433e364093c2e1deefb355ee3be"',
+      '}'
+    ].join('\n')
+    const r = parseCustomApiPaste(Buffer.from(exported).toString('base64'))
+    expect(r.baseUrl).toBe('https://sub2.laoyou.dpdns.org')
+    expect(r.apiKey).toBe('sk-1510212a371a34ed7c3bf820790feabe62fde433e364093c2e1deefb355ee3be')
+    expect(r.note).toContain('已识别 API 地址')
+    expect(r.note).toContain('已识别 API Key')
+  })
+
   it('parses key=value pairs', () => {
     const r = parseCustomApiPaste('url=https://api.example.com/v1\nkey=sk-mykey123456789012345678')
     expect(r.baseUrl).toBe('https://api.example.com/v1')

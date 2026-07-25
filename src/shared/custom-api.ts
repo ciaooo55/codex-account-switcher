@@ -135,7 +135,10 @@ function tryDecodeBase64(raw: string): string | null {
     // Buffer's UTF-8 conversion replaces invalid binary with U+FFFD. Treat
     // that (and ASCII controls) as non-text so ordinary `sk-*` values that
     // happen to use Base64 characters are never mangled.
-    if (!decoded || /[\x00-\x08\x0e-\x1f\ufffd]/.test(decoded)) return null
+    // Newlines and tabs are normal in exported INI/TOML or mixed
+    // configuration snippets. Reject binary controls, but keep readable
+    // multi-line documents so they can be parsed again below.
+    if (!decoded || /[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]/.test(decoded)) return null
     return decoded
   } catch {
     return null

@@ -2280,9 +2280,15 @@ async function main(): Promise<void> {
       await apiServerStore.save(nextInput)
       const nextRuntime = await apiServerStore.runtimeConfig()
       await localApiServer.updateConfiguration(nextRuntime)
-      if (activeLocalProjection) {
+      // A stored binding is the durable ownership signal. Do not rely only on
+      // the current config looking correct: Coc/Cockpit or Codex itself can
+      // replace the top-level provider while our service remains selected.
+      // Route changes must take back the managed catalog in that situation.
+      const shouldSynchronizeCodex = Boolean(activeLocalProjection || previousRuntime.codexBinding?.enforce)
+      if (shouldSynchronizeCodex) {
         if (!localApiServer.status().running) await localApiServer.start()
         const previousKey = previousRuntime.accessKeys.find((entry) =>
+          entry.id === previousRuntime.codexBinding?.accessKeyId ||
           entry.key === activeLocalProjection?.bearerToken
         )
         const accessKey = nextRuntime.accessKeys.find((entry) =>
@@ -2294,8 +2300,9 @@ async function main(): Promise<void> {
               .map((route) => route.publicModel)
               .filter((model) => accessKey.allowedModels.includes(model))
           : nextRuntime.routes.map((route) => route.publicModel)
-        const selectedModel = activeLocalProjection.model && allowedModels.includes(activeLocalProjection.model)
-          ? activeLocalProjection.model
+        const desiredModel = previousRuntime.codexBinding?.model ?? activeLocalProjection?.model
+        const selectedModel = desiredModel && allowedModels.includes(desiredModel)
+          ? desiredModel
           : allowedModels[0]
         if (!selectedModel) throw new Error('当前 Codex 正在使用 API 服务，请至少保留一个当前密钥可访问的公开模型')
         const switched = await switcher.switchToCustomApi({
@@ -2307,6 +2314,18 @@ async function main(): Promise<void> {
           supportsWebsockets: true
         })
         if (!switched.ok) throw new Error(switched.message)
+        // Saving a live local projection must also establish the durable
+        // binding. Without it a later service restart knows the listener but
+        // not which key/model catalog Codex is supposed to receive.
+        await apiServerStore.save({
+          ...nextRuntime,
+          codexBinding: {
+            accessKeyId: accessKey.id,
+            model: selectedModel,
+            enforce: true
+          }
+        })
+        await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
       }
     } catch (error) {
       await apiServerStore.save(previousRuntime).catch(() => undefined)
@@ -2319,6 +2338,11 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.localApiServerStart, async () => {
     await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
     await localApiServer.start()
+    // Reassert the owned provider after an explicit start. Codex can replace
+    // its top-level catalog while this app is stopped; a persisted binding
+    // makes the local address and public-model list recover together.
+    const runtime = await apiServerStore.runtimeConfig()
+    if (runtime.codexBinding?.enforce) await reconcileDirectCustomApiProvider()
     return localApiServerState()
   })
   ipcMain.handle(ipcChannels.localApiServerStop, async () => {
@@ -2328,6 +2352,8 @@ async function main(): Promise<void> {
   ipcMain.handle(ipcChannels.localApiServerRestart, async () => {
     await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
     await localApiServer.restart()
+    const runtime = await apiServerStore.runtimeConfig()
+    if (runtime.codexBinding?.enforce) await reconcileDirectCustomApiProvider()
     return localApiServerState()
   })
   ipcMain.handle(ipcChannels.localApiServerApplyCodex, async (_event, input: unknown) => {
