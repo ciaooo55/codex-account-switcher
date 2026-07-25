@@ -866,6 +866,7 @@ export function ApiServerPage(): React.JSX.Element {
   }
 
   const address = `http://127.0.0.1:${state.status.port}`
+  const metrics = state.metrics
   const isBusy = action !== null
   const shortKeys = draft.accessKeys.filter((entry) =>
     entry.key ? entry.key.length < 20 : entry.isShort === true
@@ -1040,29 +1041,112 @@ export function ApiServerPage(): React.JSX.Element {
           </nav>
 
           <section className="api-management-overview" aria-label="API 服务管理总览">
-            <header>
-              <span>管理总览</span>
-              <strong>选择左侧分类，集中管理本地 API 服务</strong>
-              <p>项目密钥用于客户端访问本软件；API 和账号凭证用于本软件转发请求；公开模型决定 /v1/models 与 Codex 能看到什么。</p>
+            <header className="api-overview-header">
+              <div>
+                <strong>服务总览</strong>
+                <p>本地服务使用一个固定地址，将客户端请求路由到已启用的 API 或账号凭证。</p>
+              </div>
+              <Button size="sm" variant="soft" disabled={isBusy} onClick={() => void refreshModels({ upstreams: draft.upstreams.filter((entry) => entry.enabled), testUpstreams: false, refreshCredentials: true })}>
+                {action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新模型目录
+              </Button>
             </header>
-            <div className="api-management-overview-grid">
+
+            <div className="api-overview-summary" aria-label="API 服务资源统计">
               {([
-                ['access-keys', KeyRound, '客户端密钥', draft.accessKeys.length, '本软件访问密钥与模型白名单'],
-                ['upstreams', Network, 'API', draft.upstreams.length, '第三方 API 地址、Key、协议与模型'],
-                ['credentials', ShieldCheck, '账号凭证源', draft.credentialSources.length, '已导入账号可提供的模型能力'],
-                ['routes', Route, '公开模型路由', draft.routes.length, '客户端与 Codex 可见的模型目录']
-              ] as const).map(([id, Icon, label, count, detail]) => (
-                <button key={id} type="button" className="api-management-overview-card" onClick={() => openManagementSection(id)}>
-                  <span className="api-management-overview-icon"><Icon size={17} /></span>
-                  <strong>{label}</strong>
-                  <em>{count}</em>
+                ['access-keys', '客户端密钥', draft.accessKeys.filter((entry) => entry.enabled).length, `${draft.accessKeys.length} 枚已配置`],
+                ['upstreams', 'API', draft.upstreams.filter((entry) => entry.enabled).length, `${draft.upstreams.length} 个已配置`],
+                ['credentials', '凭证池', draft.credentialSources.filter((entry) => entry.enabled).length, `${draft.credentialSources.length} 个可选来源`],
+                ['routes', '公开模型', draft.routes.length, '与 /v1/models 一致']
+              ] as const).map(([id, label, value, detail]) => (
+                <button key={id} type="button" className="api-overview-summary-item" onClick={() => openManagementSection(id)}>
+                  <span>{label}</span>
+                  <strong>{value}</strong>
                   <small>{detail}</small>
                 </button>
               ))}
             </div>
+
+            <div className="api-overview-grid">
+              <section className="api-overview-panel api-overview-access" aria-labelledby="api-overview-access-title">
+                <header>
+                  <div><strong id="api-overview-access-title">服务访问</strong><span>客户端只需要本地地址、本软件密钥和公开模型名。</span></div>
+                  <span className={cn('api-overview-state', state.status.running ? 'is-running' : 'is-stopped')}>{state.status.running ? '服务在线' : '服务离线'}</span>
+                </header>
+                <dl className="api-overview-config-list">
+                  <div><dt>API Base URL</dt><dd><code>{address}/v1</code><Button size="icon" variant="ghost" aria-label="复制总览 API Base URL" title="复制" onClick={() => void copyText(`${address}/v1`, 'API Base URL')}><Copy size={13} /></Button></dd></div>
+                  <div><dt>Codex 状态</dt><dd><span>{codexIntegration?.state === 'active' ? '已接管' : codexIntegration?.state === 'external_override' ? '被其他工具覆盖' : '未接管'}</span><small>{codexIntegration?.configuredModel || codexModel || '未选择默认模型'}</small></dd></div>
+                  <div><dt>客户端密钥</dt><dd><span>{draft.accessKeys.find((entry) => entry.id === codexKeyId)?.label ?? '未选择'}</span><Button size="sm" variant="ghost" onClick={() => openManagementSection('access-keys')}>管理</Button></dd></div>
+                  <div><dt>监听</dt><dd><code>127.0.0.1:{draft.port}</code><span>{draft.autoStart ? '随应用启动' : '手动启动'}</span></dd></div>
+                </dl>
+              </section>
+
+              <section className="api-overview-panel api-overview-sources" aria-labelledby="api-overview-sources-title">
+                <header>
+                  <div><strong id="api-overview-sources-title">来源池</strong><span>启用状态、优先级和故障切换由同一运行配置控制。</span></div>
+                  <Button size="sm" variant="ghost" onClick={() => openManagementSection('upstreams')}>管理 API</Button>
+                </header>
+                <div className="api-overview-source-list">
+                  {draft.upstreams.length === 0 && draft.credentialSources.length === 0 ? <span className="api-overview-empty">尚未添加 API 或账号凭证来源</span> : null}
+                  {draft.upstreams.slice(0, 3).map((entry) => (
+                    <button key={entry.id} type="button" onClick={() => { openManagementSection('upstreams'); setEditingUpstreamId(entry.id) }}>
+                      <span className={cn('api-overview-dot', entry.enabled ? 'is-enabled' : 'is-disabled')} />
+                      <span><strong>{entry.name}</strong><small>{entry.models.length} 个模型 · 优先级 {entry.priority}</small></span>
+                      <em>API</em>
+                    </button>
+                  ))}
+                  {draft.credentialSources.slice(0, Math.max(0, 4 - Math.min(3, draft.upstreams.length))).map((entry) => (
+                    <button key={entry.id} type="button" onClick={() => openManagementSection('credentials')}>
+                      <span className={cn('api-overview-dot', entry.enabled ? 'is-enabled' : 'is-disabled')} />
+                      <span><strong>{entry.label}</strong><small>{entry.models.length} 个模型 · 优先级 {entry.priority}</small></span>
+                      <em>凭证</em>
+                    </button>
+                  ))}
+                </div>
+                {draft.upstreams.length + draft.credentialSources.length > 4 ? <button type="button" className="api-overview-more" onClick={() => openManagementSection('credentials')}>查看全部 {draft.upstreams.length + draft.credentialSources.length} 个来源</button> : null}
+              </section>
+
+              <section className="api-overview-panel api-overview-health" aria-labelledby="api-overview-health-title">
+                <header>
+                  <div><strong id="api-overview-health-title">服务健康</strong><span>请求记录只保留在内存中，不记录消息内容、密钥或上游地址。</span></div>
+                  <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>刷新状态</Button>
+                </header>
+                <div className="api-overview-health-grid">
+                  <div><span>请求</span><strong>{metrics?.totalRequests ?? 0}</strong></div>
+                  <div><span>成功</span><strong>{metrics?.successfulRequests ?? 0}</strong></div>
+                  <div><span>失败</span><strong>{metrics?.failedRequests ?? 0}</strong></div>
+                  <div><span>冷却</span><strong>{metrics?.sourceHealth.filter((item) => item.state === 'cooling_down').length ?? 0}</strong></div>
+                </div>
+                <div className="api-overview-health-list" aria-label="最近 API 请求">
+                  {metrics?.recentRequests?.length ? metrics.recentRequests.slice(0, 3).map((entry) => (
+                    <div key={entry.id}><code>{entry.model ?? entry.endpoint}</code><span>{entry.sourceId ?? '未选择来源'}</span><em className={entry.status >= 200 && entry.status < 400 ? 'is-success' : 'is-error'}>{entry.status} · {entry.durationMs} ms</em></div>
+                  )) : <span className="api-overview-empty">服务启动后，这里会显示最近请求和来源健康状态</span>}
+                </div>
+              </section>
+
+              <section className="api-overview-panel api-overview-models" aria-labelledby="api-overview-models-title">
+                <header>
+                  <div><strong id="api-overview-models-title">公开模型目录</strong><span>这里显示的模型与本地 `/v1/models` 和 Codex 可选目录一致。</span></div>
+                  <Button size="sm" variant="ghost" onClick={() => openManagementSection('routes')}>管理路由</Button>
+                </header>
+                <div className="api-overview-model-list">
+                  {draft.routes.length > 0 ? draft.routes.slice(0, 12).map((route) => <code key={route.publicModel} title={route.publicModel}>{route.publicModel}</code>) : <span className="api-overview-empty">尚未配置公开模型</span>}
+                  {draft.routes.length > 12 ? <button type="button" onClick={() => openManagementSection('routes')}>+{draft.routes.length - 12}</button> : null}
+                </div>
+              </section>
+
+              <section className="api-overview-panel api-overview-compat" aria-labelledby="api-overview-compat-title">
+                <header><div><strong id="api-overview-compat-title">兼容协议</strong><span>同一固定端口提供常用客户端协议，不额外启动随机端口。</span></div></header>
+                <div className="api-overview-endpoints">
+                  <div><span>OpenAI</span><code>/v1/responses · /v1/chat/completions · /v1/models</code></div>
+                  <div><span>Anthropic</span><code>/v1/messages</code></div>
+                  <div><span>Gemini</span><code>/v1beta/models · generateContent</code></div>
+                  <div><span>Ollama</span><code>/api/tags · /api/chat · /api/generate</code></div>
+                </div>
+              </section>
+            </div>
           </section>
 
-          {createPortal(<div className={cn('api-section-dialog min-w-0', sectionDialogOpen ? 'is-open' : 'is-closed')} role={sectionDialogOpen ? 'dialog' : undefined} aria-modal={sectionDialogOpen || undefined} aria-label={sectionDialogOpen ? sectionTitle : undefined}>
+          {createPortal(<div className={cn('api-section-dialog min-w-0', `is-${activeSection}`, sectionDialogOpen ? 'is-open' : 'is-closed')} role={sectionDialogOpen ? 'dialog' : undefined} aria-modal={sectionDialogOpen || undefined} aria-label={sectionDialogOpen ? sectionTitle : undefined}>
             <div className="api-section-dialog-header">
               <div><span>API 服务管理</span><strong>{sectionTitle}</strong></div>
               <Button size="icon" variant="ghost" aria-label={`关闭${sectionTitle}`} title="关闭" onClick={() => setSectionDialogOpen(false)}><X size={17} /></Button>

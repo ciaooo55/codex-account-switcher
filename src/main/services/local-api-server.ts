@@ -10,6 +10,8 @@ import {
   normalizeLocalApiServerConfig,
   type ApiUpstreamInput,
   type CredentialSourceInput,
+  type LocalApiRequestLog,
+  type LocalApiServerMetrics,
   type LocalApiServerRuntimeConfig,
   type LocalApiServerStatus,
   type ModelRoute,
@@ -83,6 +85,15 @@ interface ApiRequestPlan {
 }
 
 type FetchLike = typeof fetch
+
+interface RequestTelemetry {
+  endpoint: string
+  startedAt: number
+  model: string | null
+  accessKeyId: string | null
+  sourceId: string | null
+  sourceKind: 'api' | 'credential' | null
+}
 
 interface ApiRouteCandidate {
   kind: 'api'
@@ -784,6 +795,11 @@ export class LocalApiServer {
   private lastError: string | null = null
   private readonly roundRobinOffsets = new Map<string, number>()
   private readonly sourceCooldowns = new Map<string, number>()
+  private readonly recentRequests: LocalApiRequestLog[] = []
+  private readonly requestTelemetry = new WeakMap<ServerResponse, RequestTelemetry>()
+  private totalRequests = 0
+  private successfulRequests = 0
+  private failedRequests = 0
   /** Affinity cache for asynchronous Videos retrieval/content requests. */
   private readonly videoRouteCache = new Map<string, {
     upstream: Required<ApiUpstreamInput>
@@ -808,6 +824,70 @@ export class LocalApiServer {
       startedAt: this.server?.listening ? this.startedAt : null,
       error: this.lastError
     }
+  }
+
+  /**
+   * Cockpit-style service observability without a database.  The ring buffer
+   * deliberately excludes bodies, URLs and every secret, and disappears when
+   * the application exits.
+   */
+  metrics(): LocalApiServerMetrics {
+    const sourceIds = [
+      ...this.config.upstreams.map((entry) => entry.id),
+      ...this.config.credentialSources.map((entry) => entry.id)
+    ]
+    const now = Date.now()
+    const sourceHealth = sourceIds.map((sourceId) => {
+      const cooldown = this.sourceCooldowns.get(sourceId) ?? 0
+      return cooldown > now
+        ? { sourceId, state: 'cooling_down' as const, cooldownUntil: new Date(cooldown).toISOString() }
+        : { sourceId, state: 'ready' as const, cooldownUntil: null }
+    })
+    return {
+      totalRequests: this.totalRequests,
+      successfulRequests: this.successfulRequests,
+      failedRequests: this.failedRequests,
+      recentRequests: this.recentRequests.map((entry) => ({ ...entry })),
+      sourceHealth
+    }
+  }
+
+  private observeResponse(response: ServerResponse, endpoint: string): void {
+    const telemetry: RequestTelemetry = {
+      endpoint,
+      startedAt: Date.now(),
+      model: null,
+      accessKeyId: null,
+      sourceId: null,
+      sourceKind: null
+    }
+    this.requestTelemetry.set(response, telemetry)
+    response.once('finish', () => {
+      const context = this.requestTelemetry.get(response)
+      if (!context || context.endpoint === '/health') return
+      const status = response.statusCode || 500
+      const entry: LocalApiRequestLog = {
+        id: randomBytes(8).toString('hex'),
+        at: new Date().toISOString(),
+        endpoint: context.endpoint,
+        model: context.model,
+        accessKeyId: context.accessKeyId,
+        sourceId: context.sourceId,
+        sourceKind: context.sourceKind,
+        status,
+        durationMs: Math.max(0, Date.now() - context.startedAt)
+      }
+      this.recentRequests.unshift(entry)
+      if (this.recentRequests.length > 120) this.recentRequests.length = 120
+      this.totalRequests += 1
+      if (status >= 200 && status < 400) this.successfulRequests += 1
+      else this.failedRequests += 1
+    })
+  }
+
+  private setRequestTelemetry(response: ServerResponse, patch: Partial<Omit<RequestTelemetry, 'endpoint' | 'startedAt'>>): void {
+    const current = this.requestTelemetry.get(response)
+    if (current) Object.assign(current, patch)
   }
 
   async start(): Promise<LocalApiServerStatus> {
@@ -1121,6 +1201,7 @@ export class LocalApiServer {
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const method = request.method ?? 'GET'
     const requestUrl = new URL(request.url ?? '/', `http://${LOCAL_API_SERVER_HOST}`)
+    this.observeResponse(response, requestUrl.pathname)
 
     if (method === 'GET' && requestUrl.pathname === '/health') {
       writeJson(response, 200, { status: 'ok', ...this.status() })
@@ -1133,6 +1214,7 @@ export class LocalApiServer {
       writeOpenAiError(response, 401, '缺少或无效的 API Key', 'invalid_api_key', 'authentication_error')
       return
     }
+    this.setRequestTelemetry(response, { accessKeyId: key.id })
 
     const modelListPaths = new Set(['/v1/models', '/models', '/backend-api/codex/models'])
     if (method === 'GET' && modelListPaths.has(requestUrl.pathname)) {
@@ -1182,7 +1264,7 @@ export class LocalApiServer {
     }
 
     if (method === 'GET' && requestUrl.pathname === '/api/version') {
-      writeJson(response, 200, { version: '0.14.2-local-router' })
+      writeJson(response, 200, { version: '0.14.3-local-router' })
       return
     }
 
@@ -1308,6 +1390,7 @@ export class LocalApiServer {
         writeOpenAiError(response, 400, `${rawMultipartEndpoint === '/v1/videos' ? 'videos' : 'images/edits'} 必须提供 model 字段`, 'missing_model')
         return
       }
+      this.setRequestTelemetry(response, { model: publicModel })
       if (key.allowedModels.length > 0 && !key.allowedModels.includes(publicModel)) {
         writeOpenAiError(response, 404, `模型“${publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
         return
@@ -1380,6 +1463,7 @@ export class LocalApiServer {
       writeClientProtocolError(response, clientProtocol, 400, '必须提供 model', 'missing_model')
       return
     }
+    this.setRequestTelemetry(response, { model: publicModel })
     if (key.allowedModels.length > 0 && !key.allowedModels.includes(publicModel)) {
       writeClientProtocolError(response, clientProtocol, 404, `模型“${publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
       return
@@ -1532,6 +1616,7 @@ export class LocalApiServer {
         }
       })
       if (upstream.ok) {
+        this.setRequestTelemetry(outgoing, { sourceId: cached.upstream.id, sourceKind: 'api' })
         await relayResponse(upstream, outgoing)
         return
       }
@@ -1603,6 +1688,10 @@ export class LocalApiServer {
               }]
 
         for (const [planIndex, plan] of plans.entries()) {
+          this.setRequestTelemetry(outgoing, {
+            sourceId: candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id,
+            sourceKind: candidate.kind
+          })
           const upstreamBody = Buffer.from(JSON.stringify({
             ...plan.requestBody,
             ...(candidate.kind === 'api' && (candidate.upstream.protocol === 'gemini' || candidate.upstream.protocol === 'gemini_interactions')
@@ -1623,6 +1712,10 @@ export class LocalApiServer {
           })
 
           if (upstream.ok) {
+            this.setRequestTelemetry(outgoing, {
+              sourceId: candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id,
+              sourceKind: candidate.kind
+            })
             this.sourceCooldowns.delete(
               candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id
             )
@@ -1724,6 +1817,7 @@ export class LocalApiServer {
       }
       outgoing.once('close', onClientClose)
       try {
+        this.setRequestTelemetry(outgoing, { sourceId: candidate.upstream.id, sourceKind: 'api' })
         const rawUpstreamUrl = buildProviderUpstreamUrl(candidate.upstream, endpoint)
         const upstreamUrl = applyApiUpstreamAuthQuery(rawUpstreamUrl, candidate.upstream)
         const upstreamBody = rewriteMultipartTextField(
@@ -1739,6 +1833,7 @@ export class LocalApiServer {
           signal: abortController.signal
         })
         if (upstream.ok) {
+          this.setRequestTelemetry(outgoing, { sourceId: candidate.upstream.id, sourceKind: 'api' })
           this.sourceCooldowns.delete(candidate.upstream.id)
           if (endpoint === '/v1/videos') await this.rememberVideoRoute(upstream, candidate, publicModel)
           await relayResponse(upstream, outgoing)

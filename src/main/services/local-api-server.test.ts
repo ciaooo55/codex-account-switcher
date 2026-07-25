@@ -166,6 +166,26 @@ describe('LocalApiServer', () => {
     await expect(health.json()).resolves.toMatchObject({ status: 'ok', running: true, port })
   })
 
+  it('keeps a secret-free in-memory service activity snapshot', async () => {
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, []))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+      headers: { authorization: 'Bearer sk-limited' }
+    })
+    expect(response.status).toBe(200)
+    await response.json()
+
+    const metrics = service.metrics()
+    expect(metrics).toMatchObject({ totalRequests: 1, successfulRequests: 1, failedRequests: 0 })
+    expect(metrics.recentRequests[0]).toMatchObject({
+      endpoint: '/v1/models', accessKeyId: 'limited', sourceId: null, status: 200
+    })
+    expect(JSON.stringify(metrics)).not.toContain('sk-limited')
+  })
+
   it('forwards third-party gateway keys through configured custom headers or query parameters', async () => {
     const seen: Array<{ url: string; headers: Record<string, string | string[] | undefined> }> = []
     const mock = await mockUpstream(async (request, response) => {

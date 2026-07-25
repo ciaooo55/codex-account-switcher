@@ -150,6 +150,38 @@ export interface LocalApiServerStatus {
   error: string | null
 }
 
+/**
+ * Secret-free, in-memory traffic record for the local API service.  This is
+ * intentionally diagnostic data rather than a billing ledger: no request
+ * body, client API key, upstream URL, or provider credential is retained.
+ */
+export interface LocalApiRequestLog {
+  id: string
+  at: string
+  endpoint: string
+  model: string | null
+  accessKeyId: string | null
+  sourceId: string | null
+  sourceKind: 'api' | 'credential' | null
+  status: number
+  durationMs: number
+}
+
+export interface LocalApiSourceHealth {
+  sourceId: string
+  state: 'ready' | 'cooling_down'
+  cooldownUntil: string | null
+}
+
+/** Runtime telemetry is kept in memory and is reset when the app exits. */
+export interface LocalApiServerMetrics {
+  totalRequests: number
+  successfulRequests: number
+  failedRequests: number
+  recentRequests: LocalApiRequestLog[]
+  sourceHealth: LocalApiSourceHealth[]
+}
+
 export type CodexLocalApiIntegrationState =
   | 'not_bound'
   | 'active'
@@ -173,6 +205,8 @@ export interface CodexLocalApiIntegrationStatus {
 export interface LocalApiServerState {
   config: LocalApiServerConfigSummary
   status: LocalApiServerStatus
+  /** Absent only when reading state written by an older main process. */
+  metrics?: LocalApiServerMetrics
   codexIntegration?: CodexLocalApiIntegrationStatus
 }
 

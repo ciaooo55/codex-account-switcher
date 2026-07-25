@@ -755,7 +755,11 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('候选 0 / 1')).toBeVisible()
 
     await page.getByRole('button', { name: 'API 服务' }).click()
-    await expect(page.getByText('http://127.0.0.1:8888/v1')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'http://127.0.0.1:8888/v1' })).toBeVisible()
+    await expect(page.getByText('服务总览')).toBeVisible()
+    await expect(page.getByText('服务健康')).toBeVisible()
+    await expect(page.getByText('公开模型目录')).toBeVisible()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-service-overview.png'), fullPage: true })
     await page.getByLabel('监听端口').fill('18888')
     await page.getByRole('button', { name: '打开 客户端密钥' }).click()
     const accessKeyDialog = page.getByRole('dialog', { name: '客户端密钥' })
@@ -787,7 +791,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await expect(page.getByText('API 服务配置已安全保存并热更新。')).toBeVisible()
     await routeDialog.getByRole('button', { name: '完成' }).click()
     await page.getByRole('button', { name: '启动', exact: true }).click()
-    await expect(page.getByText('http://127.0.0.1:18888/v1')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'http://127.0.0.1:18888/v1' })).toBeVisible()
 
     const localModels = await fetch('http://127.0.0.1:18888/v1/models', {
       headers: { authorization: 'Bearer sk-e2e-local' }
@@ -821,6 +825,8 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       '.api-server-view, .api-server-workbench, .api-codex-panel'
     )).map((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })))
     expect(compactApiLayoutWidths.every(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth + 1)).toBe(true)
+    await expect(page.getByText('服务总览')).toBeVisible()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-service-overview-compact.png'), fullPage: true })
     await page.getByRole('button', { name: '打开 API' }).click()
     await page.getByRole('dialog', { name: 'API' }).getByRole('button', { name: '快速导入', exact: true }).click()
     await expect(page.getByRole('dialog', { name: '添加 API' })).toBeVisible()

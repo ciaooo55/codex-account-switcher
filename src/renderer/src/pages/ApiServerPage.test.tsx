@@ -117,7 +117,7 @@ describe('ApiServerPage', () => {
     render(<ApiServerPage />)
 
     expect(await screen.findByText('运行中')).toBeInTheDocument()
-    expect(screen.getByText(/http:\/\/127\.0\.0\.1:8888\/v1/)).toBeInTheDocument()
+    expect(screen.getAllByText(/http:\/\/127\.0\.0\.1:8888\/v1/).length).toBeGreaterThan(0)
     expect(screen.getByText('4321')).toBeInTheDocument()
     expect(screen.getByText('本软件访问密钥')).toBeInTheDocument()
     expect(screen.getByDisplayValue('sk-cas-…abcd')).toBeInTheDocument()
@@ -268,7 +268,7 @@ describe('ApiServerPage', () => {
       testUpstreams: true,
       refreshCredentials: false
     }))
-    expect(screen.getByText('encoded.example.com')).toBeInTheDocument()
+    expect(screen.getAllByText('encoded.example.com').length).toBeGreaterThan(0)
   })
 
   it('一键刷新全部上游并允许编辑凭证的可用模型', async () => {
@@ -313,7 +313,7 @@ describe('ApiServerPage', () => {
     await openApiSection('客户端密钥')
     await openApiSection('账号凭证源')
 
-    expect(screen.getByText('user@example.com')).toBeInTheDocument()
+    expect(screen.getAllByText('user@example.com').length).toBeGreaterThan(0)
     expect(screen.getByText('credential-1')).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('仅账号切换'))
     fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))

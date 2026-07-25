@@ -669,6 +669,7 @@ async function main(): Promise<void> {
           : config.credentialSources
       },
       status: localApiServer.status(),
+      metrics: localApiServer.metrics(),
       codexIntegration: await codexLocalApiIntegrationStatus()
     }
   }
