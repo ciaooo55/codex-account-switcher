@@ -822,6 +822,7 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       if (!window) throw new Error('主窗口不存在')
       window.setSize(720, 600)
     })
+    await page.setViewportSize({ width: 720, height: 600 })
     await page.waitForTimeout(150)
     const compactApiLayoutWidths = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(
       '.api-server-view, .api-server-workbench, .api-codex-panel'
@@ -830,6 +831,34 @@ test.describe('Codex Account Switcher Electron workflow', () => {
     await page.getByRole('button', { name: '打开 总览' }).click()
     await expect(page.getByText('服务总览')).toBeVisible()
     await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-service-overview-compact.png'), fullPage: true })
+    await page.setViewportSize({ width: 390, height: 760 })
+    await page.locator('.api-server-view').evaluate((element) => { element.scrollTop = 0 })
+    const narrowApiLayoutWidths = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(
+      '.api-server-view, .api-server-workbench, .api-codex-panel, .api-server-layout'
+    )).map((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })))
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-service-overview-narrow.png'), fullPage: true })
+    expect(narrowApiLayoutWidths.every(({ scrollWidth, clientWidth }) => scrollWidth <= clientWidth + 1)).toBe(true)
+    const narrowApiDocumentWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+    expect(narrowApiDocumentWidth).toBeLessThanOrEqual(390)
+    const narrowStatusLayout = await page.evaluate(() => {
+      const status = document.querySelector<HTMLElement>('.api-server-status')
+      const actions = status?.querySelector<HTMLElement>(':scope > div:last-child')
+      const workbench = document.querySelector<HTMLElement>('.api-server-workbench')
+      const statusBounds = status?.getBoundingClientRect()
+      const actionBounds = actions?.getBoundingClientRect()
+      const workbenchBounds = workbench?.getBoundingClientRect()
+      return {
+        statusBottom: statusBounds?.bottom ?? 0,
+        actionBottom: actionBounds?.bottom ?? 0,
+        workbenchTop: workbenchBounds?.top ?? 0,
+        display: status ? getComputedStyle(status).display : '',
+        position: actions ? getComputedStyle(actions).position : ''
+      }
+    })
+    expect(narrowStatusLayout).toMatchObject({ display: 'grid', position: 'static' })
+    expect(narrowStatusLayout.actionBottom).toBeLessThanOrEqual(narrowStatusLayout.statusBottom + 1)
+    expect(narrowStatusLayout.workbenchTop).toBeGreaterThanOrEqual(narrowStatusLayout.statusBottom - 1)
+    await page.setViewportSize({ width: 720, height: 600 })
     await page.getByRole('button', { name: '打开 API' }).click()
     await page.getByRole('button', { name: '快速导入', exact: true }).click()
     await expect(page.getByRole('dialog', { name: '添加 API' })).toBeVisible()

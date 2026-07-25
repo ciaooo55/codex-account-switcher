@@ -1058,34 +1058,33 @@ export function ApiServerPage(): React.JSX.Element {
           </div>
         ) : null}
 
-        <section className="api-service-settings flex flex-wrap items-end gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-3" aria-labelledby="service-settings-title">
-          <div className="mr-auto min-w-[210px] self-center">
+        <section className="api-service-settings" aria-labelledby="service-settings-title">
+          <div className="api-service-settings-heading">
             <h2 id="service-settings-title" className="flex items-center gap-2 text-[13px] font-semibold"><Activity size={16} className="text-[var(--color-accent)]" />服务设置</h2>
-            <p className="mt-1 max-w-[68ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">始终监听 127.0.0.1。支持 Responses、Chat、Legacy Completions、Embeddings、Images / Video Generation 与原生 Anthropic / Gemini / Ollama；端口被占用时明确失败，不会偷偷切换到其他端口。</p>
+            <p>固定监听 127.0.0.1，端口冲突时直接提示，不会自动换端口。</p>
           </div>
-          <Field label="监听端口" hint={state.status.running && draft.port !== state.status.port ? `当前 ${state.status.port}；保存成功后安全切换` : '1–65535，默认 8888'} className="w-[190px]">
+          <Field label="监听端口" hint={state.status.running && draft.port !== state.status.port ? `当前 ${state.status.port}` : undefined} className="api-service-port">
             <Input aria-label="监听端口" type="number" min={1} max={65535} value={draft.port} onChange={(event) => updateDraft((current) => ({ ...current, port: Number(event.target.value) }))} />
           </Field>
           <Toggle checked={draft.autoStart} onChange={(autoStart) => updateDraft((current) => ({ ...current, autoStart }))} label="随应用自动启动" />
-          <Button variant="soft" onClick={() => setTuningDialogOpen(true)}><Settings2 size={15} />超时与故障切换</Button>
+          <Button variant="soft" aria-label="超时与故障切换" onClick={() => setTuningDialogOpen(true)}><Settings2 size={15} />高级设置</Button>
           <Button variant="default" onClick={() => void save()} disabled={!dirty || isBusy}>
             {action === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{dirty ? '保存并热更新' : '已保存'}
           </Button>
         </section>
 
-        <section className="api-codex-panel rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-1)] p-3" aria-labelledby="codex-api-title">
-          <div className="self-center">
+        <section className="api-codex-panel" aria-labelledby="codex-api-title">
+          <div className="api-codex-heading">
             <h2 id="codex-api-title" className="flex items-center gap-2 text-[13px] font-semibold"><Clipboard size={16} className="text-[var(--color-accent)]" />Codex 接管</h2>
-            <p className="mt-1 max-w-[60ch] text-[11.5px] leading-4 text-[var(--color-text-muted)]">将固定本地地址、本软件密钥和所有公开模型作为一个受管配置写入 Codex；第三方 API Key 与账号 Token 不会进入 Codex。</p>
             {codexIntegration ? (
-              <div className={cn('api-codex-integration mt-2', codexIntegrationTone)} role="status">
+              <div className={cn('api-codex-integration', codexIntegrationTone)} role="status" title={codexIntegration.message}>
                 <span className="font-medium">{codexIntegration.state === 'active' ? 'Codex 正在使用本项目 API 服务' : codexIntegration.state === 'external_override' ? 'Codex 已被其他工具接管' : codexIntegration.state === 'binding_mismatch' ? 'Codex 接管配置不一致' : '尚未接管 Codex'}</span>
-                <span>{codexIntegration.message}</span>
+                <span className="sr-only">{codexIntegration.message}</span>
                 {codexIntegration.state === 'external_override' && codexIntegration.configuredProvider ? (
                   <span className="api-codex-conflict font-[var(--font-mono)]">实际使用：{codexIntegration.configuredProvider} / {codexIntegration.configuredModel ?? '未设置模型'}。</span>
                 ) : null}
               </div>
-            ) : null}
+            ) : <p>写入固定本地地址、项目密钥和公开模型。</p>}
           </div>
           <div className="api-codex-controls">
             <Field label="Codex 项目密钥"><Select className="w-full" value={codexKeyId} onChange={(event) => { setCodexKeyId(event.target.value); setCodexModel('') }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</Select></Field>

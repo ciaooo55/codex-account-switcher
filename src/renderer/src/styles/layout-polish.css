@@ -2253,3 +2253,266 @@ table thead th {
   .accounts-view .current-account-overview { grid-column: auto; }
   .accounts-view .filter-row > select { flex: 1 1 100%; }
 }
+
+/* API workbench density pass
+ * Keep primary management visible in the first viewport. Configuration is a
+ * compact command surface; details stay in the existing secondary dialogs. */
+.api-server-status {
+  flex: 0 0 auto;
+  min-height: 62px;
+  padding-block: 8px !important;
+}
+
+.api-server-workbench {
+  flex: 0 0 auto;
+  gap: 8px !important;
+  padding: 10px 12px 14px !important;
+}
+
+.api-service-settings,
+.api-codex-panel {
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-1);
+}
+
+.api-service-settings {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.api-service-settings-heading {
+  display: grid;
+  flex: 1 1 240px;
+  min-width: 190px;
+  gap: 2px;
+}
+
+.api-service-settings-heading p,
+.api-codex-heading > p {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-service-port {
+  flex: 0 0 120px;
+  min-width: 0;
+}
+
+.api-service-settings > .api-toggle,
+.api-service-settings > button {
+  flex: 0 0 auto;
+}
+
+.api-codex-panel {
+  display: grid;
+  grid-template-columns: minmax(210px, .68fr) minmax(540px, 1.7fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.api-codex-heading {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.api-codex-integration {
+  position: relative;
+  display: block;
+  min-width: 0;
+  max-width: none;
+  padding: 0 0 0 13px;
+  overflow: hidden;
+  background: transparent !important;
+  color: var(--color-text-muted) !important;
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-codex-integration::before {
+  position: absolute;
+  top: .45em;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  content: '';
+}
+
+.api-codex-integration.is-active::before { background: var(--color-accent); }
+.api-codex-integration.is-warning::before { background: var(--color-warn); }
+.api-codex-integration.is-error::before { background: var(--color-danger); }
+.api-codex-conflict { display: none; }
+
+.api-codex-controls {
+  grid-template-columns: minmax(150px, 1fr) minmax(170px, 1.1fr) max-content max-content;
+  gap: 8px;
+}
+
+.api-server-layout {
+  min-height: 470px !important;
+  border-radius: 10px !important;
+}
+
+.api-management-overview {
+  gap: 9px;
+  padding: 10px;
+}
+
+.api-overview-summary {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-1);
+}
+
+.api-overview-summary-item {
+  min-height: 54px;
+  gap: 1px;
+  padding: 7px 10px;
+  border: 0;
+  border-right: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.api-overview-summary-item:last-child { border-right: 0; }
+.api-overview-summary-item:hover,
+.api-overview-summary-item:focus-visible { background: var(--color-surface-2); }
+.api-overview-summary-item strong { font-size: 16px; }
+
+.api-overview-grid { gap: 8px; }
+.api-overview-panel { gap: 8px; padding: 10px; }
+
+@media (max-width: 1180px) {
+  .api-service-settings-heading p { display: none; }
+
+  .api-codex-panel {
+    grid-template-columns: minmax(190px, .58fr) minmax(520px, 1.7fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .api-server-status dl > div:nth-child(2) { display: none; }
+
+  .api-service-settings {
+    flex-wrap: wrap;
+  }
+
+  .api-service-settings-heading {
+    flex: 1 1 170px;
+    min-width: 150px;
+  }
+
+  .api-codex-panel {
+    grid-template-columns: 1fr !important;
+    gap: 8px;
+  }
+
+  .api-codex-heading {
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+  }
+
+  .api-codex-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content max-content;
+  }
+
+  .api-overview-summary-item:nth-child(2) { border-right: 0; }
+  .api-overview-summary-item:nth-child(-n + 2) { border-bottom: 1px solid var(--color-border); }
+}
+
+@media (max-width: 680px) {
+  .api-server-status {
+    padding-inline: 10px !important;
+  }
+
+  .api-server-status dl { display: none; }
+
+  .api-server-workbench {
+    padding: 8px !important;
+  }
+
+  .api-service-settings-heading {
+    flex-basis: 100%;
+  }
+
+  .api-service-settings-heading p { display: block; }
+  .api-service-port { flex: 1 1 112px; }
+
+  .api-service-settings > .api-toggle {
+    flex: 1 1 150px;
+  }
+
+  .api-service-settings > button {
+    flex: 1 1 130px;
+  }
+
+  .api-codex-heading {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .api-codex-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 460px) {
+  .api-server-status {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .api-server-status > div:last-child {
+    width: 100%;
+  }
+
+  .api-server-status > div:last-child > button {
+    flex: 1 1 0;
+  }
+
+  .api-service-settings > button,
+  .api-service-settings > .api-toggle {
+    flex-basis: 100%;
+  }
+
+  .api-codex-controls { grid-template-columns: 1fr; }
+  .api-overview-summary { grid-template-columns: 1fr; }
+  .api-overview-summary-item,
+  .api-overview-summary-item:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .api-overview-summary-item:last-child { border-bottom: 0; }
+
+  .api-overview-panel > header > .flex {
+    align-self: stretch;
+    width: 100%;
+  }
+
+  .api-overview-model-usage-list > div {
+    grid-template-columns: minmax(0, 1fr) 52px 72px;
+  }
+
+  .api-overview-model-usage-list > div > span:nth-of-type(3),
+  .api-overview-model-usage-list > div > small {
+    display: none;
+  }
+}
