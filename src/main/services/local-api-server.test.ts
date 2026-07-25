@@ -77,8 +77,8 @@ function config(
     port,
     autoStart: false,
     accessKeys: [
-      { id: 'full', label: 'Full', key: 'sk-local', enabled: true, allowedModels: [] },
-      { id: 'limited', label: 'Limited', key: 'sk-limited', enabled: true, allowedModels: ['xxx'] }
+      { id: 'full', label: 'Full', key: 'sk-local', enabled: true, allowedModels: [], allowedSourceIds: [] },
+      { id: 'limited', label: 'Limited', key: 'sk-limited', enabled: true, allowedModels: ['xxx'], allowedSourceIds: [] }
     ],
     upstreams,
     credentialSources: [],
@@ -184,6 +184,73 @@ describe('LocalApiServer', () => {
       endpoint: '/v1/models', accessKeyId: 'limited', sourceId: null, status: 200
     })
     expect(JSON.stringify(metrics)).not.toContain('sk-limited')
+  })
+
+  it('extracts upstream token usage and calculates cost only from configured model pricing', async () => {
+    const mock = await mockUpstream((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'priced', object: 'chat.completion', model: 'real-1',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 500,
+          prompt_tokens_details: { cached_tokens: 200 }
+        }
+      }))
+    })
+    const port = await reservePort()
+    const runtime = config(port, [upstream('first', mock.baseUrl, 'chat_completions')])
+    runtime.routes[0].pricing = { inputPerMillion: 10, cachedInputPerMillion: 2, outputPerMillion: 20 }
+    const service = new LocalApiServer(runtime)
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', messages: [{ role: 'user', content: 'hello' }] })
+    })
+    expect(response.status).toBe(200)
+    await response.json()
+    expect(service.metrics().recentRequests[0]).toMatchObject({
+      model: 'xxx', inputTokens: 1000, cachedInputTokens: 200, outputTokens: 500,
+      estimatedCostUsd: 0.0184
+    })
+  })
+
+  it('limits a client key to its selected API source pool', async () => {
+    const first = await mockUpstream((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'first', object: 'response', status: 'completed', output_text: 'first source' }))
+    })
+    const second = await mockUpstream((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'second', object: 'response', status: 'completed', output_text: 'second source' }))
+    })
+    const port = await reservePort()
+    const runtime = config(port, [upstream('first', first.baseUrl), upstream('second', second.baseUrl)])
+    runtime.accessKeys.push({
+      id: 'second-only', label: 'Second only', key: 'sk-second-only', enabled: true,
+      allowedModels: [], allowedSourceIds: ['second']
+    })
+    const service = new LocalApiServer(runtime)
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const models = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+      headers: { authorization: 'Bearer sk-second-only' }
+    })
+    await expect(models.json()).resolves.toEqual({
+      object: 'list', data: [{ id: 'xxx', object: 'model', created: 0, owned_by: 'local-api-server' }]
+    })
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-second-only', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hello' })
+    })
+    await expect(response.json()).resolves.toMatchObject({ output_text: 'second source' })
   })
 
   it('forwards third-party gateway keys through configured custom headers or query parameters', async () => {
@@ -963,6 +1030,36 @@ describe('LocalApiServer', () => {
     })
   })
 
+  it('honors the configured maximum number of sources attempted', async () => {
+    let secondCalls = 0
+    const first = await mockUpstream((_request, response) => {
+      response.writeHead(429, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error: { message: 'first exhausted' } }))
+    })
+    const second = await mockUpstream((_request, response) => {
+      secondCalls += 1
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ choices: [{ message: { content: 'should not run' } }] }))
+    })
+    const port = await reservePort()
+    const runtime = config(port, [
+      upstream('first', first.baseUrl, 'chat_completions'),
+      upstream('second', second.baseUrl, 'chat_completions')
+    ])
+    runtime.maxRetrySources = 1
+    const service = new LocalApiServer(runtime)
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const result = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', messages: [{ role: 'user', content: 'hello' }] })
+    })
+    expect(result.status).toBe(429)
+    expect(secondCalls).toBe(0)
+  })
+
   it('round-robins requests and transparently relays streaming responses', async () => {
     const first = await mockUpstream((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
@@ -995,6 +1092,37 @@ describe('LocalApiServer', () => {
     await expect(three.text()).resolves.toContain('first-1')
   })
 
+  it('keeps an identified conversation on the same healthy source while new sessions still round-robin', async () => {
+    const calls: string[] = []
+    const first = await mockUpstream((_request, response) => {
+      calls.push('first')
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'first-response', object: 'response', status: 'completed', output: [] }))
+    })
+    const second = await mockUpstream((_request, response) => {
+      calls.push('second')
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'second-response', object: 'response', status: 'completed', output: [] }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [
+      upstream('first', first.baseUrl, 'responses'),
+      upstream('second', second.baseUrl, 'responses')
+    ], 'round_robin'))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const invoke = (session: string) => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hello', prompt_cache_key: session })
+    })
+    expect((await invoke('conversation-a')).status).toBe(200)
+    expect((await invoke('conversation-a')).status).toBe(200)
+    expect((await invoke('conversation-b')).status).toBe(200)
+    expect(calls).toEqual(['first', 'first', 'second'])
+  })
+
   it('routes Responses and translated Chat requests through live credential resolvers', async () => {
     const port = await reservePort()
     const sources: LocalApiServerRuntimeConfig['credentialSources'] = [
@@ -1010,7 +1138,7 @@ describe('LocalApiServer', () => {
     const runtime: LocalApiServerRuntimeConfig = {
       port,
       autoStart: false,
-      accessKeys: [{ id: 'full', label: 'Full', key: 'sk-local', enabled: true, allowedModels: [] }],
+      accessKeys: [{ id: 'full', label: 'Full', key: 'sk-local', enabled: true, allowedModels: [], allowedSourceIds: [] }],
       upstreams: [],
       credentialSources: sources,
       routes: [{

@@ -1,5 +1,8 @@
 export const DEFAULT_LOCAL_API_SERVER_PORT = 8888
 export const LOCAL_API_SERVER_HOST = '127.0.0.1' as const
+export const DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS = 120_000
+export const DEFAULT_LOCAL_API_MAX_RETRY_SOURCES = 0
+export const DEFAULT_LOCAL_API_RETRY_DELAY_MS = 0
 
 /**
  * Wire format exposed by a third-party upstream.  `auto` is intentionally
@@ -42,6 +45,11 @@ export interface LocalApiAccessKeyInput {
   key?: string
   enabled: boolean
   allowedModels: string[]
+  /**
+   * Optional per-client source pool. Empty preserves the route's full source
+   * set; a non-empty list limits this key to the selected APIs/credentials.
+   */
+  allowedSourceIds?: string[]
 }
 
 export interface LocalApiAccessKeySummary extends Omit<LocalApiAccessKeyInput, 'key'> {
@@ -107,16 +115,34 @@ export interface ModelRouteTarget {
   enabled: boolean
 }
 
+export interface ModelRoutePricing {
+  /** USD per one million non-cached input tokens. */
+  inputPerMillion: number
+  /** USD per one million cached input tokens. */
+  cachedInputPerMillion: number
+  /** USD per one million output tokens. */
+  outputPerMillion: number
+}
+
 export interface ModelRoute {
   publicModel: string
   strategy: ModelRouteStrategy
   sourceMode: ModelRouteSourceMode
   targets: ModelRouteTarget[]
+  pricing?: ModelRoutePricing
 }
 
 export interface LocalApiServerConfigInput {
   port: number
   autoStart: boolean
+  /** Upstream-open timeout. Existing streams may continue after headers arrive. */
+  requestTimeoutMs?: number
+  /** Maximum sources attempted per request; 0 means every eligible source. */
+  maxRetrySources?: number
+  /** Optional bounded pause before trying the next source. */
+  retryDelayMs?: number
+  /** Keeps an identified conversation on the same healthy source. */
+  sessionAffinity?: boolean
   accessKeys: LocalApiAccessKeyInput[]
   upstreams: ApiUpstreamInput[]
   /** Optional only for compatibility with 0.13.x configuration call sites. */
@@ -165,6 +191,10 @@ export interface LocalApiRequestLog {
   sourceKind: 'api' | 'credential' | null
   status: number
   durationMs: number
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  estimatedCostUsd?: number
 }
 
 export interface LocalApiSourceHealth {
@@ -277,6 +307,19 @@ function normalizeAuthQueryParam(value: string | undefined): string {
   return parameter
 }
 
+function normalizeSourceIds(values: readonly string[] | undefined): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values ?? []) {
+    const sourceId = value.trim()
+    if (!ID_PATTERN.test(sourceId) || seen.has(sourceId)) continue
+    seen.add(sourceId)
+    result.push(sourceId)
+    if (result.length === 500) break
+  }
+  return result
+}
+
 /** Resolves automatic provider authentication into a concrete safe mode. */
 export function resolvedApiUpstreamAuthMode(input: ApiUpstreamAuthConfig): ApiUpstreamAuthMode {
   if ((input.authMode ?? 'auto') !== 'auto') return input.authMode ?? 'auto'
@@ -347,7 +390,8 @@ export function normalizeLocalApiServerConfig(
       label,
       ...(key === undefined ? {} : { key }),
       enabled: Boolean(entry.enabled),
-      allowedModels: normalizeModelIds(entry.allowedModels)
+      allowedModels: normalizeModelIds(entry.allowedModels),
+      allowedSourceIds: normalizeSourceIds(entry.allowedSourceIds)
     }
   })
 
@@ -464,26 +508,65 @@ export function normalizeLocalApiServerConfig(
         enabled: Boolean(target.enabled)
       }
     })
+    const pricing = route.pricing === undefined ? undefined : (() => {
+      const values = [route.pricing.inputPerMillion, route.pricing.cachedInputPerMillion, route.pricing.outputPerMillion]
+      if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 1_000_000)) {
+        throw new Error(`模型 ${publicModel} 的价格配置无效`)
+      }
+      return {
+        inputPerMillion: Number(route.pricing.inputPerMillion),
+        cachedInputPerMillion: Number(route.pricing.cachedInputPerMillion),
+        outputPerMillion: Number(route.pricing.outputPerMillion)
+      }
+    })()
     return {
       publicModel,
       strategy: route.strategy,
       sourceMode: route.sourceMode,
-      targets
+      targets,
+      ...(pricing ? { pricing } : {})
     }
   })
 
+  const sourceIds = new Set([...upstreamIds, ...credentialSourceIds])
+  for (const key of accessKeys) {
+    if (key.allowedSourceIds.some((sourceId) => !sourceIds.has(sourceId))) {
+      throw new Error(`访问密钥“${key.label}”引用了不存在的 API 或账号凭证来源`)
+    }
+  }
+
   if (codexBinding) {
     const key = accessKeys.find((entry) => entry.id === codexBinding.accessKeyId && entry.enabled)
-    const routeExists = routes.some((route) => route.publicModel === codexBinding.model)
-    const keyAllowsModel = key && (key.allowedModels.length === 0 || key.allowedModels.includes(codexBinding.model))
-    if (!key || !routeExists || !keyAllowsModel) {
+    const route = routes.find((entry) => entry.publicModel === codexBinding.model)
+    const keyAllowsModel = key
+      && route
+      && (key.allowedModels.length === 0 || key.allowedModels.includes(codexBinding.model))
+      && (key.allowedSourceIds.length === 0 || route.targets.some((target) => key.allowedSourceIds.includes(target.sourceId)))
+    if (!key || !route || !keyAllowsModel) {
       throw new Error('Codex API 服务绑定引用了不可用的密钥或公开模型')
     }
   }
 
+  const requestTimeoutMs = Number.isFinite(input.requestTimeoutMs)
+    ? Math.trunc(input.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS)
+    : DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS
+  const maxRetrySources = Number.isFinite(input.maxRetrySources)
+    ? Math.trunc(input.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES)
+    : DEFAULT_LOCAL_API_MAX_RETRY_SOURCES
+  const retryDelayMs = Number.isFinite(input.retryDelayMs)
+    ? Math.trunc(input.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS)
+    : DEFAULT_LOCAL_API_RETRY_DELAY_MS
+  if (requestTimeoutMs < 5_000 || requestTimeoutMs > 30 * 60_000) throw new Error('上游请求超时必须在 5 秒到 30 分钟之间')
+  if (maxRetrySources < 0 || maxRetrySources > 100) throw new Error('最大尝试来源数必须在 0 到 100 之间')
+  if (retryDelayMs < 0 || retryDelayMs > 30_000) throw new Error('故障切换等待必须在 0 到 30 秒之间')
+
   return {
     port: input.port,
     autoStart: Boolean(input.autoStart),
+    requestTimeoutMs,
+    maxRetrySources,
+    retryDelayMs,
+    sessionAffinity: input.sessionAffinity !== false,
     accessKeys,
     upstreams,
     credentialSources,

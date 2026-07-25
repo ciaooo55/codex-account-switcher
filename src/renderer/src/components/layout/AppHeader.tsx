@@ -25,6 +25,7 @@ export interface AppHeaderProps {
   theme: ThemeMode
   busy: boolean
   onImport: () => void
+  onImportApi: () => void
   onToggleTheme: () => void
   onOpenSettings: () => void
 }
@@ -53,6 +54,7 @@ export function AppHeader({
   theme,
   busy,
   onImport,
+  onImportApi,
   onToggleTheme,
   onOpenSettings
 }: AppHeaderProps): React.JSX.Element {
@@ -110,6 +112,10 @@ export function AppHeader({
       </nav>
 
       <div className="app-header__actions">
+        <Button className="app-header__api-import" variant="ghost" onClick={onImportApi} disabled={busy} aria-label="导入第三方 API">
+          <Server size={16} />
+          <span className="app-header__api-import-label">导入第三方 API</span>
+        </Button>
         <Button className="app-header__import" variant="soft" onClick={onImport} disabled={busy} aria-label="导入账号">
           <Import size={16} />
           <span className="app-header__import-label">导入账号</span>

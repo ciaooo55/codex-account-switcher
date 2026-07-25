@@ -1,6 +1,9 @@
 import type { SecretCipher } from '../../shared/types'
 import {
   DEFAULT_LOCAL_API_SERVER_PORT,
+  DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
+  DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
+  DEFAULT_LOCAL_API_RETRY_DELAY_MS,
   normalizeLocalApiServerConfig,
   type ApiUpstreamSummary,
   type CodexLocalApiBinding,
@@ -17,6 +20,7 @@ interface StoredAccessKey {
   label: string
   enabled: boolean
   allowedModels: string[]
+  allowedSourceIds?: string[]
   encryptedKey: string
 }
 
@@ -39,6 +43,10 @@ interface ApiServerFile {
   version: 1
   port: number
   autoStart: boolean
+  requestTimeoutMs?: number
+  maxRetrySources?: number
+  retryDelayMs?: number
+  sessionAffinity?: boolean
   accessKeys: StoredAccessKey[]
   upstreams: StoredUpstream[]
   credentialSources: CredentialSourceInput[]
@@ -50,6 +58,10 @@ const EMPTY_FILE: ApiServerFile = {
   version: 1,
   port: DEFAULT_LOCAL_API_SERVER_PORT,
   autoStart: false,
+  requestTimeoutMs: DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
+  maxRetrySources: DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
+  retryDelayMs: DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+  sessionAffinity: true,
   accessKeys: [],
   upstreams: [],
   credentialSources: [],
@@ -89,6 +101,7 @@ export class ApiServerStore {
           label: entry.label,
           enabled: entry.enabled,
           allowedModels: entry.allowedModels,
+          allowedSourceIds: entry.allowedSourceIds ?? [],
           encryptedKey
         }
       })
@@ -117,6 +130,10 @@ export class ApiServerStore {
         version: 1,
         port: normalized.port,
         autoStart: normalized.autoStart,
+        requestTimeoutMs: normalized.requestTimeoutMs,
+        maxRetrySources: normalized.maxRetrySources,
+        retryDelayMs: normalized.retryDelayMs,
+        sessionAffinity: normalized.sessionAffinity,
         accessKeys,
         upstreams,
         credentialSources: normalized.credentialSources ?? [],
@@ -142,12 +159,17 @@ export class ApiServerStore {
       return {
         port: file.port,
         autoStart: file.autoStart,
+        requestTimeoutMs: file.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
+        maxRetrySources: file.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
+        retryDelayMs: file.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+        sessionAffinity: file.sessionAffinity !== false,
         accessKeys: file.accessKeys.map((entry) => ({
           id: entry.id,
           label: entry.label,
           key: this.cipher.decrypt(entry.encryptedKey),
           enabled: entry.enabled,
-          allowedModels: [...entry.allowedModels]
+          allowedModels: [...entry.allowedModels],
+          allowedSourceIds: [...(entry.allowedSourceIds ?? [])]
         })),
         upstreams: file.upstreams.map((entry) => ({
           id: entry.id,
@@ -211,6 +233,7 @@ export class ApiServerStore {
         label: entry.label,
         enabled: entry.enabled,
         allowedModels: [...entry.allowedModels],
+        allowedSourceIds: [...(entry.allowedSourceIds ?? [])],
         hasKey: Boolean(key),
         keyPreview: previewSecret(key),
         isShort: Boolean(key) && key.length < 20
@@ -238,6 +261,10 @@ export class ApiServerStore {
     return {
       port: file.port,
       autoStart: file.autoStart,
+      requestTimeoutMs: file.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
+      maxRetrySources: file.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
+      retryDelayMs: file.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+      sessionAffinity: file.sessionAffinity !== false,
       accessKeys,
       upstreams,
       credentialSources: (file.credentialSources ?? []).map((entry) => ({
@@ -266,6 +293,10 @@ export class ApiServerStore {
       }
       return {
         ...parsed,
+        requestTimeoutMs: parsed.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
+        maxRetrySources: parsed.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
+        retryDelayMs: parsed.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+        sessionAffinity: parsed.sessionAffinity !== false,
         credentialSources: Array.isArray(parsed.credentialSources) ? parsed.credentialSources : [],
         codexBinding: parsed.codexBinding && typeof parsed.codexBinding === 'object'
           ? parsed.codexBinding

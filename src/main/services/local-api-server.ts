@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
@@ -15,6 +15,7 @@ import {
   type LocalApiServerRuntimeConfig,
   type LocalApiServerStatus,
   type ModelRoute,
+  type ModelRoutePricing,
   type ModelRouteTarget
 } from '../../shared/api-server'
 import {
@@ -59,6 +60,7 @@ import {
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 429])
 const PROTOCOL_FALLBACK_STATUSES = new Set([400, 404, 405, 415, 422, 501])
+const SESSION_AFFINITY_TTL_MS = 2 * 60 * 60_000
 
 /** Endpoints that can be safely selected by a public-model route. */
 type SupportedEndpoint =
@@ -93,6 +95,10 @@ interface RequestTelemetry {
   accessKeyId: string | null
   sourceId: string | null
   sourceKind: 'api' | 'credential' | null
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  estimatedCostUsd?: number
 }
 
 interface ApiRouteCandidate {
@@ -108,6 +114,95 @@ interface CredentialRouteCandidate {
 }
 
 type RouteCandidate = ApiRouteCandidate | CredentialRouteCandidate
+
+interface ParsedUpstreamUsage {
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+}
+
+function nonNegativeNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0
+}
+
+async function parseUpstreamUsage(response: Response): Promise<ParsedUpstreamUsage | null> {
+  if (!/application\/json/i.test(response.headers.get('content-type') ?? '')) return null
+  try {
+    const payload = await response.json() as Record<string, unknown>
+    const usage = payload.usage && typeof payload.usage === 'object'
+      ? payload.usage as Record<string, unknown>
+      : null
+    const usageMetadata = payload.usageMetadata && typeof payload.usageMetadata === 'object'
+      ? payload.usageMetadata as Record<string, unknown>
+      : null
+    const promptDetails = usage?.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
+      ? usage.prompt_tokens_details as Record<string, unknown>
+      : null
+    const inputDetails = usage?.input_tokens_details && typeof usage.input_tokens_details === 'object'
+      ? usage.input_tokens_details as Record<string, unknown>
+      : null
+    const inputTokens = nonNegativeNumber(
+      usage?.input_tokens ?? usage?.prompt_tokens ?? usageMetadata?.promptTokenCount ?? payload.prompt_eval_count
+    )
+    const cachedInputTokens = Math.min(inputTokens, nonNegativeNumber(
+      inputDetails?.cached_tokens
+      ?? promptDetails?.cached_tokens
+      ?? usage?.cache_read_input_tokens
+      ?? usageMetadata?.cachedContentTokenCount
+    ))
+    const outputTokens = nonNegativeNumber(
+      usage?.output_tokens ?? usage?.completion_tokens ?? usageMetadata?.candidatesTokenCount ?? payload.eval_count
+    )
+    return inputTokens || cachedInputTokens || outputTokens
+      ? { inputTokens, cachedInputTokens, outputTokens }
+      : null
+  } catch {
+    return null
+  }
+}
+
+function estimateUsageCost(usage: ParsedUpstreamUsage, pricing: ModelRoutePricing | undefined): number | undefined {
+  if (!pricing) return undefined
+  const regularInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens)
+  return (
+    regularInput * pricing.inputPerMillion
+    + usage.cachedInputTokens * pricing.cachedInputPerMillion
+    + usage.outputTokens * pricing.outputPerMillion
+  ) / 1_000_000
+}
+
+function routeCandidateSourceId(candidate: RouteCandidate): string {
+  return candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id
+}
+
+/**
+ * Derives a stable, non-reversible conversation key without retaining user
+ * content. Codex/compatible clients commonly send one of these explicit
+ * identifiers; ordinary stateless requests remain load-balanced normally.
+ */
+function requestSessionAffinityKey(
+  request: IncomingMessage,
+  body: Record<string, unknown>,
+  publicModel: string
+): string | null {
+  const header = ['x-codex-conversation-id', 'x-conversation-id', 'x-session-id']
+    .map((name) => request.headers[name])
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  const conversation = body.conversation
+  const metadata = body.metadata
+  const bodyIdentity = typeof body.prompt_cache_key === 'string'
+    ? body.prompt_cache_key
+    : typeof conversation === 'string'
+      ? conversation
+      : conversation && typeof conversation === 'object' && typeof (conversation as Record<string, unknown>).id === 'string'
+        ? String((conversation as Record<string, unknown>).id)
+        : metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>).conversation_id === 'string'
+          ? String((metadata as Record<string, unknown>).conversation_id)
+          : ''
+  const identity = header?.trim() || bodyIdentity.trim()
+  if (!identity) return null
+  return createHash('sha256').update(`${publicModel}\0${identity}`).digest('hex')
+}
 
 export interface CredentialUpstreamResolution {
   url: string
@@ -131,7 +226,7 @@ function cloneRuntimeConfig(config: LocalApiServerRuntimeConfig): LocalApiServer
     ...normalized,
     accessKeys: normalized.accessKeys.map((entry) => {
       if (!entry.key) throw new Error(`访问密钥“${entry.label}”缺少密钥内容`)
-      return { ...entry, key: entry.key }
+      return { ...entry, key: entry.key, allowedSourceIds: entry.allowedSourceIds ?? [] }
     }),
     upstreams: normalized.upstreams.map((entry) => {
       return {
@@ -795,6 +890,7 @@ export class LocalApiServer {
   private lastError: string | null = null
   private readonly roundRobinOffsets = new Map<string, number>()
   private readonly sourceCooldowns = new Map<string, number>()
+  private readonly sessionAffinity = new Map<string, { sourceId: string; expiresAt: number }>()
   private readonly recentRequests: LocalApiRequestLog[] = []
   private readonly requestTelemetry = new WeakMap<ServerResponse, RequestTelemetry>()
   private totalRequests = 0
@@ -852,6 +948,22 @@ export class LocalApiServer {
     }
   }
 
+  /** Clears temporary failover cooldowns after an operator has fixed a source. */
+  clearSourceCooldowns(sourceIds?: readonly string[]): LocalApiServerMetrics {
+    if (!sourceIds || sourceIds.length === 0) {
+      this.sourceCooldowns.clear()
+      return this.metrics()
+    }
+    const known = new Set([
+      ...this.config.upstreams.map((entry) => entry.id),
+      ...this.config.credentialSources.map((entry) => entry.id)
+    ])
+    for (const sourceId of sourceIds) {
+      if (known.has(sourceId)) this.sourceCooldowns.delete(sourceId)
+    }
+    return this.metrics()
+  }
+
   private observeResponse(response: ServerResponse, endpoint: string): void {
     const telemetry: RequestTelemetry = {
       endpoint,
@@ -875,7 +987,11 @@ export class LocalApiServer {
         sourceId: context.sourceId,
         sourceKind: context.sourceKind,
         status,
-        durationMs: Math.max(0, Date.now() - context.startedAt)
+        durationMs: Math.max(0, Date.now() - context.startedAt),
+        ...(context.inputTokens === undefined ? {} : { inputTokens: context.inputTokens }),
+        ...(context.cachedInputTokens === undefined ? {} : { cachedInputTokens: context.cachedInputTokens }),
+        ...(context.outputTokens === undefined ? {} : { outputTokens: context.outputTokens }),
+        ...(context.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: context.estimatedCostUsd })
       }
       this.recentRequests.unshift(entry)
       if (this.recentRequests.length > 120) this.recentRequests.length = 120
@@ -888,6 +1004,15 @@ export class LocalApiServer {
   private setRequestTelemetry(response: ServerResponse, patch: Partial<Omit<RequestTelemetry, 'endpoint' | 'startedAt'>>): void {
     const current = this.requestTelemetry.get(response)
     if (current) Object.assign(current, patch)
+  }
+
+  private keyCanUseRoute(
+    key: LocalApiServerRuntimeConfig['accessKeys'][number],
+    route: ModelRoute
+  ): boolean {
+    if (key.allowedModels.length > 0 && !key.allowedModels.includes(route.publicModel)) return false
+    return key.allowedSourceIds.length === 0
+      || route.targets.some((target) => key.allowedSourceIds.includes(target.sourceId))
   }
 
   async start(): Promise<LocalApiServerStatus> {
@@ -911,6 +1036,7 @@ export class LocalApiServer {
     if (server) await this.closeServer(server)
     this.startedAt = null
     this.videoRouteCache.clear()
+    this.sessionAffinity.clear()
     return this.status()
   }
 
@@ -930,6 +1056,7 @@ export class LocalApiServer {
       this.roundRobinOffsets.clear()
       this.sourceCooldowns.clear()
       this.videoRouteCache.clear()
+      this.sessionAffinity.clear()
       this.lastError = null
       return this.status()
     }
@@ -949,6 +1076,7 @@ export class LocalApiServer {
     this.roundRobinOffsets.clear()
     this.sourceCooldowns.clear()
     this.videoRouteCache.clear()
+    this.sessionAffinity.clear()
     this.lastError = null
     await this.closeServer(previous)
     return this.status()
@@ -1080,7 +1208,7 @@ export class LocalApiServer {
             ...route,
             targets: route.targets.filter((target) => !incompatibleApiIds.has(target.sourceId))
           }
-          const candidates = this.routeCandidates(websocketRoute, '/v1/responses')
+          const candidates = this.routeCandidates(websocketRoute, '/v1/responses', key.allowedSourceIds)
           if (candidates.length === 0) {
             sendWebsocketError(client, `模型“${requestedModel}”没有可用的 Responses WebSocket 上游`, 'no_available_upstream', 'server_error')
             return
@@ -1218,16 +1346,15 @@ export class LocalApiServer {
 
     const modelListPaths = new Set(['/v1/models', '/models', '/backend-api/codex/models'])
     if (method === 'GET' && modelListPaths.has(requestUrl.pathname)) {
-      const allowed = new Set(key.allowedModels)
       const models = this.config.routes
-        .filter((route) => allowed.size === 0 || allowed.has(route.publicModel))
+        .filter((route) => this.keyCanUseRoute(key, route))
         .map((route) => ({ id: route.publicModel, object: 'model', created: 0, owned_by: 'local-api-server' }))
       writeJson(response, 200, { object: 'list', data: models })
       return
     }
 
     const availableModels = this.config.routes
-      .filter((route) => key.allowedModels.length === 0 || key.allowedModels.includes(route.publicModel))
+      .filter((route) => this.keyCanUseRoute(key, route))
       .map((route) => route.publicModel)
 
     if (method === 'GET' && requestUrl.pathname === '/v1beta/models') {
@@ -1264,7 +1391,7 @@ export class LocalApiServer {
     }
 
     if (method === 'GET' && requestUrl.pathname === '/api/version') {
-      writeJson(response, 200, { version: '0.14.3-local-router' })
+      writeJson(response, 200, { version: '0.14.4-local-router' })
       return
     }
 
@@ -1400,7 +1527,7 @@ export class LocalApiServer {
         writeOpenAiError(response, 404, `模型“${publicModel}”未配置`, 'model_not_found')
         return
       }
-      const candidates = this.routeCandidates(route, rawMultipartEndpoint)
+      const candidates = this.routeCandidates(route, rawMultipartEndpoint, key.allowedSourceIds)
       if (candidates.length === 0) {
         writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的 ${rawMultipartEndpoint === '/v1/videos' ? 'Videos' : 'Images'} 上游`, 'no_available_upstream')
         return
@@ -1474,7 +1601,11 @@ export class LocalApiServer {
       return
     }
 
-    const candidates = this.routeCandidates(route, endpoint)
+    const affinityKey = this.config.sessionAffinity === false
+      ? null
+      : requestSessionAffinityKey(request, body, publicModel)
+    const preferredSourceId = affinityKey ? this.sessionAffinitySource(affinityKey) : null
+    const candidates = this.routeCandidates(route, endpoint, key.allowedSourceIds, preferredSourceId)
     if (candidates.length === 0) {
       writeClientProtocolError(response, clientProtocol, 503, `模型“${publicModel}”没有可用的兼容上游`, 'no_available_upstream')
       return
@@ -1486,7 +1617,9 @@ export class LocalApiServer {
       endpoint,
       body,
       candidates,
-      clientProtocol
+      clientProtocol,
+      affinityKey,
+      route.pricing
     )
   }
 
@@ -1496,10 +1629,17 @@ export class LocalApiServer {
     return this.config.accessKeys.find((entry) => entry.enabled && constantTimeEqual(entry.key, supplied)) ?? null
   }
 
-  private routeCandidates(route: ModelRoute, endpoint: string): RouteCandidate[] {
+  private routeCandidates(
+    route: ModelRoute,
+    endpoint: string,
+    allowedSourceIds: readonly string[] = [],
+    preferredSourceId: string | null = null
+  ): RouteCandidate[] {
     const upstreams = new Map(this.config.upstreams.map((entry) => [entry.id, entry]))
     const credentialSources = new Map(this.config.credentialSources.map((entry) => [entry.id, entry]))
+    const sourceScope = new Set(allowedSourceIds)
     let candidates = route.targets.flatMap((target): RouteCandidate[] => {
+      if (sourceScope.size > 0 && !sourceScope.has(target.sourceId)) return []
       const upstream = upstreams.get(target.sourceId)
       if (upstream) {
         const cooldownUntil = this.sourceCooldowns.get(upstream.id) ?? 0
@@ -1549,12 +1689,39 @@ export class LocalApiServer {
         .localeCompare(right.kind === 'api' ? right.upstream.id : right.source.id)
     )
     if (route.strategy === 'single') return candidates.slice(0, 1)
+    if (preferredSourceId) {
+      const index = candidates.findIndex((candidate) => routeCandidateSourceId(candidate) === preferredSourceId)
+      if (index >= 0) return [candidates[index], ...candidates.slice(0, index), ...candidates.slice(index + 1)]
+    }
     if (route.strategy === 'round_robin' && candidates.length > 1) {
       const offset = this.roundRobinOffsets.get(route.publicModel) ?? 0
       this.roundRobinOffsets.set(route.publicModel, (offset + 1) % candidates.length)
       candidates = [...candidates.slice(offset), ...candidates.slice(0, offset)]
     }
     return candidates
+  }
+
+  private sessionAffinitySource(key: string): string | null {
+    const entry = this.sessionAffinity.get(key)
+    if (!entry) return null
+    if (entry.expiresAt <= Date.now()) {
+      this.sessionAffinity.delete(key)
+      return null
+    }
+    return entry.sourceId
+  }
+
+  private rememberSessionAffinity(key: string | null, candidate: RouteCandidate): void {
+    if (!key) return
+    this.sessionAffinity.set(key, {
+      sourceId: routeCandidateSourceId(candidate),
+      expiresAt: Date.now() + SESSION_AFFINITY_TTL_MS
+    })
+    if (this.sessionAffinity.size <= 2_000) return
+    const now = Date.now()
+    for (const [entryKey, entry] of this.sessionAffinity) {
+      if (entry.expiresAt <= now || this.sessionAffinity.size > 1_800) this.sessionAffinity.delete(entryKey)
+    }
   }
 
   private async rememberVideoRoute(
@@ -1601,6 +1768,10 @@ export class LocalApiServer {
       writeOpenAiError(outgoing, 404, `视频所属模型“${cached.publicModel}”不存在或当前密钥无权访问`, 'model_not_found')
       return
     }
+    if (key.allowedSourceIds.length > 0 && !key.allowedSourceIds.includes(cached.upstream.id)) {
+      writeOpenAiError(outgoing, 404, `视频所属 API 不在当前密钥的来源池中`, 'source_not_allowed')
+      return
+    }
     try {
       const suffix = content ? '/content' : ''
       const rawUrl = buildProviderUpstreamUrl(
@@ -1645,15 +1816,24 @@ export class LocalApiServer {
     endpoint: SupportedEndpoint,
     body: Record<string, unknown>,
     candidates: RouteCandidate[],
-    clientProtocol: NativeClientProtocol = 'openai'
+    clientProtocol: NativeClientProtocol = 'openai',
+    affinityKey: string | null = null,
+    pricing?: ModelRoutePricing
   ): Promise<void> {
     let lastStatus = 502
     let lastMessage = '所有上游均请求失败'
 
-    for (const [index, candidate] of candidates.entries()) {
+    const maxSources = this.config.maxRetrySources ?? 0
+    const attemptedCandidates = maxSources > 0 ? candidates.slice(0, maxSources) : candidates
+    for (const [index, candidate] of attemptedCandidates.entries()) {
       const abortController = new AbortController()
+      let requestTimeout: ReturnType<typeof setTimeout> | null = null
+      let clientClosed = false
       const onClientClose = (): void => {
-        if (!outgoing.writableEnded) abortController.abort()
+        if (!outgoing.writableEnded) {
+          clientClosed = true
+          abortController.abort()
+        }
       }
       outgoing.once('close', onClientClose)
       try {
@@ -1704,14 +1884,23 @@ export class LocalApiServer {
           const upstreamUrl = candidate.kind === 'api'
             ? applyApiUpstreamAuthQuery(rawUpstreamUrl, candidate.upstream)
             : rawUpstreamUrl
+          requestTimeout = setTimeout(
+            () => abortController.abort(new Error('upstream_open_timeout')),
+            this.config.requestTimeoutMs ?? 120_000
+          )
           const upstream = await this.fetchImpl(upstreamUrl, {
             method: 'POST',
             headers: upstreamHeaders,
             body: upstreamBody,
             signal: abortController.signal
           })
+          clearTimeout(requestTimeout)
+          requestTimeout = null
 
           if (upstream.ok) {
+            this.rememberSessionAffinity(affinityKey, candidate)
+            const usage = await parseUpstreamUsage(upstream.clone())
+            if (usage) this.setRequestTelemetry(outgoing, { ...usage, estimatedCostUsd: estimateUsageCost(usage, pricing) })
             this.setRequestTelemetry(outgoing, {
               sourceId: candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id,
               sourceKind: candidate.kind
@@ -1756,7 +1945,9 @@ export class LocalApiServer {
             Date.now() + duration
           )
         }
-        if (!isRetryableStatus(lastStatus) || index === candidates.length - 1) break
+        if (!isRetryableStatus(lastStatus) || index === attemptedCandidates.length - 1) break
+        const retryDelayMs = this.config.retryDelayMs ?? 0
+        if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
       } catch (error) {
         // Once any successful upstream bytes have reached the client, trying a
         // second target would splice two responses together and may double bill.
@@ -1764,7 +1955,7 @@ export class LocalApiServer {
           if (!outgoing.writableEnded) outgoing.destroy(error instanceof Error ? error : undefined)
           return
         }
-        if (abortController.signal.aborted) return
+        if (abortController.signal.aborted && clientClosed) return
         lastStatus = 502
         // Resolver/provider exceptions may contain credential material. Never
         // reflect their text to the client or a renderer-visible status.
@@ -1777,8 +1968,11 @@ export class LocalApiServer {
           candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id,
           Date.now() + 10_000
         )
-        if (index === candidates.length - 1) break
+        if (index === attemptedCandidates.length - 1) break
+        const retryDelayMs = this.config.retryDelayMs ?? 0
+        if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
       } finally {
+        if (requestTimeout) clearTimeout(requestTimeout)
         outgoing.off('close', onClientClose)
       }
     }

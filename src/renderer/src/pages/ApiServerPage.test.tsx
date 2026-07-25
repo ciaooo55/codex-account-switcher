@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LocalApiServerState } from '../../../shared/api-server'
 import { ApiServerPage } from './ApiServerPage'
@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   startLocalApiServer: vi.fn(),
   stopLocalApiServer: vi.fn(),
   restartLocalApiServer: vi.fn(),
+  clearLocalApiServerCooldowns: vi.fn(),
   generateLocalApiAccessKey: vi.fn(),
   revealLocalApiAccessKey: vi.fn(),
   revealLocalApiUpstreamKey: vi.fn(),
@@ -30,6 +31,7 @@ function localApiState(running = true): LocalApiServerState {
         label: 'Codex 专用',
         enabled: true,
         allowedModels: [],
+        allowedSourceIds: [],
         hasKey: true,
         keyPreview: 'sk-cas-…abcd',
         isShort: false
@@ -119,9 +121,22 @@ describe('ApiServerPage', () => {
     expect(await screen.findByText('运行中')).toBeInTheDocument()
     expect(screen.getAllByText(/http:\/\/127\.0\.0\.1:8888\/v1/).length).toBeGreaterThan(0)
     expect(screen.getByText('4321')).toBeInTheDocument()
+    await openApiSection('客户端密钥')
     expect(screen.getByText('本软件访问密钥')).toBeInTheDocument()
     expect(screen.getByDisplayValue('sk-cas-…abcd')).toBeInTheDocument()
     expect(screen.queryByText('real-upstream-secret')).not.toBeInTheDocument()
+  })
+
+  it('在独立悬浮窗口中展示无敏感信息的服务活动', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('服务健康')
+    fireEvent.click(screen.getByRole('button', { name: '查看请求' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'API 服务活动' })
+    expect(dialog).toHaveTextContent('服务健康与最近请求')
+    expect(dialog).toHaveTextContent('尚未收到本地 API 请求')
+    fireEvent.click(screen.getByRole('button', { name: '关闭 API 服务活动' }))
+    expect(screen.queryByRole('dialog', { name: 'API 服务活动' })).not.toBeInTheDocument()
   })
 
   it('保存端口和自启设置时不将已保存秘密回传 Renderer', async () => {
@@ -140,6 +155,26 @@ describe('ApiServerPage', () => {
     expect(saved.credentialSources).toEqual([expect.objectContaining({ id: 'codex:credential-1' })])
   })
 
+  it('将超时、最大尝试来源和会话亲和真实保存到 API 服务配置', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('服务设置')
+    fireEvent.click(screen.getByRole('button', { name: '超时与故障切换' }))
+    const dialog = screen.getByRole('dialog', { name: '超时、重试与会话路由' })
+    fireEvent.change(within(dialog).getByLabelText(/请求超时/), { target: { value: '45' } })
+    fireEvent.change(within(dialog).getByLabelText(/最多尝试来源/), { target: { value: '2' } })
+    fireEvent.change(within(dialog).getByLabelText(/切换等待/), { target: { value: '250' } })
+    fireEvent.click(within(dialog).getByLabelText('保持同一会话使用相同来源'))
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0]).toMatchObject({
+      requestTimeoutMs: 45_000,
+      maxRetrySources: 2,
+      retryDelayMs: 250,
+      sessionAffinity: false
+    })
+  })
+
   it('生成、编辑和保存新的项目密钥', async () => {
     render(<ApiServerPage />)
     await openApiSection('客户端密钥')
@@ -156,6 +191,19 @@ describe('ApiServerPage', () => {
       key: 'sk-cas-generated-secure-value',
       allowedModels: ['xxx', 'model-b'],
       enabled: true
+    })
+  })
+
+  it('将本软件密钥限制到选定的 API 或账号凭证来源池', async () => {
+    render(<ApiServerPage />)
+    await openApiSection('客户端密钥')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /上游 A/ }))
+    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].accessKeys[0]).toMatchObject({
+      allowedSourceIds: ['upstream-a']
     })
   })
 
@@ -190,7 +238,6 @@ describe('ApiServerPage', () => {
 
   it('支持显示并复制已保存的上游 Key', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('API')
     const upstreamToggle = screen.getAllByRole('button', { name: /上游 A/ })
       .find((button) => button.getAttribute('aria-expanded') === 'false')
@@ -208,7 +255,6 @@ describe('ApiServerPage', () => {
 
   it('测试上游并同步模型列表', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('API')
 
     fireEvent.click(screen.getByRole('button', { name: '测试并获取模型' }))
@@ -219,17 +265,24 @@ describe('ApiServerPage', () => {
     }))
     expect(await screen.findByText(/已验证 · \d+ ms/)).toBeInTheDocument()
     await openApiSection('公开模型路由')
-    expect(screen.getAllByDisplayValue('gpt-5.4-mini')).toHaveLength(2)
-    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '编辑模型 gpt-5.4-mini' })[0])
+    const routeDialog = screen.getByRole('dialog', { name: '模型路由' })
+    expect(routeDialog.querySelectorAll('input[value="gpt-5.4-mini"]')).toHaveLength(2)
+    fireEvent.change(within(routeDialog).getByLabelText(/^输入单价/), { target: { value: '5' } })
+    fireEvent.change(within(routeDialog).getByLabelText(/^缓存输入单价/), { target: { value: '1' } })
+    fireEvent.change(within(routeDialog).getByLabelText(/^输出单价/), { target: { value: '15' } })
+    fireEvent.click(within(routeDialog).getByRole('button', { name: '保存更改' }))
     await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
     expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].routes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ publicModel: 'gpt-5.4-mini' })
+      expect.objectContaining({
+        publicModel: 'gpt-5.4-mini',
+        pricing: { inputPerMillion: 5, cachedInputPerMillion: 1, outputPerMillion: 15 }
+      })
     ]))
   })
 
   it('保存第三方上游的自定义鉴权头而不把密钥重复写进配置', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('API')
     const upstreamToggle = screen.getAllByRole('button', { name: /上游 A/ })
       .find((button) => button.getAttribute('aria-expanded') === 'false')
@@ -249,7 +302,6 @@ describe('ApiServerPage', () => {
 
   it('识别 URL-safe Base64 中的 URL 和 Key 并立即真实测试', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('API')
     fireEvent.click(screen.getByRole('button', { name: '快速导入' }))
 
@@ -273,7 +325,6 @@ describe('ApiServerPage', () => {
 
   it('一键刷新全部上游并允许编辑凭证的可用模型', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('API')
     fireEvent.click(screen.getByRole('button', { name: '刷新全部模型并检查' }))
 
@@ -294,7 +345,6 @@ describe('ApiServerPage', () => {
 
   it('将已发现的上游模型一键导入公开路由，供 Codex 选择', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('公开模型路由')
     fireEvent.click(screen.getByRole('button', { name: '导入已发现模型' }))
     fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
@@ -310,7 +360,6 @@ describe('ApiServerPage', () => {
 
   it('可以将脱敏的账号凭证引用加入 API 上游池', async () => {
     render(<ApiServerPage />)
-    await openApiSection('客户端密钥')
     await openApiSection('账号凭证源')
 
     expect(screen.getAllByText('user@example.com').length).toBeGreaterThan(0)

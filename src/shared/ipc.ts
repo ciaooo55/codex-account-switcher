@@ -184,6 +184,7 @@ export interface CodexSwitcherApi {
   startLocalApiServer(): Promise<LocalApiServerState>
   stopLocalApiServer(): Promise<LocalApiServerState>
   restartLocalApiServer(): Promise<LocalApiServerState>
+  clearLocalApiServerCooldowns(sourceIds?: string[]): Promise<LocalApiServerState>
   generateLocalApiAccessKey(): Promise<string>
   revealLocalApiAccessKey(id: string): Promise<string>
   revealLocalApiUpstreamKey(id: string): Promise<string>
@@ -289,6 +290,7 @@ export const ipcChannels = {
   localApiServerStart: 'local-api-server:start',
   localApiServerStop: 'local-api-server:stop',
   localApiServerRestart: 'local-api-server:restart',
+  localApiServerClearCooldowns: 'local-api-server:clear-cooldowns',
   localApiServerGenerateKey: 'local-api-server:generate-key',
   localApiServerRevealKey: 'local-api-server:reveal-key',
   localApiServerRevealUpstreamKey: 'local-api-server:reveal-upstream-key',

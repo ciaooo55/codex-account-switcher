@@ -1047,6 +1047,10 @@ export function App(): React.JSX.Element {
         theme={theme}
         busy={busy}
         onImport={() => setImportOpen(true)}
+        onImportApi={() => {
+          setActiveView('api-server')
+          window.setTimeout(() => window.dispatchEvent(new Event('codex-account-switcher:open-api-import')), 0)
+        }}
         onToggleTheme={() => setTheme((current) => toggleTheme(current))}
         onOpenSettings={openSettingsDialog}
       />

@@ -77,6 +77,7 @@ import {
   type ApiUpstreamInput,
   type LocalApiModelRefreshResult,
   type LocalApiServerConfigInput,
+  type LocalApiServerRuntimeConfig,
   type LocalApiServerState
 } from '../shared/api-server'
 import { CredentialSwitcher } from './switching/switcher'
@@ -90,6 +91,19 @@ const currentDirectory = dirname(fileURLToPath(import.meta.url))
 import { watchConfigAndReassert } from './switching/direct-custom-api'
 const { autoUpdater } = electronUpdater
 const e2eMode = !app.isPackaged && process.env.CODEX_SWITCHER_E2E === '1'
+
+function publicModelsForAccessKey(
+  runtime: LocalApiServerRuntimeConfig,
+  accessKey: LocalApiServerRuntimeConfig['accessKeys'][number]
+): string[] {
+  return runtime.routes
+    .filter((route) => (
+      (accessKey.allowedModels.length === 0 || accessKey.allowedModels.includes(route.publicModel))
+      && (accessKey.allowedSourceIds.length === 0 || route.targets.some((target) => accessKey.allowedSourceIds.includes(target.sourceId)))
+    ))
+    .map((route) => route.publicModel)
+}
+
 if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
   app.setPath('userData', resolve(process.env.CODEX_SWITCHER_USER_DATA))
 }
@@ -562,9 +576,7 @@ async function main(): Promise<void> {
           catalogPath: active.modelCatalogJson
         }
       }
-      const allowedModels = accessKey.allowedModels.length > 0
-        ? runtime.routes.map((route) => route.publicModel).filter((model) => accessKey.allowedModels.includes(model))
-        : runtime.routes.map((route) => route.publicModel)
+      const allowedModels = publicModelsForAccessKey(runtime, accessKey)
       if (!allowedModels.includes(binding.model)) {
         return {
           state: 'binding_mismatch' as const,
@@ -697,9 +709,7 @@ async function main(): Promise<void> {
     const runtime = await apiServerStore.runtimeConfig()
     const accessKey = runtime.accessKeys.find((entry) => entry.enabled)
     if (!accessKey) return false
-    const models = accessKey.allowedModels.length > 0
-      ? runtime.routes.map((route) => route.publicModel).filter((model) => accessKey.allowedModels.includes(model))
-      : runtime.routes.map((route) => route.publicModel)
+    const models = publicModelsForAccessKey(runtime, accessKey)
     const model = active.model && models.includes(active.model) ? active.model : models[0]
     if (!model) return false
     const wasRunning = localApiServer.status().running
@@ -746,9 +756,7 @@ async function main(): Promise<void> {
       )
     )
     if (localAccessKey) {
-      const models = localAccessKey.allowedModels.length > 0
-        ? runtime.routes.map((route) => route.publicModel).filter((model) => localAccessKey.allowedModels.includes(model))
-        : runtime.routes.map((route) => route.publicModel)
+      const models = publicModelsForAccessKey(runtime, localAccessKey)
       const model = requestedBinding?.model && models.includes(requestedBinding.model)
         ? requestedBinding.model
         : active?.model && models.includes(active.model) ? active.model : models[0] ?? ''
@@ -2062,12 +2070,17 @@ async function main(): Promise<void> {
   const localApiConfigSchema = z.object({
     port: z.number().int().min(1).max(65_535),
     autoStart: z.boolean(),
+    requestTimeoutMs: z.number().int().min(5_000).max(30 * 60_000).optional(),
+    maxRetrySources: z.number().int().min(0).max(100).optional(),
+    retryDelayMs: z.number().int().min(0).max(30_000).optional(),
+    sessionAffinity: z.boolean().optional(),
     accessKeys: z.array(z.object({
       id: z.string().min(1).max(128),
       label: z.string().min(1).max(128),
       key: z.string().max(16_384).optional(),
       enabled: z.boolean(),
-      allowedModels: z.array(z.string().max(128)).max(500)
+      allowedModels: z.array(z.string().max(128)).max(500),
+      allowedSourceIds: z.array(z.string().max(128)).max(500).optional().default([])
     })).max(100),
     upstreams: z.array(z.object({
       id: z.string().min(1).max(128),
@@ -2106,7 +2119,12 @@ async function main(): Promise<void> {
         upstreamModel: z.string().min(1).max(128),
         priority: z.number().finite(),
         enabled: z.boolean()
-      })).max(500)
+      })).max(500),
+      pricing: z.object({
+        inputPerMillion: z.number().finite().min(0).max(1_000_000),
+        cachedInputPerMillion: z.number().finite().min(0).max(1_000_000),
+        outputPerMillion: z.number().finite().min(0).max(1_000_000)
+      }).optional()
     })).max(500)
   })
 
@@ -2296,11 +2314,7 @@ async function main(): Promise<void> {
           entry.id === previousKey?.id && entry.enabled
         ) ?? nextRuntime.accessKeys.find((entry) => entry.enabled)
         if (!accessKey) throw new Error('当前 Codex 正在使用 API 服务，请至少保留一枚已启用的项目密钥')
-        const allowedModels = accessKey.allowedModels.length > 0
-          ? nextRuntime.routes
-              .map((route) => route.publicModel)
-              .filter((model) => accessKey.allowedModels.includes(model))
-          : nextRuntime.routes.map((route) => route.publicModel)
+        const allowedModels = publicModelsForAccessKey(nextRuntime, accessKey)
         const desiredModel = previousRuntime.codexBinding?.model ?? activeLocalProjection?.model
         const selectedModel = desiredModel && allowedModels.includes(desiredModel)
           ? desiredModel
@@ -2357,6 +2371,13 @@ async function main(): Promise<void> {
     if (runtime.codexBinding?.enforce) await reconcileDirectCustomApiProvider()
     return localApiServerState()
   })
+  ipcMain.handle(ipcChannels.localApiServerClearCooldowns, async (_event, input: unknown) => {
+    const sourceIds = input === undefined
+      ? undefined
+      : z.array(z.string().min(1).max(128)).max(500).parse(input)
+    localApiServer.clearSourceCooldowns(sourceIds)
+    return localApiServerState()
+  })
   ipcMain.handle(ipcChannels.localApiServerApplyCodex, async (_event, input: unknown) => {
     const payload = z.object({
       accessKeyId: z.string().min(1).max(128),
@@ -2368,9 +2389,7 @@ async function main(): Promise<void> {
     const runtime = await apiServerStore.runtimeConfig()
     const accessKey = runtime.accessKeys.find((entry) => entry.id === payload.accessKeyId && entry.enabled)
     if (!accessKey) return { ok: false, message: '请选择已启用的项目访问密钥', backupPath: null }
-    const allowedModels = accessKey.allowedModels.length > 0
-      ? runtime.routes.filter((route) => accessKey.allowedModels.includes(route.publicModel)).map((route) => route.publicModel)
-      : runtime.routes.map((route) => route.publicModel)
+    const allowedModels = publicModelsForAccessKey(runtime, accessKey)
     if (!allowedModels.includes(payload.model)) {
       return { ok: false, message: '所选模型不存在或当前密钥无权访问', backupPath: null }
     }

@@ -395,6 +395,10 @@ function api(): CodexSwitcherApi {
       config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
       status: { running: true, host: '127.0.0.1', port: 8888, pid: 1234, startedAt: '2026-07-24T12:00:00.000Z', error: null }
     }),
+    clearLocalApiServerCooldowns: vi.fn().mockResolvedValue({
+      config: { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] },
+      status: { running: true, host: '127.0.0.1', port: 8888, pid: 1234, startedAt: '2026-07-24T12:00:00.000Z', error: null }
+    }),
     generateLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
     revealLocalApiAccessKey: vi.fn().mockResolvedValue('sk-cas-test'),
     revealLocalApiUpstreamKey: vi.fn().mockResolvedValue('sk-upstream-test'),

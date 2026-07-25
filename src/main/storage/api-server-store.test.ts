@@ -15,7 +15,7 @@ function configuration() {
   return {
     port: 8888,
     autoStart: true,
-    accessKeys: [{ id: 'client', label: 'Codex', key: 'sk-client-secret', enabled: true, allowedModels: ['xxx'] }],
+    accessKeys: [{ id: 'client', label: 'Codex', key: 'sk-client-secret', enabled: true, allowedModels: ['xxx'], allowedSourceIds: ['upstream'] }],
     upstreams: [{
       id: 'upstream',
       name: 'Provider',
@@ -68,7 +68,7 @@ describe('ApiServerStore', () => {
 
     expect(stored).not.toContain('sk-client-secret')
     expect(stored).not.toContain('sk-upstream-secret')
-    expect(summary.accessKeys[0]).toMatchObject({ hasKey: true, keyPreview: 'sk-cl••••cret' })
+    expect(summary.accessKeys[0]).toMatchObject({ hasKey: true, keyPreview: 'sk-cl••••cret', allowedSourceIds: ['upstream'] })
     expect(summary.upstreams[0]).toMatchObject({ hasApiKey: true, keyPreview: 'sk-up••••cret' })
     await expect(store.getAccessKey('client')).resolves.toBe('sk-client-secret')
     await expect(store.getAccessKey('missing')).resolves.toBeNull()
@@ -76,7 +76,7 @@ describe('ApiServerStore', () => {
     await expect(store.getUpstreamKey('missing')).resolves.toBeNull()
     await expect(store.runtimeConfig()).resolves.toMatchObject({
       port: 8888,
-      accessKeys: [{ key: 'sk-client-secret' }],
+      accessKeys: [{ key: 'sk-client-secret', allowedSourceIds: ['upstream'] }],
       upstreams: [{ apiKey: 'sk-upstream-secret', authMode: 'custom', authHeaderName: 'x-provider-key', authHeaderPrefix: 'Token ' }],
       credentialSources: [{ id: 'codex:credential-id', credentialId: 'credential-id' }],
       codexBinding: { accessKeyId: 'client', model: 'xxx', enforce: true }

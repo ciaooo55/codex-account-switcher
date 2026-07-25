@@ -17,6 +17,7 @@ import {
   Route,
   Save,
   Server,
+  Settings2,
   ShieldCheck,
   Square,
   Trash2,
@@ -55,7 +56,7 @@ import { cn } from '@/lib/cn'
 import { codexApi } from '@/services/codexApi'
 
 type Notice = { kind: 'ok' | 'warn' | 'error'; text: string }
-type SectionId = 'access-keys' | 'upstreams' | 'credentials' | 'routes'
+type SectionId = 'overview' | 'access-keys' | 'upstreams' | 'credentials' | 'routes'
 type UpstreamDialogMode = 'quick' | 'manual' | null
 
 type AccessKeyDraft = LocalApiAccessKeyInput & {
@@ -103,6 +104,10 @@ function draftFromState(state: LocalApiServerState): ApiServerDraft {
   return {
     port: state.config.port,
     autoStart: state.config.autoStart,
+    requestTimeoutMs: state.config.requestTimeoutMs,
+    maxRetrySources: state.config.maxRetrySources,
+    retryDelayMs: state.config.retryDelayMs,
+    sessionAffinity: state.config.sessionAffinity,
     codexBinding: state.config.codexBinding ?? null,
     accessKeys: state.config.accessKeys.map((entry) => ({ ...entry, reveal: false })),
     upstreams: state.config.upstreams.map((entry) => ({ ...entry, expanded: false, reveal: false })),
@@ -118,6 +123,10 @@ function configFromDraft(draft: ApiServerDraft): LocalApiServerConfigInput {
   return {
     port: draft.port,
     autoStart: draft.autoStart,
+    requestTimeoutMs: draft.requestTimeoutMs,
+    maxRetrySources: draft.maxRetrySources,
+    retryDelayMs: draft.retryDelayMs,
+    sessionAffinity: draft.sessionAffinity,
     codexBinding: draft.codexBinding ?? null,
     accessKeys: draft.accessKeys.map(({
       hasKey: _hasKey,
@@ -218,8 +227,9 @@ function EmptyState({ icon: Icon, title, detail, action }: {
 export function ApiServerPage(): React.JSX.Element {
   const [state, setState] = useState<LocalApiServerState | null>(null)
   const [draft, setDraft] = useState<ApiServerDraft | null>(null)
-  const [activeSection, setActiveSection] = useState<SectionId>('access-keys')
-  const [sectionDialogOpen, setSectionDialogOpen] = useState(false)
+  const [activeSection, setActiveSection] = useState<SectionId>('overview')
+  const [activityDialogOpen, setActivityDialogOpen] = useState(false)
+  const [tuningDialogOpen, setTuningDialogOpen] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
   const [action, setAction] = useState<string | null>(null)
@@ -231,6 +241,7 @@ export function ApiServerPage(): React.JSX.Element {
   const [pasteNote, setPasteNote] = useState('')
   const [manualUpstream, setManualUpstream] = useState<UpstreamDraft | null>(null)
   const [editingUpstreamId, setEditingUpstreamId] = useState<string | null>(null)
+  const [editingRouteIndex, setEditingRouteIndex] = useState<number | null>(null)
   const [codexKeyId, setCodexKeyId] = useState('')
   const [codexModel, setCodexModel] = useState('')
   const [restartCodex, setRestartCodex] = useState(true)
@@ -247,9 +258,12 @@ export function ApiServerPage(): React.JSX.Element {
           ? binding?.accessKeyId ?? ''
           : usableKey?.id ?? '')
     const selectedKey = next.config.accessKeys.find((entry) => entry.id === selectedKeyId)
-    const visibleModels = selectedKey?.allowedModels.length
-      ? next.config.routes.map((route) => route.publicModel).filter((model) => selectedKey.allowedModels.includes(model))
-      : next.config.routes.map((route) => route.publicModel)
+    const visibleModels = next.config.routes
+      .filter((route) => (
+        (!selectedKey?.allowedModels.length || selectedKey.allowedModels.includes(route.publicModel))
+        && (!(selectedKey?.allowedSourceIds?.length) || route.targets.some((target) => selectedKey.allowedSourceIds?.includes(target.sourceId)))
+      ))
+      .map((route) => route.publicModel)
     setCodexKeyId(selectedKeyId)
     setCodexModel(visibleModels.includes(codexModel)
       ? codexModel
@@ -296,7 +310,6 @@ export function ApiServerPage(): React.JSX.Element {
 
   const openManagementSection = (section: SectionId): void => {
     setActiveSection(section)
-    setSectionDialogOpen(true)
   }
 
   const openUpstreamEditor = (id: string): void => {
@@ -338,6 +351,15 @@ export function ApiServerPage(): React.JSX.Element {
 
   useEffect(() => {
     void load()
+  }, [])
+
+  useEffect(() => {
+    const handleOpenImport = (): void => {
+      setActiveSection('upstreams')
+      openQuickImport()
+    }
+    window.addEventListener('codex-account-switcher:open-api-import', handleOpenImport)
+    return () => window.removeEventListener('codex-account-switcher:open-api-import', handleOpenImport)
   }, [])
 
   const updateDraft = (recipe: (current: ApiServerDraft) => ApiServerDraft): void => {
@@ -388,6 +410,7 @@ export function ApiServerPage(): React.JSX.Element {
         key,
         enabled: true,
         allowedModels: [],
+        allowedSourceIds: [],
         hasKey: true,
         keyPreview: key,
         reveal: true
@@ -408,6 +431,7 @@ export function ApiServerPage(): React.JSX.Element {
       key: '',
       enabled: true,
       allowedModels: [],
+      allowedSourceIds: [],
       hasKey: false,
       keyPreview: '',
       reveal: true
@@ -845,6 +869,20 @@ export function ApiServerPage(): React.JSX.Element {
     }
   }
 
+  const clearSourceCooldown = async (sourceId?: string): Promise<void> => {
+    setAction(sourceId ? `recover-${sourceId}` : 'recover-all-sources')
+    setNotice(null)
+    try {
+      const next = await codexApi().clearLocalApiServerCooldowns(sourceId ? [sourceId] : undefined)
+      acceptState(next)
+      setNotice({ kind: 'ok', text: sourceId ? '已恢复该来源，可立即重新尝试请求。' : '已恢复全部来源，可立即重新尝试请求。' })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAction(null)
+    }
+  }
+
   if (loading && !draft) {
     return (
       <PageView className="api-server-view items-center justify-center">
@@ -867,10 +905,27 @@ export function ApiServerPage(): React.JSX.Element {
 
   const address = `http://127.0.0.1:${state.status.port}`
   const metrics = state.metrics
+  const sourceOptions = [
+    ...draft.upstreams.map((entry) => ({ id: entry.id, label: entry.name, kind: 'API' })),
+    ...draft.credentialSources.map((entry) => ({ id: entry.id, label: entry.label, kind: '凭证' }))
+  ]
   const isBusy = action !== null
   const shortKeys = draft.accessKeys.filter((entry) =>
     entry.key ? entry.key.length < 20 : entry.isShort === true
   )
+  const modelUsage = Object.entries((metrics?.recentRequests ?? []).reduce<Record<string, { total: number; succeeded: number; failed: number; cost: number; priced: number }>>((result, entry) => {
+    const model = entry.model ?? '未声明模型'
+    const current = result[model] ?? { total: 0, succeeded: 0, failed: 0, cost: 0, priced: 0 }
+    current.total += 1
+    if (entry.status >= 200 && entry.status < 400) current.succeeded += 1
+    else current.failed += 1
+    if (entry.estimatedCostUsd !== undefined) {
+      current.cost += entry.estimatedCostUsd
+      current.priced += 1
+    }
+    result[model] = current
+    return result
+  }, {})).slice(0, 6)
   const codexIntegration = state.codexIntegration
   const codexIntegrationTone = codexIntegration?.state === 'active'
     ? 'is-active'
@@ -883,11 +938,50 @@ export function ApiServerPage(): React.JSX.Element {
     ? '重新应用到 Codex'
     : '应用到 Codex'
   const sectionTitle = {
+    overview: '总览',
     'access-keys': '客户端密钥',
-    upstreams: 'API',
+    upstreams: '第三方 API',
     credentials: '账号凭证源',
-    routes: '公开模型路由'
+    routes: '模型总览'
   }[activeSection]
+
+  const renderRouteEditor = (route: ModelRoute, routeIndex: number): React.JSX.Element => (
+    <div className="api-route-editor grid gap-3">
+      <div className="api-route-config grid grid-cols-[minmax(180px,1.2fr)_minmax(140px,.8fr)_minmax(150px,.8fr)_32px] items-end gap-2.5">
+        <Field label="公开模型名"><Input aria-label="公开模型名" className="font-[var(--font-mono)] font-semibold" value={route.publicModel} onChange={(event) => updateRoute(routeIndex, { publicModel: event.target.value })} /></Field>
+        <Field label="路由策略"><Select className="w-full" value={route.strategy} onChange={(event) => updateRoute(routeIndex, { strategy: event.target.value as ModelRouteStrategy })}><option value="single">固定单一来源</option><option value="priority">优先级故障转移</option><option value="round_robin">轮询</option></Select></Field>
+        <Field label="来源范围"><Select className="w-full" value={route.sourceMode} onChange={(event) => {
+          const sourceMode = event.target.value as ModelRouteSourceMode
+          const apiIds = new Set(draft.upstreams.map((entry) => entry.id))
+          const credentialIds = new Set(draft.credentialSources.map((entry) => entry.id))
+          updateRoute(routeIndex, { sourceMode, targets: route.targets.filter((target) => sourceMode === 'api_only' ? apiIds.has(target.sourceId) : sourceMode === 'credential_only' ? credentialIds.has(target.sourceId) : apiIds.has(target.sourceId) || credentialIds.has(target.sourceId)) })
+        }}><option value="api_only">仅第三方 API</option><option value="credential_only">仅账号凭证</option><option value="mixed">API + 凭证混合</option></Select></Field>
+        <Button variant="danger" size="icon" aria-label={`删除公开模型 ${route.publicModel}`} onClick={() => { updateDraft((current) => ({ ...current, routes: current.routes.filter((_, index) => index !== routeIndex) })); setEditingRouteIndex(null) }}><Trash2 size={15} /></Button>
+      </div>
+      <section className="api-editor-section">
+        <header><strong>模型价格</strong><span>美元 / 100 万 Token；留空表示不估算费用，绝不使用猜测价格。</span></header>
+        <div className="api-editor-fields three-columns">
+          <Field label="输入单价"><Input type="number" min={0} step="0.0001" value={route.pricing?.inputPerMillion ?? ''} placeholder="未配置" onChange={(event) => updateRoute(routeIndex, { pricing: { inputPerMillion: Number(event.target.value || 0), cachedInputPerMillion: route.pricing?.cachedInputPerMillion ?? 0, outputPerMillion: route.pricing?.outputPerMillion ?? 0 } })} /></Field>
+          <Field label="缓存输入单价"><Input type="number" min={0} step="0.0001" value={route.pricing?.cachedInputPerMillion ?? ''} placeholder="未配置" onChange={(event) => updateRoute(routeIndex, { pricing: { inputPerMillion: route.pricing?.inputPerMillion ?? 0, cachedInputPerMillion: Number(event.target.value || 0), outputPerMillion: route.pricing?.outputPerMillion ?? 0 } })} /></Field>
+          <Field label="输出单价"><Input type="number" min={0} step="0.0001" value={route.pricing?.outputPerMillion ?? ''} placeholder="未配置" onChange={(event) => updateRoute(routeIndex, { pricing: { inputPerMillion: route.pricing?.inputPerMillion ?? 0, cachedInputPerMillion: route.pricing?.cachedInputPerMillion ?? 0, outputPerMillion: Number(event.target.value || 0) } })} /></Field>
+        </div>
+        {route.pricing ? <Button size="sm" variant="ghost" onClick={() => updateRoute(routeIndex, { pricing: undefined })}>清除价格配置</Button> : null}
+      </section>
+      <div className="api-entity-summary"><span>{route.strategy === 'single' ? '固定来源' : route.strategy === 'round_robin' ? '轮询' : '优先级故障转移'}</span><span>{route.targets.filter((target) => target.enabled).length}/{route.targets.length} 个目标启用</span><span>{route.sourceMode === 'api_only' ? '仅 API' : route.sourceMode === 'credential_only' ? '仅凭证' : 'API + 凭证'}</span></div>
+      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)]">
+        <div className="api-route-heading grid grid-cols-[minmax(140px,1fr)_minmax(150px,1fr)_90px_72px_32px] gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-1.5 text-[10.5px] font-medium text-[var(--color-text-muted)]"><span>来源</span><span>目标模型</span><span>优先级</span><span>状态</span><span /></div>
+        {route.targets.map((target, targetIndex) => <div key={`${target.sourceId}-${targetIndex}`} className="api-route-target grid grid-cols-[minmax(140px,1fr)_minmax(150px,1fr)_90px_72px_32px] items-center gap-2 border-b border-[var(--color-border)] px-2 py-2 last:border-b-0">
+          <Select aria-label={`${route.publicModel} 路由来源`} className="w-full" value={target.sourceId} onChange={(event) => { const source = routeSources(route).find((entry) => entry.id === event.target.value); updateTarget(routeIndex, targetIndex, { sourceId: event.target.value, upstreamModel: source?.models[0] ?? target.upstreamModel }) }}>{routeSources(route).map((source) => <option key={source.id} value={source.id}>{source.kind === 'credential' ? '凭证 · ' : 'API · '}{source.label}</option>)}</Select>
+          <Input aria-label={`${route.publicModel} 目标模型`} className="font-[var(--font-mono)]" list={`models-${routeIndex}-${targetIndex}`} value={target.upstreamModel} onChange={(event) => updateTarget(routeIndex, targetIndex, { upstreamModel: event.target.value })} />
+          <datalist id={`models-${routeIndex}-${targetIndex}`}>{routeSources(route).find((entry) => entry.id === target.sourceId)?.models.map((model) => <option value={model} key={model} />)}</datalist>
+          <Input aria-label={`${route.publicModel} 目标优先级`} type="number" value={target.priority} onChange={(event) => updateTarget(routeIndex, targetIndex, { priority: Number(event.target.value) })} />
+          <Toggle checked={target.enabled} onChange={(enabled) => updateTarget(routeIndex, targetIndex, { enabled })} label={target.enabled ? '启用' : '停用'} />
+          <Button size="icon" variant="ghost" aria-label="删除路由目标" onClick={() => updateRoute(routeIndex, { targets: route.targets.filter((_, index) => index !== targetIndex) })}><Trash2 size={14} /></Button>
+        </div>)}
+        <button type="button" disabled={routeSources(route).length === 0} className="flex min-h-8 w-full items-center justify-center gap-1.5 text-[11.5px] font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-focus)] disabled:cursor-not-allowed disabled:text-[var(--color-text-muted)]" onClick={() => { const sources = routeSources(route); const source = sources.find((entry) => !route.targets.some((target) => target.sourceId === entry.id)) ?? sources[0]; if (!source) return; updateRoute(routeIndex, { targets: [...route.targets, { sourceId: source.id, upstreamModel: source.models[0] ?? route.publicModel, priority: route.targets.length + 1, enabled: true }] }) }}><Plus size={13} />添加目标</button>
+      </div>
+    </div>
+  )
 
   return (
     <PageView className="api-server-view overflow-y-auto p-0">
@@ -973,6 +1067,7 @@ export function ApiServerPage(): React.JSX.Element {
             <Input aria-label="监听端口" type="number" min={1} max={65535} value={draft.port} onChange={(event) => updateDraft((current) => ({ ...current, port: Number(event.target.value) }))} />
           </Field>
           <Toggle checked={draft.autoStart} onChange={(autoStart) => updateDraft((current) => ({ ...current, autoStart }))} label="随应用自动启动" />
+          <Button variant="soft" onClick={() => setTuningDialogOpen(true)}><Settings2 size={15} />超时与故障切换</Button>
           <Button variant="default" onClick={() => void save()} disabled={!dirty || isBusy}>
             {action === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{dirty ? '保存并热更新' : '已保存'}
           </Button>
@@ -1007,20 +1102,20 @@ export function ApiServerPage(): React.JSX.Element {
           </div>
         ) : null}
 
-        {sectionDialogOpen ? createPortal(<div className="api-section-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSectionDialogOpen(false) }} />, document.body) : null}
         <div className="api-server-layout grid min-h-[430px] grid-cols-[190px_minmax(0,1fr)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-0)]">
           <nav className="flex flex-col gap-1 border-r border-[var(--color-border)] bg-[var(--color-surface-1)] p-2" aria-label="API 服务配置">
             {([
+              ['overview', Activity, '总览', metrics?.totalRequests ?? 0],
               ['access-keys', KeyRound, '客户端密钥', draft.accessKeys.length],
-              ['upstreams', Network, 'API', draft.upstreams.length],
+              ['upstreams', Network, '第三方 API', draft.upstreams.length],
               ['credentials', ShieldCheck, '账号凭证源', draft.credentialSources.length],
-              ['routes', Route, '公开模型路由', draft.routes.length]
+              ['routes', Route, '模型总览', draft.routes.length]
             ] as const).map(([id, Icon, label, count]) => (
               <button
                 type="button"
                 key={id}
                 onClick={() => openManagementSection(id)}
-                aria-label={`打开 ${label}`}
+                aria-label={`打开 ${id === 'upstreams' ? 'API' : id === 'routes' ? '公开模型路由' : label}`}
                 aria-current={activeSection === id ? 'page' : undefined}
                 className={cn(
                   'flex min-h-9 items-center gap-2 rounded-[var(--radius-md)] px-2.5 text-left text-[12.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ui-focus)]',
@@ -1040,7 +1135,7 @@ export function ApiServerPage(): React.JSX.Element {
             </div>
           </nav>
 
-          <section className="api-management-overview" aria-label="API 服务管理总览">
+          {activeSection === 'overview' ? <section className="api-management-overview" aria-label="API 服务管理总览">
             <header className="api-overview-header">
               <div>
                 <strong>服务总览</strong>
@@ -1108,7 +1203,10 @@ export function ApiServerPage(): React.JSX.Element {
               <section className="api-overview-panel api-overview-health" aria-labelledby="api-overview-health-title">
                 <header>
                   <div><strong id="api-overview-health-title">服务健康</strong><span>请求记录只保留在内存中，不记录消息内容、密钥或上游地址。</span></div>
-                  <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>刷新状态</Button>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button size="sm" variant="ghost" onClick={() => setActivityDialogOpen(true)}>查看请求</Button>
+                    <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>刷新状态</Button>
+                  </div>
                 </header>
                 <div className="api-overview-health-grid">
                   <div><span>请求</span><strong>{metrics?.totalRequests ?? 0}</strong></div>
@@ -1121,6 +1219,16 @@ export function ApiServerPage(): React.JSX.Element {
                     <div key={entry.id}><code>{entry.model ?? entry.endpoint}</code><span>{entry.sourceId ?? '未选择来源'}</span><em className={entry.status >= 200 && entry.status < 400 ? 'is-success' : 'is-error'}>{entry.status} · {entry.durationMs} ms</em></div>
                   )) : <span className="api-overview-empty">服务启动后，这里会显示最近请求和来源健康状态</span>}
                 </div>
+              </section>
+
+              <section className="api-overview-panel api-overview-model-usage" aria-labelledby="api-overview-model-usage-title">
+                <header>
+                  <div><strong id="api-overview-model-usage-title">模型使用</strong><span>基于当前应用运行期间的真实请求记录；上游没有返回计费数据时不会虚构费用。</span></div>
+                  <Button size="sm" variant="ghost" onClick={() => setActivityDialogOpen(true)}>查看明细</Button>
+                </header>
+                {modelUsage.length ? <div className="api-overview-model-usage-list">
+                  {modelUsage.map(([model, usage]) => <div key={model}><code title={model}>{model}</code><span>{usage.total} 次</span><span className="is-success">成功 {usage.succeeded}</span><span className={usage.failed ? 'is-error' : undefined}>失败 {usage.failed}</span><small>{usage.priced ? `预估 $${usage.cost.toFixed(6)}` : '暂无计费数据'}</small></div>)}
+                </div> : <span className="api-overview-empty">服务收到请求后，这里会按公开模型显示成功、失败和可用的计费信息。</span>}
               </section>
 
               <section className="api-overview-panel api-overview-models" aria-labelledby="api-overview-models-title">
@@ -1144,12 +1252,41 @@ export function ApiServerPage(): React.JSX.Element {
                 </div>
               </section>
             </div>
-          </section>
+          </section> : null}
 
-          {createPortal(<div className={cn('api-section-dialog min-w-0', `is-${activeSection}`, sectionDialogOpen ? 'is-open' : 'is-closed')} role={sectionDialogOpen ? 'dialog' : undefined} aria-modal={sectionDialogOpen || undefined} aria-label={sectionDialogOpen ? sectionTitle : undefined}>
-            <div className="api-section-dialog-header">
+          {activityDialogOpen ? createPortal(
+            <div className="api-activity-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setActivityDialogOpen(false) }}>
+              <section className="api-activity-dialog" role="dialog" aria-modal="true" aria-label="API 服务活动">
+                <header>
+                  <div><span>本次应用运行期间</span><strong>服务健康与最近请求</strong><p>不保存消息内容、访问密钥、上游 URL 或凭证。退出应用后记录自动清除。</p></div>
+                  <Button size="icon" variant="ghost" aria-label="关闭 API 服务活动" title="关闭" onClick={() => setActivityDialogOpen(false)}><X size={17} /></Button>
+                </header>
+                <div className="api-activity-body">
+                  <section aria-labelledby="api-source-health-title">
+                    <div className="api-activity-section-head"><strong id="api-source-health-title">来源健康</strong><span>{metrics?.sourceHealth.filter((item) => item.state === 'cooling_down').length ?? 0} 个来源处于冷却</span></div>
+                    <div className="api-activity-source-grid">
+                      {metrics?.sourceHealth.length ? metrics.sourceHealth.map((source) => <div key={source.sourceId} className={cn(source.state === 'cooling_down' ? 'is-cooling' : 'is-ready')}><span /><strong>{sourceOptions.find((entry) => entry.id === source.sourceId)?.label ?? source.sourceId}</strong><small>{source.state === 'cooling_down' ? `冷却至 ${source.cooldownUntil ? new Date(source.cooldownUntil).toLocaleTimeString() : '—'}` : '可用'}</small>{source.state === 'cooling_down' ? <Button size="sm" variant="ghost" disabled={action === `recover-${source.sourceId}`} onClick={() => void clearSourceCooldown(source.sourceId)}>{action === `recover-${source.sourceId}` ? <LoaderCircle className="spin" size={12} /> : <RotateCcw size={12} />}恢复</Button> : null}</div>) : <span className="api-activity-empty">暂无已配置来源</span>}
+                    </div>
+                  </section>
+                  <section aria-labelledby="api-request-log-title">
+                    <div className="api-activity-section-head"><strong id="api-request-log-title">最近请求</strong><span>{metrics?.totalRequests ?? 0} 次请求 · {metrics?.successfulRequests ?? 0} 成功 · {metrics?.failedRequests ?? 0} 失败</span></div>
+                    {metrics?.recentRequests.length ? <div className="api-activity-log" role="table" aria-label="最近 API 请求">
+                      <div className="api-activity-log-head" role="row"><span>时间</span><span>模型 / 接口</span><span>来源</span><span>状态</span></div>
+                      {metrics.recentRequests.map((entry) => <div key={entry.id} role="row"><time>{new Date(entry.at).toLocaleTimeString()}</time><code title={entry.endpoint}>{entry.model ?? entry.endpoint}</code><span title={entry.sourceId ?? ''}>{sourceOptions.find((source) => source.id === entry.sourceId)?.label ?? entry.sourceId ?? '—'}</span><em className={entry.status >= 200 && entry.status < 400 ? 'is-success' : 'is-error'}>{entry.status} · {entry.durationMs} ms</em></div>)}
+                    </div> : <div className="api-activity-empty">尚未收到本地 API 请求。启动服务后，客户端请求会显示在这里。</div>}
+                  </section>
+                </div>
+              </section>
+            </div>, document.body
+          ) : null}
+
+          {activeSection !== 'overview' ? <section className={cn('api-management-section min-w-0', `is-${activeSection}`)} aria-label={sectionTitle}>
+            <div className="api-management-section-header">
               <div><span>API 服务管理</span><strong>{sectionTitle}</strong></div>
-              <Button size="icon" variant="ghost" aria-label={`关闭${sectionTitle}`} title="关闭" onClick={() => setSectionDialogOpen(false)}><X size={17} /></Button>
+              <div className="api-management-section-actions">
+                <span>{dirty ? '存在未保存的更改' : '所有更改已保存'}</span>
+                <Button variant="default" disabled={!dirty || isBusy} onClick={() => void save()}>{action === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{dirty ? '保存更改' : '已保存'}</Button>
+              </div>
             </div>
             {activeSection === 'access-keys' ? (
               <section aria-labelledby="access-keys-title">
@@ -1166,6 +1303,7 @@ export function ApiServerPage(): React.JSX.Element {
                   <div className="api-key-list">
                     {draft.accessKeys.map((entry) => {
                       const storedKey = entry.key === undefined && entry.hasKey
+                      const allowedSourceIds = entry.allowedSourceIds ?? []
                       return (
                        <article key={entry.id} className="api-key-card grid gap-2.5 px-3 py-3">
                          <div className="flex flex-wrap items-center gap-2">
@@ -1177,9 +1315,10 @@ export function ApiServerPage(): React.JSX.Element {
                            </div>
                          </div>
                          <div className="api-entity-summary" aria-label={`${entry.label} 密钥摘要`}>
-                           <span>{entry.enabled ? '可用' : '已停用'}</span>
-                           <span>{entry.allowedModels.length > 0 ? `${entry.allowedModels.length} 个模型限制` : '全部公开模型'}</span>
-                           <span>{storedKey ? entry.keyPreview : '待保存的新密钥'}</span>
+                            <span>{entry.enabled ? '可用' : '已停用'}</span>
+                            <span>{entry.allowedModels.length > 0 ? `${entry.allowedModels.length} 个模型限制` : '全部公开模型'}</span>
+                            <span>{allowedSourceIds.length > 0 ? `${allowedSourceIds.length} 个来源池限制` : '全部 API 与凭证来源'}</span>
+                            <span>{storedKey ? entry.keyPreview : '待保存的新密钥'}</span>
                          </div>
                         <div className="grid grid-cols-[minmax(210px,1fr)_minmax(220px,1.2fr)] gap-2.5">
                           <Field label="本软件客户端密钥" hint={storedKey ? '已安全保存：当前显示脱敏摘要；点击眼睛可显示完整值，复制按钮可一键复制' : '可直接填写、显示完整值或一键复制'}>
@@ -1198,15 +1337,38 @@ export function ApiServerPage(): React.JSX.Element {
                               {storedKey ? <Button size="sm" onClick={() => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, key: '', keyPreview: '', hasKey: false, reveal: true } : item) }))}>更换</Button> : null}
                             </div>
                           </Field>
-                          <Field label="模型白名单" hint="逗号或换行分隔；留空允许访问全部公开模型">
+                           <Field label="模型白名单" hint="逗号或换行分隔；留空允许访问全部公开模型">
                             <Input
                               aria-label={`${entry.label} 模型白名单`}
                               value={entry.allowedModels.join(', ')}
                               placeholder="留空 = 全部公开模型"
                               onChange={(event) => updateDraft((current) => ({ ...current, accessKeys: current.accessKeys.map((item) => item.id === entry.id ? { ...item, allowedModels: parseModelList(event.target.value) } : item) }))}
-                            />
-                          </Field>
-                        </div>
+                             />
+                           </Field>
+                           <Field className="col-span-2" label="来源池" hint="留空按公开模型路由使用全部来源；选择后，这枚本软件密钥只能使用选中的 API 或账号凭证来源">
+                             <div className="api-key-source-pool" role="group" aria-label={`${entry.label} 来源池`}>
+                               {sourceOptions.length === 0 ? <span className="text-[11px] text-[var(--color-text-muted)]">请先添加 API 或在账号库导入凭证来源</span> : sourceOptions.map((source) => {
+                                 const checked = allowedSourceIds.includes(source.id)
+                                 return <label key={source.id} className={cn('api-key-source-option', checked && 'is-selected')}>
+                                   <input
+                                     type="checkbox"
+                                     checked={checked}
+                                     onChange={(event) => updateDraft((current) => ({
+                                       ...current,
+                                       accessKeys: current.accessKeys.map((item) => item.id === entry.id ? {
+                                         ...item,
+                                         allowedSourceIds: event.target.checked
+                                           ? [...new Set([...(item.allowedSourceIds ?? []), source.id])]
+                                           : (item.allowedSourceIds ?? []).filter((id) => id !== source.id)
+                                       } : item)
+                                     }))}
+                                   />
+                                   <span><strong>{source.label}</strong><small>{source.kind}</small></span>
+                                 </label>
+                               })}
+                             </div>
+                           </Field>
+                         </div>
                       </article>
                       )
                     })}
@@ -1218,7 +1380,7 @@ export function ApiServerPage(): React.JSX.Element {
             {activeSection === 'upstreams' ? (
               <section aria-labelledby="upstreams-title">
                 <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
-                  <div><h2 id="upstreams-title" className="text-[13px] font-semibold">API</h2><p className="mt-0.5 max-w-[72ch] text-[11px] text-[var(--color-text-muted)]">API 保存真实服务 URL、Key、协议与模型目录。本软件只在转发时使用这些 Key；测试会自动尝试带 /v1 与不带 /v1。</p></div>
+                  <div><h2 id="upstreams-title" className="text-[13px] font-semibold">第三方 API</h2><p className="mt-0.5 max-w-[72ch] text-[11px] text-[var(--color-text-muted)]">每一张卡片独立保存真实服务 URL、Key、协议与模型目录。本软件只在转发时使用这些 Key；测试会自动尝试带 /v1 与不带 /v1。</p></div>
                   <div className="flex items-center gap-1.5">
                     <Button variant="soft" disabled={isBusy || draft.upstreams.filter((entry) => entry.enabled).length === 0} onClick={() => void refreshModels({ upstreams: draft.upstreams.filter((entry) => entry.enabled), testUpstreams: true, refreshCredentials: true })}>{action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新全部模型并检查</Button>
                     <Button onClick={openQuickImport}><Clipboard size={15} />快速导入</Button>
@@ -1251,7 +1413,7 @@ export function ApiServerPage(): React.JSX.Element {
                           <div className="api-api-card-meta" aria-label={`${entry.name} API 摘要`}>
                             <span>{entry.models.length} 个模型</span>
                             <span>{entry.protocol === 'auto' ? '自动识别协议' : entry.protocol}</span>
-                            <span>{entry.hasApiKey || entry.apiKey ? 'API Key 已配置' : '无需 Key'}</span>
+                            <span title={entry.hasApiKey || entry.apiKey ? '点击卡片可显示或复制完整 API Key' : undefined}>{entry.apiKey || entry.keyPreview || (entry.hasApiKey ? 'API Key 已保存' : '无需 Key')}</span>
                             <span>优先级 {entry.priority}</span>
                           </div>
                           <div className={cn('api-api-card-result', probe?.loading ? 'is-loading' : probe && !probe.catalogOk ? 'is-error' : probe?.probeOk === false ? 'is-warning' : probe?.catalogOk ? 'is-success' : 'is-idle')}>
@@ -1344,73 +1506,72 @@ export function ApiServerPage(): React.JSX.Element {
                   <EmptyState icon={Route} title="还没有公开模型" detail="创建公开模型后，/v1/models 与 Codex 模型目录才会显示它。没有路由的模型会返回 model_not_found。" action={<Button variant="default" onClick={addRoute}><Plus size={15} />添加第一个模型</Button>} />
                 ) : (
                   <div className="api-route-list">
-                    {draft.routes.map((route, routeIndex) => (
-                      <article key={`${route.publicModel}-${routeIndex}`} className="api-route-card grid gap-3 px-3 py-3">
-                        <div className="api-route-config grid grid-cols-[minmax(180px,1.2fr)_minmax(140px,.8fr)_minmax(150px,.8fr)_32px] items-end gap-2.5">
-                          <Field label="公开模型名"><Input className="font-[var(--font-mono)] font-semibold" value={route.publicModel} onChange={(event) => updateRoute(routeIndex, { publicModel: event.target.value })} /></Field>
-                          <Field label="路由策略"><Select className="w-full" value={route.strategy} onChange={(event) => updateRoute(routeIndex, { strategy: event.target.value as ModelRouteStrategy })}><option value="single">固定单一来源</option><option value="priority">优先级故障转移</option><option value="round_robin">轮询</option></Select></Field>
-                          <Field label="来源范围"><Select className="w-full" value={route.sourceMode} onChange={(event) => {
-                            const sourceMode = event.target.value as ModelRouteSourceMode
-                            const apiIds = new Set(draft.upstreams.map((entry) => entry.id))
-                            const credentialIds = new Set(draft.credentialSources.map((entry) => entry.id))
-                            updateRoute(routeIndex, {
-                              sourceMode,
-                              targets: route.targets.filter((target) => sourceMode === 'api_only'
-                                ? apiIds.has(target.sourceId)
-                                : sourceMode === 'credential_only'
-                                  ? credentialIds.has(target.sourceId)
-                                  : apiIds.has(target.sourceId) || credentialIds.has(target.sourceId))
-                            })
-                          }}><option value="api_only">仅第三方 API</option><option value="credential_only">仅账号凭证</option><option value="mixed">API + 凭证混合</option></Select></Field>
-                          <Button variant="danger" size="icon" aria-label={`删除公开模型 ${route.publicModel}`} onClick={() => updateDraft((current) => ({ ...current, routes: current.routes.filter((_, index) => index !== routeIndex) }))}><Trash2 size={15} /></Button>
-                        </div>
-                        <div className="api-entity-summary">
-                          <span>{route.strategy === 'single' ? '固定来源' : route.strategy === 'round_robin' ? '轮询' : '优先级故障转移'}</span>
-                          <span>{route.targets.filter((target) => target.enabled).length}/{route.targets.length} 个目标启用</span>
-                          <span>{route.sourceMode === 'api_only' ? '仅 API' : route.sourceMode === 'credential_only' ? '仅凭证' : 'API + 凭证'}</span>
-                        </div>
-                        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)]">
-                          <div className="api-route-heading grid grid-cols-[minmax(140px,1fr)_minmax(150px,1fr)_90px_72px_32px] gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-1.5 text-[10.5px] font-medium text-[var(--color-text-muted)]"><span>来源</span><span>目标模型</span><span>优先级</span><span>状态</span><span /></div>
-                          {route.targets.map((target, targetIndex) => (
-                            <div key={`${target.sourceId}-${targetIndex}`} className="api-route-target grid grid-cols-[minmax(140px,1fr)_minmax(150px,1fr)_90px_72px_32px] items-center gap-2 border-b border-[var(--color-border)] px-2 py-2 last:border-b-0">
-                              <Select aria-label={`${route.publicModel} 路由来源`} className="w-full" value={target.sourceId} onChange={(event) => {
-                                const source = routeSources(route).find((entry) => entry.id === event.target.value)
-                                updateTarget(routeIndex, targetIndex, { sourceId: event.target.value, upstreamModel: source?.models[0] ?? target.upstreamModel })
-                              }}>{routeSources(route).map((source) => <option key={source.id} value={source.id}>{source.kind === 'credential' ? '凭证 · ' : 'API · '}{source.label}</option>)}</Select>
-                              <Input aria-label={`${route.publicModel} 目标模型`} className="font-[var(--font-mono)]" list={`models-${routeIndex}-${targetIndex}`} value={target.upstreamModel} onChange={(event) => updateTarget(routeIndex, targetIndex, { upstreamModel: event.target.value })} />
-                              <datalist id={`models-${routeIndex}-${targetIndex}`}>{routeSources(route).find((entry) => entry.id === target.sourceId)?.models.map((model) => <option value={model} key={model} />)}</datalist>
-                              <Input aria-label={`${route.publicModel} 目标优先级`} type="number" value={target.priority} onChange={(event) => updateTarget(routeIndex, targetIndex, { priority: Number(event.target.value) })} />
-                              <Toggle checked={target.enabled} onChange={(enabled) => updateTarget(routeIndex, targetIndex, { enabled })} label={target.enabled ? '启用' : '停用'} />
-                              <Button size="icon" variant="ghost" aria-label="删除路由目标" onClick={() => updateRoute(routeIndex, { targets: route.targets.filter((_, index) => index !== targetIndex) })}><Trash2 size={14} /></Button>
-                            </div>
-                          ))}
-                          <button
-                            type="button"
-                            disabled={routeSources(route).length === 0}
-                            className="flex min-h-8 w-full items-center justify-center gap-1.5 text-[11.5px] font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ui-focus)] disabled:cursor-not-allowed disabled:text-[var(--color-text-muted)]"
-                            onClick={() => {
-                              const sources = routeSources(route)
-                              const source = sources.find((entry) => !route.targets.some((target) => target.sourceId === entry.id)) ?? sources[0]
-                              if (!source) return
-                              updateRoute(routeIndex, { targets: [...route.targets, { sourceId: source.id, upstreamModel: source.models[0] ?? route.publicModel, priority: route.targets.length + 1, enabled: true }] })
-                            }}
-                          ><Plus size={13} />添加目标</button>
-                        </div>
+                    {draft.routes.map((route, routeIndex) => {
+                      const enabledTargets = route.targets.filter((target) => target.enabled)
+                      const sourceLabels = enabledTargets.map((target) => sourceOptions.find((source) => source.id === target.sourceId)?.label ?? target.sourceId)
+                      return <article key={`${route.publicModel}-${routeIndex}`} className="api-route-card api-route-summary-card">
+                        <button type="button" className="api-route-summary-main" onClick={() => setEditingRouteIndex(routeIndex)} aria-label={`编辑模型 ${route.publicModel}`}>
+                          <code title={route.publicModel}>{route.publicModel}</code>
+                          <span>{route.strategy === 'single' ? '固定单一来源' : route.strategy === 'round_robin' ? '轮询' : '优先级故障转移'}</span>
+                          <span title={sourceLabels.join('、')}>{sourceLabels.join('、') || '尚未启用来源'}</span>
+                          <small>{enabledTargets.map((target) => target.upstreamModel).join('、') || '未映射'}</small>
+                        </button>
+                        <div className="api-route-summary-actions"><span>{enabledTargets.length}/{route.targets.length} 来源启用</span><Button size="icon" variant="ghost" aria-label={`编辑模型 ${route.publicModel}`} title="编辑模型路由" onClick={() => setEditingRouteIndex(routeIndex)}><Pencil size={14} /></Button></div>
                       </article>
-                    ))}
+                    })}
                   </div>
                 )}
               </section>
             ) : null}
-            <footer className="api-section-dialog-footer">
-              <span>{dirty ? '存在未保存的更改' : '所有更改已保存'}</span>
-              <div>
-                <Button variant="ghost" onClick={() => setSectionDialogOpen(false)}>完成</Button>
-                <Button variant="default" disabled={!dirty || isBusy} onClick={() => void save()}>{action === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{dirty ? '保存更改' : '已保存'}</Button>
-              </div>
-            </footer>
-          </div>, document.body)}
+          </section> : null}
         </div>
+
+        {tuningDialogOpen ? createPortal(
+          <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setTuningDialogOpen(false) }}>
+            <DialogPanel className="api-upstream-dialog max-w-[680px]" role="dialog" aria-modal="true" aria-labelledby="api-tuning-title">
+              <DialogHeader>
+                <div><h2 id="api-tuning-title" className="text-[15px] font-semibold text-[var(--color-text)]">超时、重试与会话路由</h2><p className="mt-1 text-[11px] text-[var(--color-text-muted)]">这些设置直接作用于运行中的 API 服务，保存后热更新。</p></div>
+                <Button size="icon" variant="ghost" aria-label="关闭超时与故障切换窗口" onClick={() => setTuningDialogOpen(false)}><X size={17} /></Button>
+              </DialogHeader>
+              <div className="api-upstream-dialog-body api-editor-dialog-body">
+                <section className="api-editor-section">
+                  <header><strong>上游请求</strong><span>只限制建立上游响应的等待时间；流已经开始后不会因为该值被中途截断。</span></header>
+                  <div className="api-editor-fields three-columns">
+                    <Field label="请求超时（秒）" hint="5–1800 秒"><Input type="number" min={5} max={1800} value={Math.round((draft.requestTimeoutMs ?? 120000) / 1000)} onChange={(event) => updateDraft((current) => ({ ...current, requestTimeoutMs: Number(event.target.value) * 1000 }))} /></Field>
+                    <Field label="最多尝试来源" hint="0 = 尝试全部可用来源"><Input type="number" min={0} max={100} value={draft.maxRetrySources ?? 0} onChange={(event) => updateDraft((current) => ({ ...current, maxRetrySources: Number(event.target.value) }))} /></Field>
+                    <Field label="切换等待（毫秒）" hint="0–30000"><Input type="number" min={0} max={30000} value={draft.retryDelayMs ?? 0} onChange={(event) => updateDraft((current) => ({ ...current, retryDelayMs: Number(event.target.value) }))} /></Field>
+                  </div>
+                </section>
+                <section className="api-editor-section">
+                  <header><strong>会话亲和</strong><span>同一对话优先沿用已经成功的来源；来源冷却或失效时仍自动切换备用。</span></header>
+                  <Toggle checked={draft.sessionAffinity !== false} onChange={(sessionAffinity) => updateDraft((current) => ({ ...current, sessionAffinity }))} label="保持同一会话使用相同来源" />
+                </section>
+              </div>
+              <DialogActions><Button variant="ghost" onClick={() => setTuningDialogOpen(false)}>完成</Button><Button variant="default" disabled={!dirty || isBusy} onClick={() => void save()}>{action === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{dirty ? '保存并热更新' : '已保存'}</Button></DialogActions>
+            </DialogPanel>
+          </DialogBackdrop>, document.body
+        ) : null}
+
+        {editingRouteIndex !== null ? createPortal((() => {
+          const route = draft.routes[editingRouteIndex]
+          if (!route) return null
+          return (
+            <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingRouteIndex(null) }}>
+              <DialogPanel className="api-upstream-dialog api-editor-dialog max-w-[860px]" role="dialog" aria-modal="true" aria-labelledby="route-editor-title">
+                <DialogHeader>
+                  <div><h2 id="route-editor-title" className="text-[15px] font-semibold text-[var(--color-text)]">模型路由</h2><p className="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">客户端名称与每个 API 或凭证来源的真实模型映射。</p></div>
+                  <Button size="icon" variant="ghost" aria-label="关闭模型路由窗口" title="关闭" onClick={() => setEditingRouteIndex(null)}><X size={17} /></Button>
+                </DialogHeader>
+                <div className="api-upstream-dialog-body api-editor-dialog-body">{renderRouteEditor(route, editingRouteIndex)}</div>
+                <DialogActions>
+                  <span className="mr-auto text-[11px] text-[var(--color-text-muted)]">{dirty ? '存在未保存的更改，保存后立即热更新路由。' : '当前路由已保存。'}</span>
+                  <Button variant="ghost" onClick={() => setEditingRouteIndex(null)}>完成</Button>
+                  <Button variant="default" disabled={!dirty || isBusy} onClick={() => void save()}>{action === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{dirty ? '保存更改' : '已保存'}</Button>
+                </DialogActions>
+              </DialogPanel>
+            </DialogBackdrop>
+          )
+        })(), document.body) : null}
 
         {editingUpstreamId ? createPortal((() => {
           const entry = draft.upstreams.find((item) => item.id === editingUpstreamId)

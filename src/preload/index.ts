@@ -60,6 +60,7 @@ const api: CodexSwitcherApi = {
   startLocalApiServer: () => ipcRenderer.invoke(ipcChannels.localApiServerStart),
   stopLocalApiServer: () => ipcRenderer.invoke(ipcChannels.localApiServerStop),
   restartLocalApiServer: () => ipcRenderer.invoke(ipcChannels.localApiServerRestart),
+  clearLocalApiServerCooldowns: (sourceIds) => ipcRenderer.invoke(ipcChannels.localApiServerClearCooldowns, sourceIds),
   generateLocalApiAccessKey: () => ipcRenderer.invoke(ipcChannels.localApiServerGenerateKey),
   revealLocalApiAccessKey: (id) => ipcRenderer.invoke(ipcChannels.localApiServerRevealKey, id),
   revealLocalApiUpstreamKey: (id) => ipcRenderer.invoke(ipcChannels.localApiServerRevealUpstreamKey, id),
