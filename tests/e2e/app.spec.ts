@@ -815,6 +815,15 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       id: 'response-e2e-local-api',
       output_text: 'local api works'
     })
+    await page.getByRole('button', { name: '打开 总览' }).click()
+    await page.getByRole('button', { name: '测试对话' }).click()
+    const localChatTest = page.getByRole('dialog', { name: '测试本地 API 对话' })
+    await expect(localChatTest).toBeVisible()
+    await localChatTest.getByLabel('测试消息').fill('verify local service route')
+    await localChatTest.getByRole('button', { name: '发送测试' }).click()
+    await expect(localChatTest.getByText('local api works')).toBeVisible()
+    await page.screenshot({ path: join(process.cwd(), 'test-results', 'api-local-chat-test.png'), fullPage: true })
+    await localChatTest.getByRole('button', { name: '关闭', exact: true }).click()
     await page.getByRole('button', { name: '停止', exact: true }).click()
 
     await electronApp.evaluate(({ BrowserWindow }) => {

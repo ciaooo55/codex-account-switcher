@@ -3,6 +3,7 @@ import type {
   GrokCredential,
   GrokTestResult,
   ImportPreviewDecision,
+  NormalizedAgentIdentityCredential,
   NormalizedCredential,
   TestResult
 } from '../../shared/types'
@@ -58,7 +59,50 @@ function grok(overrides: Partial<GrokCredential> = {}): GrokCredential {
   }
 }
 
+function agentIdentity(overrides: Partial<NormalizedAgentIdentityCredential> = {}): NormalizedAgentIdentityCredential {
+  return {
+    credentialKind: 'agent_identity',
+    id: 'agent-id', email: 'agent@example.invalid', accountId: 'agent-workspace', subject: 'agent-user',
+    authKind: 'agent_identity',
+    agentIdentity: { runtimeId: 'runtime-secret', privateKey: 'private-key-secret', taskId: 'task-secret', accountId: 'agent-workspace', userId: 'agent-user' },
+    planType: 'team', expiresAt: null, sourcePath: 'agent.json', sourceFormat: 'json', sourceDialect: 'cockpit',
+    secretExtensions: {
+      schemaVersion: 1, accountType: 'agent_identity', credentials: { agent_private_key: 'private-key-secret' },
+      extra: null, modelMapping: { local: 'gpt-real' }, concurrency: null, priority: 1,
+      rateMultiplier: null, autoPauseOnExpired: null, metadata: {}
+    },
+    ...overrides
+  }
+}
+
 describe('ImportPreviewService', () => {
+  it('previews and commits Agent Identity as API-only without exposing signing secrets', async () => {
+    const identity = agentIdentity()
+    const codexManager = {
+      listCredentials: vi.fn().mockResolvedValue([]),
+      listAgentIdentities: vi.fn().mockResolvedValue([]),
+      listAccounts: vi.fn().mockResolvedValue([]),
+      importPrepared: vi.fn().mockResolvedValue({ imported: 1, skipped: 0, errors: [], accounts: [] })
+    } as unknown as AccountManager
+    const grokManager = {
+      listCredentials: vi.fn().mockResolvedValue([]),
+      listAccounts: vi.fn().mockResolvedValue([]),
+      importPrepared: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [], accounts: [] })
+    } as unknown as GrokAccountManager
+    const service = new ImportPreviewService(codexManager, grokManager)
+    const preview = await service.create(
+      { credentials: [], agentIdentities: [identity], errors: [], recognized: 1, sourceCount: 1 },
+      { credentials: [], errors: [], recognized: 0, sourceCount: 1 }
+    )
+
+    expect(preview.items[0]).toMatchObject({ provider: 'agent_identity', switchable: false, canRefresh: false })
+    expect(JSON.stringify(preview)).not.toContain('private-key-secret')
+    await service.commit({ sessionId: preview.sessionId, decisions: { [preview.items[0].key]: 'add' } })
+    expect(codexManager.importPrepared).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: [], agentIdentities: [identity]
+    }))
+  })
+
   it('classifies new, duplicate, update and conflict entries without exposing credentials', async () => {
     const existing = codex({ accessToken: 'existing-access', refreshToken: 'existing-refresh', idToken: 'existing-id' })
     const codexManager = {

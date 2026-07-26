@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   revealLocalApiAccessKey: vi.fn(),
   revealLocalApiUpstreamKey: vi.fn(),
   refreshLocalApiServerModels: vi.fn(),
+  testLocalApiServer: vi.fn(),
   applyLocalApiServerToCodex: vi.fn(),
   listCustomApiModels: vi.fn()
 }))
@@ -91,6 +92,7 @@ describe('ApiServerPage', () => {
     api.generateLocalApiAccessKey.mockResolvedValue('sk-cas-generated-secure-value')
     api.revealLocalApiAccessKey.mockResolvedValue('sk-cas-saved-secret-value')
     api.revealLocalApiUpstreamKey.mockResolvedValue('sk-upstream-saved-secret-value')
+    api.testLocalApiServer.mockResolvedValue({ ok: true, status: 200, model: 'demo-model', outputText: '测试成功', message: '本地 API 对话测试成功', latencyMs: 12 })
     api.applyLocalApiServerToCodex.mockResolvedValue({ ok: true, message: 'Codex 已切换', backupPath: 'backup.toml' })
     api.listCustomApiModels.mockResolvedValue({
       ok: true,
@@ -137,6 +139,25 @@ describe('ApiServerPage', () => {
     expect(dialog).toHaveTextContent('尚未收到本地 API 请求')
     fireEvent.click(screen.getByRole('button', { name: '关闭 API 服务活动' }))
     expect(screen.queryByRole('dialog', { name: 'API 服务活动' })).not.toBeInTheDocument()
+  })
+
+  it('通过独立悬浮窗口使用本软件密钥和公开模型测试本地 API 对话', async () => {
+    render(<ApiServerPage />)
+    await screen.findByText('服务总览')
+    fireEvent.click(screen.getByRole('button', { name: '测试对话' }))
+
+    const dialog = screen.getByRole('dialog', { name: '测试本地 API 对话' })
+    expect(within(dialog).getByLabelText('测试访问密钥')).toHaveValue('codex-key')
+    expect(within(dialog).getByLabelText('测试公开模型')).toHaveValue('xxx')
+    fireEvent.change(within(dialog).getByLabelText('测试消息'), { target: { value: '请回复本地服务正常' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '发送测试' }))
+
+    await waitFor(() => expect(api.testLocalApiServer).toHaveBeenCalledWith({
+      accessKeyId: 'codex-key',
+      model: 'xxx',
+      input: '请回复本地服务正常'
+    }))
+    expect(await within(dialog).findByText('测试成功')).toBeInTheDocument()
   })
 
   it('保存端口和自启设置时不将已保存秘密回传 Renderer', async () => {

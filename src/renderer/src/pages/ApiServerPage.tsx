@@ -8,6 +8,7 @@ import {
   EyeOff,
   KeyRound,
   LoaderCircle,
+  MessageSquareText,
   Network,
   Pencil,
   Play,
@@ -34,6 +35,7 @@ import type {
   LocalApiAccessKeyInput,
   LocalApiServerConfigInput,
   LocalApiServerState,
+  LocalApiChatTestResult,
   ModelRoute,
   ModelRouteSourceMode,
   ModelRouteStrategy,
@@ -229,6 +231,11 @@ export function ApiServerPage(): React.JSX.Element {
   const [draft, setDraft] = useState<ApiServerDraft | null>(null)
   const [activeSection, setActiveSection] = useState<SectionId>('overview')
   const [activityDialogOpen, setActivityDialogOpen] = useState(false)
+  const [chatTestDialogOpen, setChatTestDialogOpen] = useState(false)
+  const [chatTestKeyId, setChatTestKeyId] = useState('')
+  const [chatTestModel, setChatTestModel] = useState('')
+  const [chatTestInput, setChatTestInput] = useState('你好，请只回复“连接正常”。')
+  const [chatTestResult, setChatTestResult] = useState<LocalApiChatTestResult | null>(null)
   const [tuningDialogOpen, setTuningDialogOpen] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -834,12 +841,66 @@ export function ApiServerPage(): React.JSX.Element {
   const selectedCodexKey = draft?.accessKeys.find((entry) => entry.id === codexKeyId)
   const codexModels = useMemo(() => {
     if (!draft) return []
-    const models = draft.routes.map((route) => route.publicModel)
-    return selectedCodexKey?.allowedModels.length
-      ? models.filter((model) => selectedCodexKey.allowedModels.includes(model))
-      : models
+    return draft.routes
+      .filter((route) => (
+        (!selectedCodexKey?.allowedModels.length || selectedCodexKey.allowedModels.includes(route.publicModel))
+        && (!selectedCodexKey?.allowedSourceIds?.length || route.targets.some((target) => selectedCodexKey.allowedSourceIds?.includes(target.sourceId)))
+      ))
+      .map((route) => route.publicModel)
   }, [draft, selectedCodexKey])
+  const selectedChatTestKey = draft?.accessKeys.find((entry) => entry.id === chatTestKeyId)
+  const chatTestModels = useMemo(() => {
+    if (!draft) return []
+    return draft.routes
+      .filter((route) => (
+        (!selectedChatTestKey?.allowedModels.length || selectedChatTestKey.allowedModels.includes(route.publicModel))
+        && (!selectedChatTestKey?.allowedSourceIds?.length || route.targets.some((target) => selectedChatTestKey.allowedSourceIds?.includes(target.sourceId)))
+      ))
+      .map((route) => route.publicModel)
+  }, [draft, selectedChatTestKey])
   const pasteAnalysis = useMemo(() => pasteText.trim() ? parseCustomApiPaste(pasteText) : null, [pasteText])
+
+  const openChatTest = (): void => {
+    const preferredKey = draft?.accessKeys.find((entry) => entry.id === codexKeyId && entry.enabled)
+      ?? draft?.accessKeys.find((entry) => entry.enabled)
+    const nextKeyId = preferredKey?.id ?? ''
+    const nextModels = (draft?.routes ?? [])
+      .filter((route) => (
+        (!preferredKey?.allowedModels.length || preferredKey.allowedModels.includes(route.publicModel))
+        && (!preferredKey?.allowedSourceIds?.length || route.targets.some((target) => preferredKey.allowedSourceIds?.includes(target.sourceId)))
+      ))
+      .map((route) => route.publicModel)
+    setChatTestKeyId(nextKeyId)
+    setChatTestModel(nextModels.includes(codexModel) ? codexModel : nextModels[0] ?? '')
+    setChatTestResult(null)
+    setChatTestDialogOpen(true)
+  }
+
+  const runChatTest = async (): Promise<void> => {
+    if (!chatTestKeyId || !chatTestModel || !chatTestInput.trim()) return
+    setAction('chat-test')
+    setChatTestResult(null)
+    try {
+      const result = await codexApi().testLocalApiServer({
+        accessKeyId: chatTestKeyId,
+        model: chatTestModel,
+        input: chatTestInput.trim()
+      })
+      setChatTestResult(result)
+      await load()
+    } catch (error) {
+      setChatTestResult({
+        ok: false,
+        status: 502,
+        model: chatTestModel,
+        outputText: '',
+        message: error instanceof Error ? error.message : String(error),
+        latencyMs: 0
+      })
+    } finally {
+      setAction(null)
+    }
+  }
 
   const applyToCodex = async (): Promise<void> => {
     if (!codexKeyId || !codexModel) return
@@ -1140,9 +1201,14 @@ export function ApiServerPage(): React.JSX.Element {
                 <strong>服务总览</strong>
                 <p>本地服务使用一个固定地址，将客户端请求路由到已启用的 API 或账号凭证。</p>
               </div>
-              <Button size="sm" variant="soft" disabled={isBusy} onClick={() => void refreshModels({ upstreams: draft.upstreams.filter((entry) => entry.enabled), testUpstreams: false, refreshCredentials: true })}>
-                {action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新模型目录
-              </Button>
+              <div className="flex flex-wrap justify-end gap-1.5">
+                <Button size="sm" variant="ghost" disabled={isBusy || dirty || !draft.accessKeys.some((entry) => entry.enabled) || draft.routes.length === 0} title={dirty ? '请先保存配置，再测试当前本地服务' : undefined} onClick={openChatTest}>
+                  <MessageSquareText size={14} />测试对话
+                </Button>
+                <Button size="sm" variant="soft" disabled={isBusy} onClick={() => void refreshModels({ upstreams: draft.upstreams.filter((entry) => entry.enabled), testUpstreams: false, refreshCredentials: true })}>
+                  {action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新模型目录
+                </Button>
+              </div>
             </header>
 
             <div className="api-overview-summary" aria-label="API 服务资源统计">
@@ -1245,6 +1311,7 @@ export function ApiServerPage(): React.JSX.Element {
                 <header><div><strong id="api-overview-compat-title">兼容协议</strong><span>同一固定端口提供常用客户端协议，不额外启动随机端口。</span></div></header>
                 <div className="api-overview-endpoints">
                   <div><span>OpenAI</span><code>/v1/responses · /v1/chat/completions · /v1/models</code></div>
+                  <div><span>OpenAI Audio</span><code>/v1/audio/speech · transcriptions · translations</code></div>
                   <div><span>Anthropic</span><code>/v1/messages</code></div>
                   <div><span>Gemini</span><code>/v1beta/models · generateContent</code></div>
                   <div><span>Ollama</span><code>/api/tags · /api/chat · /api/generate</code></div>
@@ -1252,6 +1319,43 @@ export function ApiServerPage(): React.JSX.Element {
               </section>
             </div>
           </section> : null}
+
+          {chatTestDialogOpen ? createPortal(
+            <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setChatTestDialogOpen(false) }}>
+              <DialogPanel className="api-upstream-dialog max-w-[660px]" role="dialog" aria-modal="true" aria-labelledby="api-chat-test-title">
+                <DialogHeader>
+                  <div><h2 id="api-chat-test-title" className="text-[15px] font-semibold text-[var(--color-text)]">测试本地 API 对话</h2><p className="mt-1 text-[11px] text-[var(--color-text-muted)]">请求会通过本软件的本地地址、项目密钥和当前模型路由发送，不会把上游密钥暴露给页面。</p></div>
+                  <Button size="icon" variant="ghost" aria-label="关闭本地 API 对话测试窗口" title="关闭" onClick={() => setChatTestDialogOpen(false)}><X size={17} /></Button>
+                </DialogHeader>
+                <div className="api-upstream-dialog-body api-editor-dialog-body">
+                  <section className="api-editor-section">
+                    <header><strong>请求</strong><span>非流式 Responses 测试会验证鉴权、公开模型映射和实际选源结果。</span></header>
+                    <div className="api-editor-fields two-columns">
+                      <Field label="本软件访问密钥"><Select aria-label="测试访问密钥" className="w-full" value={chatTestKeyId} onChange={(event) => {
+                        const nextKeyId = event.target.value
+                        const nextKey = draft.accessKeys.find((entry) => entry.id === nextKeyId)
+                        const nextModel = draft.routes.find((route) => (
+                          (!nextKey?.allowedModels.length || nextKey.allowedModels.includes(route.publicModel))
+                          && (!nextKey?.allowedSourceIds?.length || route.targets.some((target) => nextKey.allowedSourceIds?.includes(target.sourceId)))
+                        ))?.publicModel ?? ''
+                        setChatTestKeyId(nextKeyId)
+                        setChatTestModel(nextModel)
+                        setChatTestResult(null)
+                      }}><option value="">选择已启用密钥</option>{draft.accessKeys.filter((entry) => entry.enabled).map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</Select></Field>
+                      <Field label="公开模型"><Select aria-label="测试公开模型" className="w-full" value={chatTestModel} onChange={(event) => { setChatTestModel(event.target.value); setChatTestResult(null) }}><option value="">选择模型</option>{chatTestModels.map((model) => <option key={model} value={model}>{model}</option>)}</Select></Field>
+                    </div>
+                    <Field label="测试消息"><textarea aria-label="测试消息" className={textareaClass} rows={4} value={chatTestInput} onChange={(event) => { setChatTestInput(event.target.value); setChatTestResult(null) }} /></Field>
+                  </section>
+                  {chatTestResult ? <section className={cn('api-chat-test-result', chatTestResult.ok ? 'is-success' : 'is-error')} aria-live="polite">
+                    <div><strong>{chatTestResult.ok ? '请求成功' : '请求失败'}</strong><span>{chatTestResult.status} · {chatTestResult.latencyMs} ms · {chatTestResult.model}</span></div>
+                    <p>{chatTestResult.message}</p>
+                    {chatTestResult.outputText ? <pre>{chatTestResult.outputText}</pre> : null}
+                  </section> : null}
+                </div>
+                <DialogActions><Button variant="ghost" onClick={() => setChatTestDialogOpen(false)}>关闭</Button><Button variant="default" disabled={action === 'chat-test' || !chatTestKeyId || !chatTestModel || !chatTestInput.trim()} onClick={() => void runChatTest()}>{action === 'chat-test' ? <LoaderCircle className="spin" size={15} /> : <MessageSquareText size={15} />}发送测试</Button></DialogActions>
+              </DialogPanel>
+            </DialogBackdrop>, document.body
+          ) : null}
 
           {activityDialogOpen ? createPortal(
             <div className="api-activity-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setActivityDialogOpen(false) }}>
@@ -1436,7 +1540,7 @@ export function ApiServerPage(): React.JSX.Element {
                 <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
                   <div>
                     <h2 id="credential-sources-title" className="text-[13px] font-semibold">账号凭证 API 源</h2>
-                    <p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">来自 Codex、Grok 与 CPA 账号库的安全引用；Token 不会进入 Renderer 或 API 服务配置。</p>
+                    <p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">来自 Codex、Grok、CPA 与 Agent Identity 的安全引用；Token 和签名私钥不会进入 Renderer 或 API 服务配置。</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-accent)]"><ShieldCheck size={13} />已隔离秘密</span>
@@ -1452,7 +1556,8 @@ export function ApiServerPage(): React.JSX.Element {
                         codex: 'Codex',
                         'cpa-codex': 'CPA · Codex',
                         grok: 'Grok',
-                        'cpa-grok': 'CPA · Grok'
+                        'cpa-grok': 'CPA · Grok',
+                        'agent-identity': 'Codex · Agent Identity'
                       }[source.provider]
                       return (
                         <article key={source.id} className="api-credential-row grid grid-cols-[minmax(180px,1.3fr)_100px_110px_minmax(220px,1.5fr)] items-center gap-3 px-3 py-3">

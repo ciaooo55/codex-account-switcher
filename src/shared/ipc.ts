@@ -46,6 +46,7 @@ import type {
 } from './types'
 import type {
   ApiUpstreamInput,
+  LocalApiChatTestResult,
   LocalApiServerConfigInput,
   LocalApiServerState,
   LocalApiModelRefreshResult
@@ -193,6 +194,7 @@ export interface CodexSwitcherApi {
     testUpstreams?: boolean
     refreshCredentials?: boolean
   }): Promise<LocalApiModelRefreshResult>
+  testLocalApiServer(input: { accessKeyId: string; model: string; input: string }): Promise<LocalApiChatTestResult>
   applyLocalApiServerToCodex(input: { accessKeyId: string; model: string; restart: boolean }): Promise<SwitchResult>
   scanGrokDirectory(): Promise<GrokScanResult>
   importGrokFiles(): Promise<GrokScanResult | null>
@@ -295,6 +297,7 @@ export const ipcChannels = {
   localApiServerRevealKey: 'local-api-server:reveal-key',
   localApiServerRevealUpstreamKey: 'local-api-server:reveal-upstream-key',
   localApiServerRefreshModels: 'local-api-server:refresh-models',
+  localApiServerTest: 'local-api-server:test',
   localApiServerApplyCodex: 'local-api-server:apply-codex',
   grokScan: 'grok:scan',
   grokImport: 'grok:import',

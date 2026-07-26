@@ -436,7 +436,8 @@ export interface LibraryImportResult {
   grokAccounts: GrokAccountSummary[]
 }
 
-export type ImportAccountProvider = 'codex' | 'grok'
+/** Agent Identity is API-service-only and is never an OAuth switch target. */
+export type ImportAccountProvider = 'codex' | 'grok' | 'agent_identity'
 export type ImportPreviewDisposition = 'new' | 'duplicate' | 'update' | 'conflict'
 export type ImportPreviewDecision = 'add' | 'replace' | 'skip'
 

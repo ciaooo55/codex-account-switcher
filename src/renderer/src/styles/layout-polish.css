@@ -1514,6 +1514,44 @@ table thead th {
   font-size: 11px;
 }
 
+.api-chat-test-result {
+  display: grid;
+  gap: 7px;
+  padding: 10px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-0);
+}
+
+.api-chat-test-result > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.api-chat-test-result strong { color: var(--color-text); font-size: 12px; }
+.api-chat-test-result span { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 10px; }
+.api-chat-test-result p { margin: 0; color: var(--color-text-secondary); font-size: 11px; line-height: 1.45; }
+.api-chat-test-result pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.api-chat-test-result.is-success { border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border)); }
+.api-chat-test-result.is-error { border-color: color-mix(in srgb, var(--color-danger) 42%, var(--color-border)); }
+.api-chat-test-result.is-error strong { color: var(--color-danger); }
+
 .api-codex-panel {
   display: grid;
   grid-template-columns: minmax(270px, 1.1fr) minmax(0, 1.45fr);

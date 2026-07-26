@@ -362,8 +362,8 @@ export function ImportPreviewDialog({
                     />
                   </td>
                   <td>
-                    <div className="preview-account-title">{item.provider === 'codex' ? <Code2 size={14} /> : <Zap size={14} />}<strong>{item.email ?? '邮箱未知'}</strong></div>
-                    <div className="muted">{item.planType ?? '未知等级'} · {item.canRefresh ? '可刷新' : '不可刷新'}</div>
+                    <div className="preview-account-title">{item.provider === 'grok' ? <Zap size={14} /> : <Code2 size={14} />}<strong>{item.email ?? '邮箱未知'}</strong></div>
+                    <div className="muted">{item.provider === 'agent_identity' ? 'Agent Identity · 仅本地 API 上游' : `${item.planType ?? '未知等级'} · ${item.canRefresh ? '可刷新' : '不可刷新'}`}</div>
                   </td>
                   <td><span className={`preview-disposition ${item.disposition}`}>{DISPOSITION_LABELS[item.disposition]}</span><div className="status-detail" title={item.detail}>{item.detail}</div></td>
                   <td>

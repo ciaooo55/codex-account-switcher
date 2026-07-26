@@ -289,7 +289,7 @@ export async function fetchOpenAiCompatibleModelIds(input: {
         signal: controller.signal
       })
       if (!response.ok) {
-        errors.push(`${url} → HTTP ${response.status}`)
+        errors.push(`${safeProbeUrl(url)} → HTTP ${response.status}`)
         // 404/405 = wrong path; 401/403/5xx still try other common suffixes
         continue
       }
@@ -300,7 +300,7 @@ export async function fetchOpenAiCompatibleModelIds(input: {
           ? (body as { data: unknown[] }).data
           : null
       if (!rows) {
-        errors.push(`${url} → 响应格式无效`)
+        errors.push(`${safeProbeUrl(url)} → 响应格式无效`)
         continue
       }
 
@@ -317,18 +317,18 @@ export async function fetchOpenAiCompatibleModelIds(input: {
         ids.push(id)
       }
       if (ids.length === 0) {
-        errors.push(`${url} → 模型列表为空`)
+        errors.push(`${safeProbeUrl(url)} → 模型列表为空`)
         continue
       }
       const baseUrl = url.replace(/\/models\/?$/, '')
       return { models: ids, baseUrl, modelsUrl: url, errors }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        errors.push(`${url} → 超时（${timeoutMs}ms）`)
+        errors.push(`${safeProbeUrl(url)} → 超时（${timeoutMs}ms）`)
         continue
       }
       if (error instanceof Error && error.message.startsWith('拉取模型列表失败')) throw error
-      errors.push(`${url} → ${error instanceof Error ? error.message : '请求失败'}`)
+      errors.push(`${safeProbeUrl(url)} → ${error instanceof Error ? error.message.replace(/([?&](?:api[_-]?key|key|token|secret|access_token)=[^&#\s]+)/gi, '$1'.replace(/=[^=]+$/, '=[REDACTED]')) : '请求失败'}`)
     } finally {
       clearTimeout(timer)
     }
@@ -341,6 +341,18 @@ export async function fetchOpenAiCompatibleModelIds(input: {
     baseUrl: fallbackBase,
     modelsUrl: candidates[0] || `${fallbackBase}/models`,
     errors
+  }
+}
+
+/** Never send query-auth values back through the UI/test result channel. */
+function safeProbeUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return value.replace(/([?&](?:api[_-]?key|key|token|secret|access_token)=[^&#\s]+)/gi, '$1'.replace(/=[^=]+$/, '=[REDACTED]'))
   }
 }
 
@@ -572,7 +584,7 @@ export async function probeApiUpstreamModel(input: {
   model: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
-} & UpstreamAuthenticationInput): Promise<{ output: string; probeUrl: string }> {
+} & UpstreamAuthenticationInput): Promise<{ output: string; probeUrl: string; protocol: ApiUpstreamProtocol }> {
   if (input.protocol === 'auto' || input.protocol === 'responses' || input.protocol === 'chat_completions') {
     const result = await probeCustomApiModel({
       baseUrl: input.baseUrl, apiKey: input.apiKey, model: input.model,
@@ -580,7 +592,17 @@ export async function probeApiUpstreamModel(input: {
       authHeaderPrefix: input.authHeaderPrefix, authQueryParam: input.authQueryParam,
       timeoutMs: input.timeoutMs, fetchImpl: input.fetchImpl, allowChatCompletions: true
     })
-    return { output: result.output, probeUrl: result.probeUrl }
+    const detectedProtocol: ApiUpstreamProtocol = result.endpoint === 'responses'
+      ? 'responses'
+      : result.endpoint === 'chat_completions' ? 'chat_completions' : 'completions'
+    return {
+      output: result.output,
+      probeUrl: safeProbeUrl(result.probeUrl),
+      // A manually selected protocol is an explicit user contract. Auto is
+      // different: persist the endpoint that actually completed the test so
+      // routing never claims Responses support for a chat-only gateway.
+      protocol: input.protocol === 'auto' ? detectedProtocol : input.protocol
+    }
   }
   const root = providerRootUrl(input.baseUrl)
   const timeoutMs = Math.min(60_000, Math.max(1_000, input.timeoutMs ?? 12_000))
@@ -615,7 +637,7 @@ export async function probeApiUpstreamModel(input: {
     body = { model: input.model, messages: [{ role: 'user', content: 'hi' }], stream: false }
   }
   const result = await postJson({ url, apiKey: '', timeoutMs, fetchImpl, body, headers })
-  if (!result.ok) throw new Error(`模型测试失败（${url} HTTP ${result.status}）：${errorMessageFromBody(result.body, result.text || '上游拒绝请求')}`)
+  if (!result.ok) throw new Error(`模型测试失败（${safeProbeUrl(url)} HTTP ${result.status}）：${errorMessageFromBody(result.body, result.text || '上游拒绝请求')}`)
   const output = input.protocol === 'completions'
     ? stringValue(optionalRecord(arrayAt(optionalRecord(result.body)?.choices, 0))?.text)
     : input.protocol === 'anthropic_messages'
@@ -625,8 +647,8 @@ export async function probeApiUpstreamModel(input: {
       : input.protocol === 'gemini_interactions'
         ? interactionsOutputText(result.body)
       : stringValue(optionalRecord(optionalRecord(result.body)?.message)?.content)
-  if (!output) throw new Error(`模型测试失败（${url}）：响应成功但没有可读的模型回复`)
-  return { output: output.slice(0, 500), probeUrl: url }
+  if (!output) throw new Error(`模型测试失败（${safeProbeUrl(url)}）：响应成功但没有可读的模型回复`)
+  return { output: output.slice(0, 500), probeUrl: safeProbeUrl(url), protocol: input.protocol }
 }
 
 function chatCompletionsOutputText(body: unknown): string {
@@ -786,7 +808,7 @@ export async function probeCustomApiModel(
         return {
           endpoint: target.endpoint,
           baseUrl: target.baseUrl,
-          probeUrl: target.url,
+          probeUrl: safeProbeUrl(target.url),
           output: output.slice(0, 500)
         }
       }
@@ -794,28 +816,28 @@ export async function probeCustomApiModel(
         const label = target.endpoint === 'responses'
           ? 'Responses'
           : target.endpoint === 'chat_completions' ? 'Chat Completions' : 'Legacy Completions'
-        softErrors.push(`${target.url} → ${label} 返回成功，但没有可读的模型回复`)
+        softErrors.push(`${safeProbeUrl(target.url)} → ${label} 返回成功，但没有可读的模型回复`)
         continue
       }
       if (result.status === 404 || result.status === 405) {
         softErrors.push(
-          `${target.url} → HTTP ${result.status}`
+          `${safeProbeUrl(target.url)} → HTTP ${result.status}`
         )
         continue
       }
       // Auth/rate-limit etc: keep trying other common suffixes once, but remember message
       const detail = errorMessageFromBody(result.body, result.text.trim() || '上游拒绝了请求')
-      softErrors.push(`${target.url} → HTTP ${result.status}：${detail}`)
+      softErrors.push(`${safeProbeUrl(target.url)} → HTTP ${result.status}：${detail}`)
       if (result.status === 401 || result.status === 403) {
         hardError = new Error(
-          `模型测试失败（${target.url} HTTP ${result.status}）：${detail}`
+          `模型测试失败（${safeProbeUrl(target.url)} HTTP ${result.status}）：${detail}`
         )
         // still try remaining targets — some proxies only protect one path
         continue
       }
     } catch (error) {
       softErrors.push(
-        `${target.url} → ${error instanceof Error ? error.message : '请求失败'}`
+        `${safeProbeUrl(target.url)} → ${error instanceof Error ? error.message.replace(/([?&](?:api[_-]?key|key|token|secret|access_token)=[^&#\s]+)/gi, '$1'.replace(/=[^=]+$/, '=[REDACTED]')) : '请求失败'}`
       )
     }
   }

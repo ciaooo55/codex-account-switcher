@@ -18,6 +18,7 @@ import type {
   ImportPreviewTestRequest,
   ImportPreviewTestSummary,
   ImportPreviewUnrecognized,
+  NormalizedAgentIdentityCredential,
   NormalizedCredential,
   TestResult,
   UsageSummary
@@ -32,10 +33,12 @@ const NO_GROK_CREDENTIAL = /^未在 .+ 中找到 Grok 凭据$/
 type PreparedCredential =
   | { provider: 'codex'; credential: NormalizedCredential }
   | { provider: 'grok'; credential: GrokCredential }
+  | { provider: 'agent_identity'; credential: NormalizedAgentIdentityCredential }
 
 type StoredPreviewTest =
   | { provider: 'codex'; result: TestResult }
   | { provider: 'grok'; result: GrokTestResult }
+  | { provider: 'agent_identity'; result: TestResult }
 
 interface ImportPreviewServiceOptions {
   concurrency: () => Promise<number>
@@ -125,6 +128,26 @@ function sameCodexMaterial(left: NormalizedCredential, right: NormalizedCredenti
     left.idToken === right.idToken &&
     left.accountId === right.accountId &&
     left.authKind === right.authKind
+}
+
+function sameAgentIdentity(
+  left: NormalizedAgentIdentityCredential,
+  right: NormalizedAgentIdentityCredential
+): boolean {
+  return left.id === right.id || (
+    left.agentIdentity.runtimeId === right.agentIdentity.runtimeId &&
+    left.accountId === right.accountId &&
+    left.subject === right.subject
+  )
+}
+
+function sameAgentMaterial(
+  left: NormalizedAgentIdentityCredential,
+  right: NormalizedAgentIdentityCredential
+): boolean {
+  return left.agentIdentity.privateKey === right.agentIdentity.privateKey &&
+    left.agentIdentity.taskId === right.agentIdentity.taskId &&
+    left.agentIdentity.runtimeId === right.agentIdentity.runtimeId
 }
 
 function sameGrokMaterial(left: GrokCredential, right: GrokCredential): boolean {
@@ -219,6 +242,38 @@ function codexItem(
   }
 }
 
+function agentIdentityItem(
+  credential: NormalizedAgentIdentityCredential,
+  existing: readonly NormalizedAgentIdentityCredential[],
+  index: number,
+  keyPrefix = 'agent_identity'
+): ImportPreviewItem {
+  const current = existing.find((item) => sameAgentIdentity(item, credential))
+  const state = disposition(
+    Boolean(current && sameAgentMaterial(current, credential)),
+    false,
+    Boolean(current)
+  )
+  return {
+    key: `${keyPrefix}:${credential.id}:${index}`,
+    provider: 'agent_identity',
+    credentialId: credential.id,
+    existingCredentialId: current?.id ?? null,
+    email: credential.email,
+    planType: credential.planType,
+    identity: credential.subject || credential.accountId || credential.id.slice(0, 12),
+    sourcePath: credential.sourcePath,
+    sourceFormat: credential.sourceFormat,
+    sourceDialect: credential.sourceDialect,
+    canRefresh: false,
+    switchable: false,
+    disposition: state.value,
+    detail: `${state.detail}；Agent Identity 仅用于本地 API 服务上游，不能切换官方 Codex 登录账号`,
+    suggestedDecision: state.decision,
+    test: null
+  }
+}
+
 function grokItem(
   credential: GrokCredential,
   existing: readonly GrokCredential[],
@@ -283,15 +338,24 @@ export class ImportPreviewService {
     private readonly options?: ImportPreviewServiceOptions
   ) {}
 
+  /** Kept tolerant for older in-memory test/adaptor implementations. */
+  private async listAgentIdentities(): Promise<NormalizedAgentIdentityCredential[]> {
+    const manager = this.codexManager as AccountManager & {
+      listAgentIdentities?: () => Promise<NormalizedAgentIdentityCredential[]>
+    }
+    return manager.listAgentIdentities ? manager.listAgentIdentities() : []
+  }
+
   async create(
     codex: CodexImportPreparation,
     grok: GrokImportPreparation,
     inputText?: string
   ): Promise<ImportPreviewResult> {
     this.prune()
-    const [existingCodex, existingGrok] = await Promise.all([
+    const [existingCodex, existingGrok, existingAgentIdentities] = await Promise.all([
       this.codexManager.listCredentials(),
-      this.grokManager.listCredentials()
+      this.grokManager.listCredentials(),
+      this.listAgentIdentities()
     ])
     const credentials = new Map<string, PreparedCredential>()
     const items: ImportPreviewItem[] = []
@@ -299,6 +363,11 @@ export class ImportPreviewService {
       const item = codexItem(credential, existingCodex, index)
       items.push(item)
       credentials.set(item.key, { provider: 'codex', credential })
+    })
+    ;(codex.agentIdentities ?? []).forEach((credential, index) => {
+      const item = agentIdentityItem(credential, existingAgentIdentities, index)
+      items.push(item)
+      credentials.set(item.key, { provider: 'agent_identity', credential })
     })
     grok.credentials.forEach((credential, index) => {
       const item = grokItem(credential, existingGrok, index)
@@ -308,6 +377,7 @@ export class ImportPreviewService {
     const recognized = codex.recognized + grok.recognized
     const recognizedSources = [
       ...codex.credentials.map((credential) => credential.sourcePath),
+      ...(codex.agentIdentities ?? []).map((credential) => credential.sourcePath),
       ...grok.credentials.map((credential) => credential.sourcePath)
     ]
     const unknownBySource = new Map<string, ImportPreviewUnrecognized>()
@@ -396,7 +466,9 @@ export class ImportPreviewService {
 
     const sourceIssues = prepared.unrecognized ?? []
     const credentials = prepared.credentials.map((credential) => rebaseSource(credential, source))
-    if (credentials.length === 0) {
+    const agentIdentities = ('agentIdentities' in prepared ? prepared.agentIdentities : [])
+      ?.map((credential) => rebaseSource(credential, source)) ?? []
+    if (credentials.length === 0 && agentIdentities.length === 0) {
       source.detail = sourceIssues[0]?.detail ?? prepared.errors.at(-1) ?? '所选识别方式没有找到可用凭据'
       session.errors = [...new Set([...session.errors, ...prepared.errors])]
       return publicSession(request.sessionId, session)
@@ -431,6 +503,19 @@ export class ImportPreviewService {
         session.credentials.set(item.key, { provider: 'codex', credential: credential as NormalizedCredential })
         existing = [...existing, credential as NormalizedCredential]
       })
+      let existingAgentIdentities = [
+        ...(await this.listAgentIdentities()),
+        ...[...session.credentials.values()]
+          .filter((stored): stored is { provider: 'agent_identity'; credential: NormalizedAgentIdentityCredential } => stored.provider === 'agent_identity')
+          .map((stored) => stored.credential)
+      ]
+      const agentKeyPrefix = `refined-agent-identity-${session.items.length}`
+      agentIdentities.forEach((credential, index) => {
+        const item = agentIdentityItem(credential, existingAgentIdentities, index, agentKeyPrefix)
+        session.items.push(item)
+        session.credentials.set(item.key, { provider: 'agent_identity', credential })
+        existingAgentIdentities = [...existingAgentIdentities, credential]
+      })
     }
     session.recognized += prepared.recognized
     if (sourceIssues.length > 0) {
@@ -461,9 +546,10 @@ export class ImportPreviewService {
     if (unknownKey) throw new Error('检测列表包含已失效的导入账号，请刷新预览后重试')
     if (requestedKeys.length === 0) throw new Error('请至少选择一个要检测的账号')
 
-    const [existingCodex, existingGrok, configuredConcurrency] = await Promise.all([
+    const [existingCodex, existingGrok, existingAgentIdentities, configuredConcurrency] = await Promise.all([
       this.codexManager.listCredentials(),
       this.grokManager.listCredentials(),
+      this.listAgentIdentities(),
       this.options.concurrency()
     ])
     const runningKeys = new Set<string>()
@@ -492,14 +578,32 @@ export class ImportPreviewService {
               : tested.credential
             nextStored = { provider: 'codex', credential }
             storedTest = { provider: 'codex', result: tested.result }
-          } else {
-            const tested = await this.options!.testGrok(stored.credential, options.signal)
+          } else if (stored.provider === 'grok') {
+            const grokStored = stored as { provider: 'grok'; credential: GrokCredential }
+            const tested = await this.options!.testGrok(grokStored.credential, options.signal)
             const planType = tested.result.usage?.planType?.trim()
             const credential = planType && tested.credential.planType !== planType
               ? { ...tested.credential, planType }
               : tested.credential
             nextStored = { provider: 'grok', credential }
             storedTest = { provider: 'grok', result: tested.result }
+          } else {
+            // A signer cannot be tested with a bearer-account quota endpoint.
+            // It is exercised safely after import through the local API test
+            // dialog, which can register a task and send a real request.
+            storedTest = {
+              provider: 'agent_identity',
+              result: {
+                accountId: stored.credential.id,
+                status: 'untested',
+                detail: 'Agent Identity 将在保存后通过本地 API 服务测试对话验证',
+                checkedAt: new Date().toISOString(),
+                httpStatus: null,
+                stage: 'local',
+                refreshed: false,
+                usage: null
+              }
+            }
           }
         } catch {
           if (options.signal?.aborted) {
@@ -521,10 +625,11 @@ export class ImportPreviewService {
                   usage: null
                 }
               }
-            : {
+            : stored.provider === 'grok'
+              ? {
                 provider: 'grok',
                 result: {
-                  accountId: stored.credential.id,
+                  accountId: (stored as { provider: 'grok'; credential: GrokCredential }).credential.id,
                   status: 'unknown_error',
                   detail: '检测任务异常终止',
                   checkedAt,
@@ -533,6 +638,19 @@ export class ImportPreviewService {
                   usage: null
                 }
               }
+              : {
+                  provider: 'agent_identity',
+                  result: {
+                    accountId: stored.credential.id,
+                    status: 'untested',
+                    detail: 'Agent Identity 尚未通过本地 API 服务测试',
+                    checkedAt,
+                    httpStatus: null,
+                    stage: 'local',
+                    refreshed: false,
+                    usage: null
+                  }
+                }
         }
 
         if (options.signal?.aborted) {
@@ -542,7 +660,9 @@ export class ImportPreviewService {
 
         const rebuilt = nextStored.provider === 'codex'
           ? codexItem(nextStored.credential, existingCodex, 0)
-          : grokItem(nextStored.credential, existingGrok, 0)
+          : nextStored.provider === 'grok'
+            ? grokItem((nextStored as { provider: 'grok'; credential: GrokCredential }).credential, existingGrok, 0)
+            : agentIdentityItem(nextStored.credential, existingAgentIdentities, 0)
         const updatedItem: ImportPreviewItem = {
           ...rebuilt,
           key,
@@ -580,6 +700,7 @@ export class ImportPreviewService {
       throw new Error(`仍有 ${session.unrecognized.length} 个来源无法识别，请返回选择识别方式，或明确勾选跳过`)
     }
     const codexCredentials: NormalizedCredential[] = []
+    const agentIdentities: NormalizedAgentIdentityCredential[] = []
     const grokCredentials: GrokCredential[] = []
     const codexTests: TestResult[] = []
     const grokTests: GrokTestResult[] = []
@@ -599,9 +720,11 @@ export class ImportPreviewService {
       if (stored.provider === 'codex') {
         codexCredentials.push(stored.credential)
         if (tested?.provider === 'codex') codexTests.push({ ...tested.result, accountId: targetId })
-      } else {
+      } else if (stored.provider === 'grok') {
         grokCredentials.push(stored.credential)
         if (tested?.provider === 'grok') grokTests.push({ ...tested.result, accountId: targetId })
+      } else {
+        agentIdentities.push(stored.credential)
       }
       if (item.disposition === 'new') added += 1
       else if (item.disposition === 'update' || item.disposition === 'conflict') updated += 1
@@ -609,11 +732,12 @@ export class ImportPreviewService {
     }
 
     const [codex, grok] = await Promise.all([
-      codexCredentials.length > 0
+      codexCredentials.length > 0 || agentIdentities.length > 0
         ? this.codexManager.importPrepared({
             credentials: codexCredentials,
+            agentIdentities,
             errors: [],
-            recognized: codexCredentials.length,
+            recognized: codexCredentials.length + agentIdentities.length,
             sourceCount: session.sourceCount,
             unrecognized: []
           })

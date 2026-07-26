@@ -56,6 +56,7 @@ import { SettingsStore } from './storage/settings'
 import { StatusStore } from './storage/status-store'
 import { DeletedCredentialStore } from './storage/deleted-credentials'
 import { CredentialVault } from './storage/vault'
+import { AgentIdentityVault } from './storage/agent-identity-vault'
 import { normalizeCustomApiBaseUrl } from '../shared/custom-api'
 import { CustomApiStore } from './storage/custom-api-store'
 import { ApiServerStore } from './storage/api-server-store'
@@ -96,12 +97,69 @@ function publicModelsForAccessKey(
   runtime: LocalApiServerRuntimeConfig,
   accessKey: LocalApiServerRuntimeConfig['accessKeys'][number]
 ): string[] {
+  const enabledApiIds = new Set(runtime.upstreams.filter((source) => source.enabled).map((source) => source.id))
+  const enabledCredentialIds = new Set(runtime.credentialSources.filter((source) => source.enabled).map((source) => source.id))
   return runtime.routes
-    .filter((route) => (
-      (accessKey.allowedModels.length === 0 || accessKey.allowedModels.includes(route.publicModel))
-      && (accessKey.allowedSourceIds.length === 0 || route.targets.some((target) => accessKey.allowedSourceIds.includes(target.sourceId)))
-    ))
+    .filter((route) => {
+      if (accessKey.allowedModels.length > 0 && !accessKey.allowedModels.includes(route.publicModel)) return false
+      return route.targets.some((target) => {
+        if (!target.enabled) return false
+        if (accessKey.allowedSourceIds.length > 0 && !accessKey.allowedSourceIds.includes(target.sourceId)) return false
+        if (route.sourceMode !== 'credential_only' && enabledApiIds.has(target.sourceId)) return true
+        return route.sourceMode !== 'api_only' && enabledCredentialIds.has(target.sourceId)
+      })
+    })
     .map((route) => route.publicModel)
+}
+
+/**
+ * The local WebSocket relay is deliberately limited to OpenAI Responses
+ * upstreams. Codex must not be told WebSockets are available when a selected
+ * public model only has chat/native/credential routes.
+ */
+function localApiSupportsWebsockets(
+  runtime: LocalApiServerRuntimeConfig,
+  publicModels: readonly string[]
+): boolean {
+  if (publicModels.length === 0) return false
+  const eligibleApiSources = new Map(runtime.upstreams
+    .filter((source) => source.enabled && (source.protocol === 'auto' || source.protocol === 'responses'))
+    .map((source) => [source.id, source]))
+  return publicModels.every((publicModel) => {
+    const route = runtime.routes.find((candidate) => candidate.publicModel === publicModel)
+    return Boolean(route && route.sourceMode !== 'credential_only' && route.targets.some((target) =>
+      target.enabled && eligibleApiSources.has(target.sourceId)
+    ))
+  })
+}
+
+function localApiTestOutput(payload: unknown): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return ''
+  const response = payload as Record<string, unknown>
+  if (typeof response.output_text === 'string') return response.output_text.trim()
+  if (!Array.isArray(response.output)) return ''
+  for (const output of response.output) {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) continue
+    const content = (output as Record<string, unknown>).content
+    if (!Array.isArray(content)) continue
+    for (const item of content) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const value = item as Record<string, unknown>
+      if (typeof value.text === 'string' && value.text.trim()) return value.text.trim()
+    }
+  }
+  return ''
+}
+
+function localApiTestError(payload: unknown, status: number): string {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const error = (payload as Record<string, unknown>).error
+    if (error && typeof error === 'object' && !Array.isArray(error)) {
+      const message = (error as Record<string, unknown>).message
+      if (typeof message === 'string' && message.trim()) return message.trim().slice(0, 1000)
+    }
+  }
+  return `本地 API 测试失败（HTTP ${status}）`
 }
 
 if (e2eMode && process.env.CODEX_SWITCHER_USER_DATA) {
@@ -308,6 +366,8 @@ async function main(): Promise<void> {
     })
   }
   const vault = new CredentialVault(join(userData, 'vault.json'), cipher)
+  // Signing credentials never enter the legacy bearer-token vault or IPC.
+  const agentIdentityVault = new AgentIdentityVault(join(userData, 'agent-identities.json'), cipher)
   const customApiStore = new CustomApiStore(join(userData, 'custom-api.json'), cipher)
   const apiServerStore = new ApiServerStore(join(userData, 'api-server.json'), cipher)
   const statusStore = new StatusStore(join(userData, 'status.json'))
@@ -434,6 +494,16 @@ async function main(): Promise<void> {
         backupRetention: settings.backupRetention,
         cipher
       }).restoreApiMode()
+    },
+    restoreBackup: async (backupPath: string) => {
+      const settings = await settingsStore.get()
+      return new CredentialSwitcher({
+        authPath: settings.authPath,
+        configPath: settings.configPath,
+        backupDir: join(userData, 'backups'),
+        backupRetention: settings.backupRetention,
+        cipher
+      }).restoreBackup(backupPath)
     },
     switchToCustomApi: async (input: {
       baseUrl: string
@@ -723,7 +793,7 @@ async function main(): Promise<void> {
         apiKey: accessKey.key,
         models,
         syncModelCatalog: true,
-        supportsWebsockets: true
+        supportsWebsockets: localApiSupportsWebsockets(runtime, models)
       })
       if (!switched.ok) throw new Error(switched.message)
       return true
@@ -769,7 +839,7 @@ async function main(): Promise<void> {
         apiKey: localAccessKey.key,
         models,
         projectionMode: 'local-api-server' as const,
-        supportsWebsockets: true
+        supportsWebsockets: localApiSupportsWebsockets(runtime, models)
       }
     }
     const apiKey = await customApiStore.getKey()
@@ -844,6 +914,7 @@ async function main(): Promise<void> {
   const manager = new AccountManager({
     settings: () => settingsStore.get(),
     vault,
+    agentIdentityVault,
     statusStore,
     tester,
     switcher,
@@ -938,6 +1009,8 @@ async function main(): Promise<void> {
 
   credentialUpstreamRegistry = new CredentialUpstreamRegistry({
     codex: () => manager.listCredentials(),
+    agentIdentity: () => agentIdentityVault.list(),
+    updateAgentIdentity: (credential) => agentIdentityVault.upsertMany([credential]),
     cpaCodex: async () => {
       const [credentials, accounts] = await Promise.all([
         cpaCodexManager.listCredentials(),
@@ -1864,6 +1937,8 @@ async function main(): Promise<void> {
           : `${result.message}；${restartResult.message}`,
         restartResult
       }
+    } catch (error) {
+      throw error
     } finally {
       switchOperationActive = false
     }
@@ -2098,7 +2173,7 @@ async function main(): Promise<void> {
     })).max(200),
     credentialSources: z.array(z.object({
       id: z.string().min(1).max(128),
-      provider: z.enum(['codex', 'cpa-codex', 'grok', 'cpa-grok']),
+      provider: z.enum(['codex', 'cpa-codex', 'grok', 'cpa-grok', 'agent-identity']),
       credentialId: z.string().min(1).max(128),
       label: z.string().min(1).max(128),
       models: z.array(z.string().max(128)).max(500),
@@ -2238,10 +2313,13 @@ async function main(): Promise<void> {
               catalogOk: true,
               probeOk: true,
               baseUrl: discovered.baseUrl,
-              protocol: discovered.protocol,
+              // An auto-discovered OpenAI gateway is promoted only after a
+              // real request identifies its actual endpoint. This makes the
+              // stored capability and the route fallback deterministic.
+              protocol: probe.protocol,
               models: discovered.models,
               latencyMs: Date.now() - startedAt,
-              message: `已获取 ${discovered.models.length} 个模型，并完成真实请求测试（${probe.probeUrl}）`
+              message: `已获取 ${discovered.models.length} 个模型，并完成 ${probe.protocol} 真实请求测试（${probe.probeUrl}）`
             }
           } catch (error) {
             results[index] = {
@@ -2275,12 +2353,84 @@ async function main(): Promise<void> {
       : (await localApiServerState()).config.credentialSources
     return { upstreams: results, credentialSources } satisfies LocalApiModelRefreshResult
   })
+  ipcMain.handle(ipcChannels.localApiServerTest, async (_event, input: unknown) => {
+    const payload = z.object({
+      accessKeyId: z.string().min(1).max(128),
+      model: z.string().min(1).max(128),
+      input: z.string().min(1).max(50_000)
+    }).parse(input)
+    const runtime = await apiServerStore.runtimeConfig()
+    const accessKey = runtime.accessKeys.find((entry) => entry.id === payload.accessKeyId && entry.enabled)
+    if (!accessKey) {
+      return { ok: false, status: 400, model: payload.model, outputText: '', message: '请选择已启用的本软件访问密钥', latencyMs: 0 }
+    }
+    if (!publicModelsForAccessKey(runtime, accessKey).includes(payload.model)) {
+      return { ok: false, status: 404, model: payload.model, outputText: '', message: '所选公开模型不存在或当前密钥无权访问', latencyMs: 0 }
+    }
+
+    await localApiServer.updateConfiguration(runtime)
+    await localApiServer.start()
+    const startedAt = Date.now()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), Math.min(runtime.requestTimeoutMs ?? 60_000, 60_000))
+    try {
+      const response = await fetch(`http://127.0.0.1:${runtime.port}/v1/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessKey.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: payload.model, input: payload.input }),
+        signal: controller.signal
+      })
+      const raw = await response.text()
+      let body: unknown = null
+      try { body = raw ? JSON.parse(raw) : null } catch { /* report a safe generic message below */ }
+      const latencyMs = Date.now() - startedAt
+      if (!response.ok) {
+        return {
+          ok: false,
+          status: response.status,
+          model: payload.model,
+          outputText: '',
+          message: localApiTestError(body, response.status),
+          latencyMs
+        }
+      }
+      const outputText = localApiTestOutput(body)
+      return {
+        ok: true,
+        status: response.status,
+        model: payload.model,
+        outputText,
+        message: outputText ? '本地 API 对话测试成功' : '本地 API 已成功响应，但上游未返回文本内容',
+        latencyMs
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        status: 502,
+        model: payload.model,
+        outputText: '',
+        message: error instanceof Error && error.name === 'AbortError'
+          ? '本地 API 对话测试超时'
+          : '无法连接本地 API 服务',
+        latencyMs: Date.now() - startedAt
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
+  })
   ipcMain.handle(ipcChannels.localApiServerSave, async (_event, input: unknown) => {
     const nextInput = normalizeLocalApiServerConfig(
       localApiConfigSchema.parse(input) as LocalApiServerConfigInput
     )
     const previousRuntime = await apiServerStore.runtimeConfig()
     const wasRunning = localApiServer.status().running
+    // The Codex switcher writes an encrypted exact backup before it changes
+    // auth/config/catalog. Keep its path so a later binding-store failure can
+    // restore the exact pre-switch state instead of leaving a split-brain.
+    let codexRollbackBackupPath: string | null = null
     let activeLocalProjection: ReturnType<typeof readActiveOwnedProviderConfig> = null
     try {
       const settings = await settingsStore.get()
@@ -2326,9 +2476,10 @@ async function main(): Promise<void> {
           apiKey: accessKey.key,
           models: allowedModels,
           syncModelCatalog: true,
-          supportsWebsockets: true
+          supportsWebsockets: localApiSupportsWebsockets(nextRuntime, allowedModels)
         })
         if (!switched.ok) throw new Error(switched.message)
+        codexRollbackBackupPath = switched.backupPath
         // Saving a live local projection must also establish the durable
         // binding. Without it a later service restart knows the listener but
         // not which key/model catalog Codex is supposed to receive.
@@ -2343,6 +2494,9 @@ async function main(): Promise<void> {
         await localApiServer.updateConfiguration(await apiServerStore.runtimeConfig())
       }
     } catch (error) {
+      if (codexRollbackBackupPath) {
+        await switcher.restoreBackup(codexRollbackBackupPath).catch(() => undefined)
+      }
       await apiServerStore.save(previousRuntime).catch(() => undefined)
       await localApiServer.updateConfiguration(previousRuntime).catch(() => undefined)
       if (!wasRunning) await localApiServer.stop().catch(() => undefined)
@@ -2396,6 +2550,7 @@ async function main(): Promise<void> {
     await localApiServer.updateConfiguration(runtime)
     await localApiServer.start()
     switchOperationActive = true
+    let codexRollbackBackupPath: string | null = null
     try {
       const operation: {
         result?: Awaited<ReturnType<typeof switcher.switchToCustomApi>>
@@ -2407,9 +2562,10 @@ async function main(): Promise<void> {
           apiKey: accessKey.key,
           models: allowedModels,
           syncModelCatalog: true,
-          supportsWebsockets: true
+          supportsWebsockets: localApiSupportsWebsockets(runtime, allowedModels)
         })
         if (!operation.result.ok) throw new Error(operation.result.message)
+        codexRollbackBackupPath = operation.result.backupPath
         // The user explicitly chose this app as Codex's provider. Remember the
         // binding so a second local account manager cannot silently replace
         // the top-level provider/model/catalog after the restart.
@@ -2436,6 +2592,9 @@ async function main(): Promise<void> {
         restartResult,
         message: `${switched.message}；${restartResult.message}`
       }
+    } catch (error) {
+      if (codexRollbackBackupPath) await switcher.restoreBackup(codexRollbackBackupPath).catch(() => undefined)
+      throw error
     } finally {
       switchOperationActive = false
     }

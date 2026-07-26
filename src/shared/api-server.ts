@@ -37,7 +37,16 @@ export type ApiUpstreamAuthMode =
   | 'none'
 export type ModelRouteStrategy = 'single' | 'priority' | 'round_robin'
 export type ModelRouteSourceMode = 'api_only' | 'credential_only' | 'mixed'
-export type CredentialSourceProvider = 'codex' | 'cpa-codex' | 'grok' | 'cpa-grok'
+/**
+ * `agent-identity` is a signing credential stored in its own encrypted vault;
+ * it is never coerced into a bearer-token Codex account.
+ */
+export type CredentialSourceProvider =
+  | 'codex'
+  | 'cpa-codex'
+  | 'grok'
+  | 'cpa-grok'
+  | 'agent-identity'
 
 export interface LocalApiAccessKeyInput {
   id: string
@@ -262,6 +271,16 @@ export interface LocalApiModelRefreshResult {
   credentialSources: CredentialSourceInput[]
 }
 
+/** A real, non-streaming message sent through the local API service itself. */
+export interface LocalApiChatTestResult {
+  ok: boolean
+  status: number
+  model: string
+  outputText: string
+  message: string
+  latencyMs: number
+}
+
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
 const MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/
 const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/
@@ -439,7 +458,7 @@ export function normalizeLocalApiServerConfig(
   const credentialSourceIds = new Set<string>()
   const credentialSources = (input.credentialSources ?? []).map((entry) => {
     const provider = entry.provider
-    if (!['codex', 'cpa-codex', 'grok', 'cpa-grok'].includes(provider)) {
+    if (!['codex', 'cpa-codex', 'grok', 'cpa-grok', 'agent-identity'].includes(provider)) {
       throw new Error('凭证来源类型无效')
     }
     const credentialId = entry.credentialId.trim()

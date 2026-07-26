@@ -69,6 +69,9 @@ type SupportedEndpoint =
   | '/v1/chat/completions'
   | '/v1/completions'
   | '/v1/embeddings'
+  | '/v1/audio/speech'
+  | '/v1/audio/transcriptions'
+  | '/v1/audio/translations'
   | '/v1/images/generations'
   | '/v1/images/edits'
   | '/v1/videos'
@@ -76,12 +79,26 @@ type SupportedEndpoint =
   | '/v1/videos/edits'
   | '/v1/videos/extensions'
 
+/** Endpoints whose request/response bodies are passed through without schema translation. */
+type RawPassthroughEndpoint =
+  | '/v1/audio/speech'
+  | '/v1/audio/transcriptions'
+  | '/v1/audio/translations'
+  | '/v1/images/edits'
+  | '/v1/videos'
+
 interface ApiRequestPlan {
   /** Endpoint to call on the selected upstream (not necessarily OpenAI). */
   endpoint: string
   query?: string
   requestBody: Record<string, unknown>
   responseDirection?: OpenAiProtocolTranslationDirection
+  /**
+   * A Chat fallback for `/responses/compact`.  A third-party Chat API cannot
+   * create OpenAI's opaque encrypted compaction token, but it can create a
+   * smaller Responses-item window that Codex can pass back as the next input.
+   */
+  compactResponse?: boolean
   /** Set for native protocol upstreams; response is normalized before relay. */
   responseProtocol?: UpstreamResponseProtocol
 }
@@ -209,11 +226,17 @@ export interface CredentialUpstreamResolution {
   headers: Record<string, string>
   /** Safe provider-specific body changes, for example forcing store=false. */
   bodyPatch?: Record<string, unknown>
+  /**
+   * A credential's private model_mapping may translate the public route model
+   * to the model that must be sent to the official upstream.
+   */
+  upstreamModel?: string
 }
 
 export interface CredentialUpstreamResolveRequest {
   source: CredentialSourceInput
   endpoint: '/v1/responses' | '/v1/responses/compact'
+  upstreamModel: string
 }
 
 export type CredentialUpstreamResolver = (
@@ -417,6 +440,29 @@ function rewriteMultipartTextField(
   return Buffer.from(`${source.slice(0, bounds.start)}${safeReplacement}${source.slice(bounds.end)}`, 'latin1')
 }
 
+/**
+ * Rewrites the public model name while preserving the original request format.
+ * Audio speech uses JSON and audio transcription/translation use multipart;
+ * keeping this operation byte-safe is important for binary media uploads.
+ */
+function rewriteRawModelField(
+  body: Buffer,
+  contentType: string,
+  replacement: string
+): Buffer {
+  if (/^multipart\/form-data\b/i.test(contentType)) {
+    return rewriteMultipartTextField(body, contentType, 'model', replacement)
+  }
+  if (!/^application\/json\b/i.test(contentType)) return body
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as Record<string, unknown>
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return body
+    return Buffer.from(JSON.stringify({ ...parsed, model: replacement }), 'utf8')
+  } catch {
+    return body
+  }
+}
+
 function parseUpstreamError(body: string, status: number): string {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }
@@ -441,7 +487,13 @@ function isRetryableStatus(status: number): boolean {
 
 function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: string): boolean {
   if (endpoint === '/v1/responses/compact') {
-    return upstream.protocol === 'auto' || upstream.protocol === 'responses'
+    // A compact request can be summarized through a Chat Completions upstream
+    // and returned as a compact Responses item window.  Do not advertise the
+    // endpoint for native protocols here: their stricter message schemas need
+    // dedicated compaction adapters rather than a lossy implicit conversion.
+    return upstream.protocol === 'auto'
+      || upstream.protocol === 'responses'
+      || upstream.protocol === 'chat_completions'
   }
   if (endpoint === '/v1/embeddings') {
     return upstream.protocol === 'auto'
@@ -450,6 +502,10 @@ function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: strin
       || upstream.protocol === 'completions'
   }
   if (
+    endpoint === '/v1/audio/speech'
+    || endpoint === '/v1/audio/transcriptions'
+    || endpoint === '/v1/audio/translations'
+    ||
     endpoint === '/v1/images/generations'
     || endpoint === '/v1/images/edits'
     || endpoint === '/v1/videos'
@@ -473,7 +529,17 @@ function translatedPlan(
   body: Record<string, unknown>,
   upstreamProtocol: Required<ApiUpstreamInput>['protocol']
 ): ApiRequestPlan {
-  if (endpoint === '/v1/responses/compact') return { endpoint, requestBody: body }
+  if (endpoint === '/v1/responses/compact') {
+    if (upstreamProtocol === 'chat_completions') {
+      return {
+        endpoint: '/v1/chat/completions',
+        requestBody: translateCompactRequestToChatCompletions(body),
+        responseDirection: 'chat_to_responses',
+        compactResponse: true
+      }
+    }
+    return { endpoint, requestBody: normalizeCompactRequest(body) }
+  }
   if (endpoint === '/v1/completions' && upstreamProtocol === 'chat_completions') {
     return { endpoint: '/v1/chat/completions', requestBody: body }
   }
@@ -501,6 +567,52 @@ function translatedPlan(
   return { endpoint, requestBody: body }
 }
 
+const COMPACT_SUMMARY_INSTRUCTIONS = [
+  'Compact the conversation into a concise state handoff for the next Codex turn.',
+  'Preserve the active task, user requirements, important file paths, commands already run,',
+  'tool results, decisions, blockers, and the latest state. Omit filler and repeated text.'
+].join(' ')
+
+/**
+ * The compact endpoint is non-streaming.  Codex versions which still send a
+ * `stream` flag must receive one complete window rather than a Chat SSE stream
+ * that cannot be represented as a compaction response.
+ */
+function normalizeCompactRequest(body: Record<string, unknown>): Record<string, unknown> {
+  const { stream: _stream, ...compactBody } = body
+  return compactBody
+}
+
+/**
+ * Builds the summarization prompt used when a selected upstream exposes only
+ * Chat Completions.  The resulting `output` is a normal Responses message
+ * window, deliberately not a fabricated `encrypted_content` token: a later
+ * Chat fallback can faithfully consume that message as its next input.
+ */
+function translateCompactRequestToChatCompletions(body: Record<string, unknown>): Record<string, unknown> {
+  const compactBody = normalizeCompactRequest(body)
+  const originalInstructions = typeof compactBody.instructions === 'string'
+    ? compactBody.instructions.trim()
+    : ''
+  const chat = translateResponsesRequestToChatCompletions({
+    ...compactBody,
+    instructions: originalInstructions
+      ? `${COMPACT_SUMMARY_INSTRUCTIONS}\n\nOriginal instructions:\n${originalInstructions}`
+      : COMPACT_SUMMARY_INSTRUCTIONS,
+    stream: false
+  })
+  // `service_tier` and Responses metadata are commonly rejected by
+  // Chat-Completions-only gateways. They have no effect on the local compact
+  // summary, so omit them rather than turning a valid fallback into a 422.
+  delete chat.service_tier
+  delete chat.metadata
+  chat.stream = false
+  if (chat.max_completion_tokens === undefined && chat.max_tokens === undefined) {
+    chat.max_completion_tokens = 4096
+  }
+  return chat
+}
+
 function apiRequestPlans(
   upstream: Required<ApiUpstreamInput>,
   endpoint: SupportedEndpoint,
@@ -509,12 +621,28 @@ function apiRequestPlans(
 ): ApiRequestPlan[] {
   if (endpoint === '/v1/embeddings') return [{ endpoint, requestBody: body }]
   if (
+    endpoint === '/v1/audio/speech'
+    || endpoint === '/v1/audio/transcriptions'
+    || endpoint === '/v1/audio/translations'
+    ||
     endpoint === '/v1/images/generations'
     || endpoint === '/v1/videos'
     || endpoint === '/v1/videos/generations'
     || endpoint === '/v1/videos/edits'
     || endpoint === '/v1/videos/extensions'
   ) return [{ endpoint, requestBody: body }]
+  if (endpoint === '/v1/responses/compact') {
+    if (upstream.protocol === 'auto') {
+      // Prefer a provider's native compaction endpoint.  If it advertises an
+      // OpenAI-compatible base but only implements Chat, a protocol-shaped
+      // 4xx below selects this non-streaming summarization fallback.
+      return [
+        translatedPlan(endpoint, body, 'responses'),
+        translatedPlan(endpoint, body, 'chat_completions')
+      ]
+    }
+    return [translatedPlan(endpoint, body, upstream.protocol)]
+  }
   const chatBody = endpoint === '/v1/chat/completions' || endpoint === '/v1/completions'
     ? body
     : translateResponsesRequestToChatCompletions(body)
@@ -554,7 +682,7 @@ function apiRequestPlans(
       responseProtocol: 'ollama'
     }]
   }
-  if (upstream.protocol !== 'auto' || endpoint === '/v1/responses/compact') {
+  if (upstream.protocol !== 'auto') {
     return [translatedPlan(endpoint, body, upstream.protocol)]
   }
   if (endpoint === '/v1/completions') {
@@ -724,6 +852,49 @@ async function relayTranslatedResponse(
   writeJson(response, upstream.status, translated)
 }
 
+/**
+ * A Chat fallback cannot mint the provider-owned encrypted compaction blob.
+ * It can, however, return an ordinary Responses message as the compacted
+ * window.  That item is valid next-request input and keeps future requests on
+ * this local router able to reconstruct the Chat transcript.
+ */
+function translateChatCompletionsResponseToCompact(
+  payload: unknown,
+  upstreamModel: string
+): Record<string, unknown> {
+  const translated = translateChatCompletionsResponseToResponses(payload)
+  const model = typeof translated.model === 'string' && translated.model.trim()
+    ? translated.model
+    : upstreamModel
+  const result: Record<string, unknown> = {
+    id: translated.id ?? 'response_compaction_translated',
+    object: 'response.compaction',
+    created_at: translated.created_at ?? Math.floor(Date.now() / 1000),
+    model,
+    output: Array.isArray(translated.output) ? translated.output : []
+  }
+  if (translated.usage !== undefined) result.usage = translated.usage
+  return result
+}
+
+async function relayCompactChatFallbackResponse(
+  upstream: Response,
+  response: ServerResponse,
+  upstreamModel: string
+): Promise<void> {
+  const contentType = upstream.headers.get('content-type')?.toLowerCase() ?? ''
+  if (contentType.includes('text/event-stream')) {
+    // No bytes have been sent to the local client at this point. Throwing here
+    // preserves the existing retry guarantee and avoids producing a standard
+    // Responses SSE stream on an endpoint that requires one compact JSON body.
+    throw new Error('压缩接口的 Chat 回退上游返回了流式响应')
+  }
+  writeJson(response, upstream.status, translateChatCompletionsResponseToCompact(
+    await upstream.json(),
+    upstreamModel
+  ))
+}
+
 function nativeResponseToChat(
   payload: unknown,
   protocol: UpstreamResponseProtocol
@@ -789,6 +960,11 @@ async function relayPlanResponse(
   const contentType = upstream.headers.get('content-type')?.toLowerCase() ?? ''
   const streaming = contentType.includes('text/event-stream')
     || (plan.responseProtocol === 'ollama' && contentType.includes('application/x-ndjson'))
+
+  if (clientProtocol === 'openai' && canonicalEndpoint === '/v1/responses/compact' && plan.compactResponse) {
+    await relayCompactChatFallbackResponse(upstream, response, upstreamModel)
+    return
+  }
 
   if (clientProtocol === 'openai' && canonicalEndpoint !== '/v1/completions' && !plan.responseProtocol) {
     if (plan.responseDirection) {
@@ -1013,6 +1189,33 @@ export class LocalApiServer {
     if (key.allowedModels.length > 0 && !key.allowedModels.includes(route.publicModel)) return false
     return key.allowedSourceIds.length === 0
       || route.targets.some((target) => key.allowedSourceIds.includes(target.sourceId))
+  }
+
+  /**
+   * A model is advertised only when this client key has at least one enabled
+   * source that can serve a normal Responses request. Do not call
+   * `routeCandidates` here: listing models must not advance round-robin state
+   * or mutate cooldown/affinity bookkeeping.
+   */
+  private publishedRouteForKey(
+    key: LocalApiServerRuntimeConfig['accessKeys'][number],
+    route: ModelRoute
+  ): boolean {
+    if (!this.keyCanUseRoute(key, route)) return false
+    const sourceScope = new Set(key.allowedSourceIds)
+    const upstreams = new Map(this.config.upstreams.map((source) => [source.id, source]))
+    const credentials = new Map(this.config.credentialSources.map((source) => [source.id, source]))
+    return route.targets.some((target) => {
+      if (!target.enabled || (sourceScope.size > 0 && !sourceScope.has(target.sourceId))) return false
+      const upstream = upstreams.get(target.sourceId)
+      if (upstream) {
+        return route.sourceMode !== 'credential_only'
+          && upstream.enabled
+          && endpointSupported(upstream, '/v1/responses')
+      }
+      const credential = credentials.get(target.sourceId)
+      return Boolean(credential && route.sourceMode !== 'api_only' && credential.enabled)
+    })
   }
 
   async start(): Promise<LocalApiServerStatus> {
@@ -1243,7 +1446,11 @@ export class LocalApiServer {
     for (const candidate of candidates) {
       try {
         const credentialResolution = candidate.kind === 'credential'
-          ? await this.resolveCredentialUpstream?.({ source: candidate.source, endpoint: '/v1/responses' })
+          ? await this.resolveCredentialUpstream?.({
+              source: candidate.source,
+              endpoint: '/v1/responses',
+              upstreamModel: candidate.target.upstreamModel
+            })
           : null
         if (candidate.kind === 'credential' && !credentialResolution) continue
         const rawUrl = candidate.kind === 'api'
@@ -1347,14 +1554,14 @@ export class LocalApiServer {
     const modelListPaths = new Set(['/v1/models', '/models', '/backend-api/codex/models'])
     if (method === 'GET' && modelListPaths.has(requestUrl.pathname)) {
       const models = this.config.routes
-        .filter((route) => this.keyCanUseRoute(key, route))
+        .filter((route) => this.publishedRouteForKey(key, route))
         .map((route) => ({ id: route.publicModel, object: 'model', created: 0, owned_by: 'local-api-server' }))
       writeJson(response, 200, { object: 'list', data: models })
       return
     }
 
     const availableModels = this.config.routes
-      .filter((route) => this.keyCanUseRoute(key, route))
+      .filter((route) => this.publishedRouteForKey(key, route))
       .map((route) => route.publicModel)
 
     if (method === 'GET' && requestUrl.pathname === '/v1beta/models') {
@@ -1470,6 +1677,12 @@ export class LocalApiServer {
             ? '/v1/completions'
             : requestUrl.pathname === '/v1/embeddings' || requestUrl.pathname === '/embeddings'
               ? '/v1/embeddings'
+              : requestUrl.pathname === '/v1/audio/speech' || requestUrl.pathname === '/audio/speech'
+                ? '/v1/audio/speech'
+                : requestUrl.pathname === '/v1/audio/transcriptions' || requestUrl.pathname === '/audio/transcriptions'
+                  ? '/v1/audio/transcriptions'
+                  : requestUrl.pathname === '/v1/audio/translations' || requestUrl.pathname === '/audio/translations'
+                    ? '/v1/audio/translations'
               : requestUrl.pathname === '/v1/images/generations' || requestUrl.pathname === '/images/generations'
                 ? '/v1/images/generations'
                 : requestUrl.pathname === '/v1/images/edits' || requestUrl.pathname === '/images/edits'
@@ -1495,26 +1708,45 @@ export class LocalApiServer {
 
     const contentTypeValue = request.headers['content-type']
     const contentType = (Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue) ?? ''
-    const rawMultipartEndpoint: '/v1/images/edits' | '/v1/videos' | null = directEndpoint === '/v1/images/edits'
+    const rawMultipartEndpoint: Extract<RawPassthroughEndpoint, '/v1/audio/transcriptions' | '/v1/audio/translations' | '/v1/images/edits' | '/v1/videos'> | null = (
+      directEndpoint === '/v1/images/edits'
+      || directEndpoint === '/v1/audio/transcriptions'
+      || directEndpoint === '/v1/audio/translations'
+    )
       ? directEndpoint
       : directEndpoint === '/v1/videos' && /^multipart\/form-data\b/i.test(contentType)
         ? directEndpoint
         : null
     if (rawMultipartEndpoint) {
       if (!/^multipart\/form-data\b/i.test(contentType)) {
-        writeOpenAiError(response, 415, 'images/edits 需要 multipart/form-data 请求体', 'unsupported_media_type')
+        const label = rawMultipartEndpoint.startsWith('/v1/audio/')
+          ? 'audio transcription/translation'
+          : rawMultipartEndpoint === '/v1/videos'
+            ? 'videos'
+            : 'images/edits'
+        writeOpenAiError(response, 415, `${label} 需要 multipart/form-data 请求体`, 'unsupported_media_type')
         return
       }
       let rawBody: Buffer
       try {
         rawBody = await readRequestBody(request)
       } catch (error) {
-        writeOpenAiError(response, (error as Error).message === 'request_too_large' ? 413 : 400, `${rawMultipartEndpoint === '/v1/videos' ? 'videos' : 'images/edits'} 请求体无效或过大`, 'invalid_request_error')
+        const label = rawMultipartEndpoint.startsWith('/v1/audio/')
+          ? 'audio transcription/translation'
+          : rawMultipartEndpoint === '/v1/videos'
+            ? 'videos'
+            : 'images/edits'
+        writeOpenAiError(response, (error as Error).message === 'request_too_large' ? 413 : 400, `${label} 请求体无效或过大`, 'invalid_request_error')
         return
       }
       const publicModel = multipartTextField(rawBody, contentType, 'model') ?? ''
       if (!publicModel) {
-        writeOpenAiError(response, 400, `${rawMultipartEndpoint === '/v1/videos' ? 'videos' : 'images/edits'} 必须提供 model 字段`, 'missing_model')
+        const label = rawMultipartEndpoint.startsWith('/v1/audio/')
+          ? 'audio transcription/translation'
+          : rawMultipartEndpoint === '/v1/videos'
+            ? 'videos'
+            : 'images/edits'
+        writeOpenAiError(response, 400, `${label} 必须提供 model 字段`, 'missing_model')
         return
       }
       this.setRequestTelemetry(response, { model: publicModel })
@@ -1529,7 +1761,12 @@ export class LocalApiServer {
       }
       const candidates = this.routeCandidates(route, rawMultipartEndpoint, key.allowedSourceIds)
       if (candidates.length === 0) {
-        writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的 ${rawMultipartEndpoint === '/v1/videos' ? 'Videos' : 'Images'} 上游`, 'no_available_upstream')
+        const service = rawMultipartEndpoint.startsWith('/v1/audio/')
+          ? 'Audio'
+          : rawMultipartEndpoint === '/v1/videos'
+            ? 'Videos'
+            : 'Images'
+        writeOpenAiError(response, 503, `模型“${publicModel}”没有可用的 ${service} 上游`, 'no_available_upstream')
         return
       }
       await this.forwardRawWithFailover(request, response, rawMultipartEndpoint, rawBody, contentType, candidates, publicModel)
@@ -1611,6 +1848,19 @@ export class LocalApiServer {
       return
     }
 
+    if (endpoint === '/v1/audio/speech') {
+      await this.forwardRawWithFailover(
+        request,
+        response,
+        endpoint,
+        rawBody,
+        contentType,
+        candidates,
+        publicModel
+      )
+      return
+    }
+
     await this.forwardWithFailover(
       request,
       response,
@@ -1665,6 +1915,9 @@ export class LocalApiServer {
       // OpenAI-compatible Images / Videos endpoints.
       if (
         endpoint === '/v1/embeddings'
+        || endpoint === '/v1/audio/speech'
+        || endpoint === '/v1/audio/transcriptions'
+        || endpoint === '/v1/audio/translations'
         || endpoint === '/v1/images/generations'
         || endpoint === '/v1/images/edits'
         || endpoint === '/v1/videos'
@@ -1840,7 +2093,8 @@ export class LocalApiServer {
         const credentialResolution = candidate.kind === 'credential'
           ? await this.resolveCredentialUpstream?.({
               source: candidate.source,
-              endpoint: endpoint === '/v1/responses/compact' ? '/v1/responses/compact' : '/v1/responses'
+              endpoint: endpoint === '/v1/responses/compact' ? '/v1/responses/compact' : '/v1/responses',
+              upstreamModel: candidate.target.upstreamModel
             })
           : undefined
         if (candidate.kind === 'credential' && !credentialResolution) {
@@ -1867,6 +2121,9 @@ export class LocalApiServer {
                 requestBody: { ...body, ...(credentialResolution!.bodyPatch ?? {}) }
               }]
 
+        const effectiveUpstreamModel = candidate.kind === 'credential'
+          ? credentialResolution!.upstreamModel ?? candidate.target.upstreamModel
+          : candidate.target.upstreamModel
         for (const [planIndex, plan] of plans.entries()) {
           this.setRequestTelemetry(outgoing, {
             sourceId: candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id,
@@ -1876,7 +2133,7 @@ export class LocalApiServer {
             ...plan.requestBody,
             ...(candidate.kind === 'api' && (candidate.upstream.protocol === 'gemini' || candidate.upstream.protocol === 'gemini_interactions')
               ? {}
-              : { model: candidate.target.upstreamModel })
+              : { model: effectiveUpstreamModel })
           }))
           const rawUpstreamUrl = candidate.kind === 'api'
             ? buildProviderUpstreamUrl(candidate.upstream, plan.endpoint, plan.query)
@@ -1994,7 +2251,7 @@ export class LocalApiServer {
   private async forwardRawWithFailover(
     incoming: IncomingMessage,
     outgoing: ServerResponse,
-    endpoint: '/v1/images/edits' | '/v1/videos',
+    endpoint: RawPassthroughEndpoint,
     rawBody: Buffer,
     contentType: string,
     candidates: RouteCandidate[],
@@ -2014,10 +2271,9 @@ export class LocalApiServer {
         this.setRequestTelemetry(outgoing, { sourceId: candidate.upstream.id, sourceKind: 'api' })
         const rawUpstreamUrl = buildProviderUpstreamUrl(candidate.upstream, endpoint)
         const upstreamUrl = applyApiUpstreamAuthQuery(rawUpstreamUrl, candidate.upstream)
-        const upstreamBody = rewriteMultipartTextField(
+        const upstreamBody = rewriteRawModelField(
           rawBody,
           contentType,
-          'model',
           candidate.target.upstreamModel
         )
         const upstream = await this.fetchImpl(upstreamUrl, {

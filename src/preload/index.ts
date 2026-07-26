@@ -65,6 +65,7 @@ const api: CodexSwitcherApi = {
   revealLocalApiAccessKey: (id) => ipcRenderer.invoke(ipcChannels.localApiServerRevealKey, id),
   revealLocalApiUpstreamKey: (id) => ipcRenderer.invoke(ipcChannels.localApiServerRevealUpstreamKey, id),
   refreshLocalApiServerModels: (input) => ipcRenderer.invoke(ipcChannels.localApiServerRefreshModels, input),
+  testLocalApiServer: (input) => ipcRenderer.invoke(ipcChannels.localApiServerTest, input),
   applyLocalApiServerToCodex: (input) => ipcRenderer.invoke(ipcChannels.localApiServerApplyCodex, input),
   scanGrokDirectory: () => ipcRenderer.invoke(ipcChannels.grokScan),
   importGrokFiles: () => ipcRenderer.invoke(ipcChannels.grokImport),

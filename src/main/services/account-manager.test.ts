@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +11,7 @@ import type {
   TestResult
 } from '../../shared/types'
 import { CredentialVault } from '../storage/vault'
+import { AgentIdentityVault } from '../storage/agent-identity-vault'
 import { StatusStore } from '../storage/status-store'
 import { DeletedCredentialStore } from '../storage/deleted-credentials'
 import { AccountManager } from './account-manager'
@@ -73,6 +75,42 @@ function successfulResult(accountId: string): TestResult {
 }
 
 describe('AccountManager', () => {
+  it('imports Agent Identity into the encrypted API-only vault without creating a bearer account', async () => {
+    const fixture = await setup()
+    const agentIdentityVault = new AgentIdentityVault(join(fixture.root, 'app', 'agent-identities.json'), cipher)
+    const manager = new AccountManager({
+      settings: () => fixture.settings,
+      vault: fixture.vault,
+      agentIdentityVault,
+      statusStore: fixture.statusStore,
+      tester: { test: vi.fn() },
+      switcher: { switchTo: vi.fn(), restoreLatest: vi.fn(), restoreApiMode: vi.fn() }
+    })
+    const { privateKey } = generateKeyPairSync('ed25519')
+    const privateKeyText = privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64')
+    const result = await manager.importPasted(JSON.stringify({
+      type: 'agent_identity',
+      credentials: {
+        agent_runtime_id: 'runtime-imported',
+        agent_private_key: privateKeyText,
+        task_id: 'task-imported',
+        chatgpt_account_id: 'workspace-imported',
+        chatgpt_user_id: 'user-imported',
+        email: 'agent@example.invalid',
+        model_mapping: { local: 'gpt-real' }
+      }
+    }))
+
+    expect(result).toMatchObject({ imported: 1, recognized: 1 })
+    expect(await fixture.vault.list()).toEqual([])
+    expect(await manager.listAccounts()).toEqual([])
+    expect(await manager.listAgentIdentities()).toMatchObject([{
+      email: 'agent@example.invalid',
+      agentIdentity: { runtimeId: 'runtime-imported', taskId: 'task-imported' }
+    }])
+    expect(await readFile(join(fixture.root, 'app', 'agent-identities.json'), 'utf8')).not.toContain(privateKeyText)
+  })
+
   it('adds new CPA credentials without overwriting an existing aa account', async () => {
     const fixture = await setup()
     const managedDirectory = join(fixture.root, 'aa', 'codex')

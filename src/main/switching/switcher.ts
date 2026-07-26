@@ -441,6 +441,20 @@ export class CredentialSwitcher {
     }
   }
 
+  /** Restore one exact encrypted backup; used to roll back a later local-binding write. */
+  async restoreBackup(backupPath: string): Promise<SwitchResult> {
+    try {
+      const payload = await this.readBackup(backupPath)
+      return this.restorePayload(backupPath, payload, '已回滚 Codex 配置')
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? `回滚 Codex 配置失败：${error.message}` : '回滚 Codex 配置失败',
+        backupPath
+      }
+    }
+  }
+
   async restoreLatest(): Promise<SwitchResult> {
     try {
       const backupPath = await this.latestBackupPath()

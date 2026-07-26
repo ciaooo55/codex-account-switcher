@@ -157,10 +157,9 @@ describe('LocalApiServer', () => {
     const models = await fetch(`http://127.0.0.1:${port}/v1/models`, {
       headers: { 'x-api-key': 'sk-limited' }
     })
-    await expect(models.json()).resolves.toEqual({
-      object: 'list',
-      data: [{ id: 'xxx', object: 'model', created: 0, owned_by: 'local-api-server' }]
-    })
+    // A route without any enabled backing source is deliberately not
+    // advertised: clients should never be offered a model that must fail.
+    await expect(models.json()).resolves.toEqual({ object: 'list', data: [] })
 
     const health = await fetch(`http://127.0.0.1:${port}/health`)
     await expect(health.json()).resolves.toMatchObject({ status: 'ok', running: true, port })
@@ -296,7 +295,9 @@ describe('LocalApiServer', () => {
 
   it('exposes the same configured public models through OpenAI, Gemini and Ollama catalogs', async () => {
     const port = await reservePort()
-    const service = new LocalApiServer(config(port, []))
+    // Listing is source-aware, so provide one enabled route source without
+    // requiring a live upstream request for this catalog-only assertion.
+    const service = new LocalApiServer(config(port, [upstream('catalog', 'http://127.0.0.1:9/v1')]))
     cleanup.push(() => service.stop())
     await service.start()
     const headers = { authorization: 'Bearer sk-limited' }
@@ -482,6 +483,81 @@ describe('LocalApiServer', () => {
       body: { model: 'real-1', prompt: 'a local API service dashboard', size: '1024x1024' }
     }))
   })
+
+  it('relays OpenAI audio speech as binary through the selected third-party model route', async () => {
+    let seen: { path: string; authorization: string | undefined; body: Record<string, unknown> } | null = null
+    const audioBytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0xff, 0x00, 0x91])
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      seen = {
+        path: request.url ?? '',
+        authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      }
+      response.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': audioBytes.length })
+      response.end(audioBytes)
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('audio-speech', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const result = await fetch(`http://127.0.0.1:${port}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'hello', voice: 'alloy', response_format: 'mp3' })
+    })
+
+    expect(result.status).toBe(200)
+    expect(result.headers.get('content-type')).toContain('audio/mpeg')
+    expect(Buffer.from(await result.arrayBuffer())).toEqual(audioBytes)
+    expect(seen).toEqual(expect.objectContaining({
+      path: '/v1/audio/speech',
+      authorization: 'Bearer sk-audio-speech',
+      body: { model: 'real-1', input: 'hello', voice: 'alloy', response_format: 'mp3' }
+    }))
+  })
+
+  it.each(['/v1/audio/transcriptions', '/v1/audio/translations'] as const)(
+    'relays multipart %s without corrupting audio bytes',
+    async (endpoint) => {
+      let seen: { path: string; authorization: string | undefined; body: Buffer } | null = null
+      const mock = await mockUpstream(async (request, response) => {
+        const chunks: Buffer[] = []
+        for await (const chunk of request) chunks.push(Buffer.from(chunk))
+        seen = { path: request.url ?? '', authorization: request.headers.authorization, body: Buffer.concat(chunks) }
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ text: 'transcribed locally' }))
+      })
+      const port = await reservePort()
+      const service = new LocalApiServer(config(port, [upstream('audio-upload', mock.baseUrl, 'auto')]))
+      cleanup.push(() => service.stop())
+      await service.start()
+
+      const boundary = '----codex-switcher-audio-boundary'
+      const audioBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0xff, 0x11])
+      const body = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nxxx\r\n`, 'utf8'),
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="voice.wav"\r\nContent-Type: audio/wav\r\n\r\n`, 'utf8'),
+        audioBytes,
+        Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
+      ])
+      const result = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer sk-local', 'content-type': `multipart/form-data; boundary=${boundary}` },
+        body: new Uint8Array(body)
+      })
+
+      expect(result.status).toBe(200)
+      await expect(result.json()).resolves.toEqual({ text: 'transcribed locally' })
+      expect(seen).toEqual(expect.objectContaining({ path: endpoint, authorization: 'Bearer sk-audio-upload' }))
+      const uploaded = seen as unknown as { body: Buffer }
+      expect(uploaded.body.includes(Buffer.from('\r\nreal-1\r\n'))).toBe(true)
+      expect(uploaded.body.includes(audioBytes)).toBe(true)
+      expect(uploaded.body.includes(Buffer.from('sk-local'))).toBe(false)
+    }
+  )
 
   it.each([
     '/v1/videos',
@@ -954,6 +1030,150 @@ describe('LocalApiServer', () => {
     })
   })
 
+  it('compacts through a Chat-Completions-only upstream into a reusable Responses window', async () => {
+    const observed: Array<{ path: string; body: Record<string, unknown> }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      observed.push({
+        path: request.url ?? '',
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'chatcmpl-compact', object: 'chat.completion', created: 7, model: 'real-1',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'Task: retain the parser decisions and continue the implementation.' },
+          finish_reason: 'stop'
+        }],
+        usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 }
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'chat_completions')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+    const headers = { authorization: 'Bearer sk-local', 'content-type': 'application/json' }
+
+    const compact = await fetch(`http://127.0.0.1:${port}/v1/responses/compact`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: 'xxx',
+        instructions: 'Keep the user-facing behavior stable.',
+        input: [
+          { role: 'user', content: 'Implement compact support.' },
+          { role: 'assistant', content: [{ type: 'output_text', text: 'I inspected the gateway.' }] }
+        ],
+        // Older Codex builds have sent this flag. Compact remains JSON-only.
+        stream: true,
+        service_tier: 'priority',
+        metadata: { conversation_id: 'private-local-test' }
+      })
+    })
+
+    expect(compact.status).toBe(200)
+    expect(compact.headers.get('content-type')).toContain('application/json')
+    const compactPayload = await compact.json() as Record<string, unknown>
+    expect(compactPayload).toMatchObject({
+      id: 'chatcmpl-compact',
+      object: 'response.compaction',
+      created_at: 7,
+      model: 'real-1',
+      output: [{
+        type: 'message', role: 'assistant',
+        content: [{ type: 'output_text', text: 'Task: retain the parser decisions and continue the implementation.' }]
+      }],
+      usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 }
+    })
+    expect(observed).toHaveLength(1)
+    expect(observed[0]).toMatchObject({ path: '/v1/chat/completions' })
+    expect(observed[0].body).toMatchObject({
+      model: 'real-1', stream: false, max_completion_tokens: 4096,
+      messages: [
+        { role: 'developer', content: expect.stringContaining('Compact the conversation') },
+        { role: 'user', content: 'Implement compact support.' },
+        { role: 'assistant', content: 'I inspected the gateway.' }
+      ]
+    })
+    expect(observed[0].body).not.toHaveProperty('service_tier')
+    expect(observed[0].body).not.toHaveProperty('metadata')
+
+    // The fallback emits ordinary Responses items instead of a fake encrypted
+    // token, so the returned window can be appended to the next local request.
+    const resumed = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: 'xxx',
+        input: [
+          ...(compactPayload.output as unknown[]),
+          { role: 'user', content: 'Continue from that summary.' }
+        ]
+      })
+    })
+    expect(resumed.status).toBe(200)
+    await resumed.json()
+    expect(observed[1]).toMatchObject({
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          { role: 'assistant', content: 'Task: retain the parser decisions and continue the implementation.' },
+          { role: 'user', content: 'Continue from that summary.' }
+        ]
+      }
+    })
+  })
+
+  it('uses the Chat compact fallback for auto upstreams only after the native compact path rejects it', async () => {
+    const observed: Array<{ path: string; body: Record<string, unknown> }> = []
+    const mock = await mockUpstream(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      observed.push({ path: request.url ?? '', body })
+      if (request.url === '/v1/responses/compact') {
+        response.writeHead(422, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ error: { message: 'compact is not implemented' } }))
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        id: 'chatcmpl-auto-compact', object: 'chat.completion', created: 9, model: 'real-1',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'A concise handoff.' }, finish_reason: 'stop' }]
+      }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('first', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const compact = await fetch(`http://127.0.0.1:${port}/v1/responses/compact`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', input: 'make this compact', stream: true })
+    })
+
+    expect(compact.status).toBe(200)
+    await expect(compact.json()).resolves.toMatchObject({
+      id: 'chatcmpl-auto-compact', object: 'response.compaction',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'A concise handoff.' }] }]
+    })
+    expect(observed.map((entry) => entry.path)).toEqual([
+      '/v1/responses/compact',
+      '/v1/chat/completions'
+    ])
+    expect(observed[0].body).not.toHaveProperty('stream')
+    expect(observed[1].body).toMatchObject({
+      model: 'real-1', stream: false,
+      messages: [
+        { role: 'developer', content: expect.stringContaining('Compact the conversation') },
+        { role: 'user', content: 'make this compact' }
+      ]
+    })
+  })
+
   it('translates streaming Chat Completions events into Responses SSE', async () => {
     const mock = await mockUpstream((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -1182,10 +1402,12 @@ describe('LocalApiServer', () => {
         headers: { 'content-type': 'application/json' }
       })
     }
-    const service = new LocalApiServer(runtime, request, async ({ source }) => ({
+    const service = new LocalApiServer(runtime, request, async ({ source, upstreamModel }) => ({
       url: `https://credentials.invalid/${source.credentialId}`,
       headers: { authorization: `Bearer live-${source.credentialId}`, 'content-type': 'application/json' },
-      bodyPatch: { store: false }
+      bodyPatch: { store: false },
+      // Mirrors a credential secretExtensions.model_mapping alias -> actual model.
+      upstreamModel: upstreamModel === 'real-1' ? 'mapped-real-1' : upstreamModel
     }))
     cleanup.push(() => service.stop())
     await service.start()
@@ -1201,7 +1423,7 @@ describe('LocalApiServer', () => {
       {
         url: 'https://credentials.invalid/first',
         authorization: 'Bearer live-first',
-        body: { model: 'real-1', input: 'hello', store: false }
+        body: { model: 'mapped-real-1', input: 'hello', store: false }
       },
       {
         url: 'https://credentials.invalid/second',

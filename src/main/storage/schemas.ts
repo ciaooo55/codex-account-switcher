@@ -41,6 +41,34 @@ export const normalizedCredentialSchema = z.object({
   secretExtensions: secretExtensionsSchema.optional()
 })
 
+/**
+ * Agent Identity credentials deliberately use a separate schema from bearer
+ * credentials.  In particular, accepting an `accessToken` here would make it
+ * too easy for a caller to accidentally route the identity through one of the
+ * OAuth-only account flows.
+ */
+export const normalizedAgentIdentityCredentialSchema = z.object({
+  credentialKind: z.literal('agent_identity'),
+  id: z.string().min(1),
+  email: nullableString,
+  accountId: z.string().min(1),
+  subject: z.string().min(1),
+  authKind: z.literal('agent_identity'),
+  agentIdentity: z.object({
+    runtimeId: z.string().min(1),
+    privateKey: z.string().min(1),
+    taskId: nullableString,
+    accountId: z.string().min(1),
+    userId: z.string().min(1)
+  }),
+  planType: nullableString,
+  expiresAt: nullableString,
+  sourcePath: z.string().min(1),
+  sourceFormat: z.enum(['json', 'jsonl', 'txt', 'js', 'md', 'zip', 'paste']),
+  sourceDialect: z.enum(['codex', 'cpa', 'sub2api', 'cockpit', 'generic']),
+  secretExtensions: secretExtensionsSchema
+})
+
 const usageWindowSchema = z.object({
   id: z.string(),
   label: z.string(),

@@ -10,6 +10,7 @@ import type {
   CredentialSourceFormat,
   DeleteAccountsResult,
   ImportSourceIssue,
+  NormalizedAgentIdentityCredential,
   NormalizedCredential,
   OAuthAuthorizationSession,
   RefreshTokenClientMode,
@@ -36,6 +37,11 @@ interface SwitcherLike {
 interface AccountManagerOptions {
   settings: () => AppSettings | Promise<AppSettings>
   vault: CredentialVault
+  /** Agent signing keys are stored outside the bearer-token vault. */
+  agentIdentityVault?: {
+    list(): Promise<NormalizedAgentIdentityCredential[]>
+    upsertMany(credentials: readonly NormalizedAgentIdentityCredential[]): Promise<void>
+  }
   statusStore: StatusStore
   tester: TesterLike
   switcher: SwitcherLike
@@ -71,6 +77,7 @@ interface ImportFilesOptions {
 
 export interface CodexImportPreparation {
   credentials: NormalizedCredential[]
+  agentIdentities?: NormalizedAgentIdentityCredential[]
   errors: string[]
   recognized: number
   sourceCount: number
@@ -147,6 +154,14 @@ function sameCredentialMaterial(
     left.idToken === right.idToken &&
     left.accountId === right.accountId &&
     left.authKind === right.authKind
+}
+
+function dedupeAgentIdentities(
+  identities: readonly NormalizedAgentIdentityCredential[]
+): NormalizedAgentIdentityCredential[] {
+  const values = new Map<string, NormalizedAgentIdentityCredential>()
+  for (const identity of identities) values.set(identity.id, identity)
+  return [...values.values()]
 }
 
 function formatForPath(path: string): CredentialSourceFormat | undefined {
@@ -259,6 +274,7 @@ export class AccountManager {
 
   async prepareFiles(paths: string[]): Promise<CodexImportPreparation> {
     const credentials: NormalizedCredential[] = []
+    const agentIdentities: NormalizedAgentIdentityCredential[] = []
     const errors: string[] = []
     const unrecognized: ImportSourceIssue[] = []
     for (const path of paths) {
@@ -267,8 +283,9 @@ export class AccountManager {
       try {
         const parsed = await this.parseCredentialFile(path, format)
         credentials.push(...parsed.credentials)
+        agentIdentities.push(...(parsed.agentIdentities ?? []))
         errors.push(...parsed.errors)
-        if (parsed.unrecognized || parsed.credentials.length === 0) {
+        if (parsed.unrecognized || (parsed.credentials.length === 0 && (parsed.agentIdentities?.length ?? 0) === 0)) {
           unrecognized.push({
             sourcePath: path,
             sourceFormat: format,
@@ -282,10 +299,12 @@ export class AccountManager {
       }
     }
     const deduped = dedupeCredentials(credentials)
+    const dedupedAgentIdentities = dedupeAgentIdentities(agentIdentities)
     return {
       credentials: deduped,
+      agentIdentities: dedupedAgentIdentities,
       errors,
-      recognized: deduped.length,
+      recognized: deduped.length + dedupedAgentIdentities.length,
       sourceCount: paths.length,
       unrecognized
     }
@@ -295,6 +314,9 @@ export class AccountManager {
     prepared: CodexImportPreparation,
     options: ImportFilesOptions = {}
   ): Promise<ScanResult> {
+    const agentIdentities = dedupeAgentIdentities(prepared.agentIdentities ?? [])
+    const existingAgentIds = new Set((await this.options.agentIdentityVault?.list() ?? []).map((identity) => identity.id))
+    const freshAgentIdentities = agentIdentities.filter((identity) => !existingAgentIds.has(identity.id))
     let deduped = prepared.credentials
     if (this.options.deletedStore) {
       if (options.restoreDeleted === false) {
@@ -323,6 +345,7 @@ export class AccountManager {
       .map((credential) => credential.id)
     const stored = await this.persistManagedLibrary(merged, existing)
     await this.options.vault.replace(stored)
+    if (agentIdentities.length > 0) await this.options.agentIdentityVault?.upsertMany(agentIdentities)
     const affectedFinalIds = merged
       .filter((credential) => deduped.some((incoming) => sameCredentialIdentity(credential, incoming)))
       .map((credential) => credential.id)
@@ -339,8 +362,8 @@ export class AccountManager {
     }
     await this.options.onCredentialsChanged?.()
     return {
-      imported,
-      skipped,
+      imported: imported + freshAgentIdentities.length,
+      skipped: skipped + agentIdentities.length - freshAgentIdentities.length,
       recognized: prepared.recognized,
       errors: prepared.errors,
       accounts: await this.listAccounts()
@@ -352,7 +375,8 @@ export class AccountManager {
     return this.importResolvedCredentials(
       prepared.credentials,
       prepared.errors,
-      prepared.recognized
+      prepared.recognized,
+      prepared.agentIdentities
     )
   }
 
@@ -364,7 +388,7 @@ export class AccountManager {
       sourcePath: 'pasted-credential.json',
       format: 'paste'
     })
-    let recognized = parsed.credentials.length
+    let recognized = parsed.credentials.length + (parsed.agentIdentities?.length ?? 0)
     let partialRefreshFailure = false
     if (
       parsed.credentials.length === 0 &&
@@ -380,10 +404,11 @@ export class AccountManager {
     }
     return {
       credentials: dedupeCredentials(parsed.credentials),
+      agentIdentities: dedupeAgentIdentities(parsed.agentIdentities ?? []),
       errors: parsed.errors,
       recognized,
       sourceCount: 1,
-      unrecognized: parsed.credentials.length === 0 || partialRefreshFailure
+      unrecognized: (parsed.credentials.length === 0 && (parsed.agentIdentities?.length ?? 0) === 0) || partialRefreshFailure
         ? [{ sourcePath: 'pasted-credential.json', sourceFormat: 'paste', detail: parsed.errors.at(-1) ?? '未找到可用 Codex 凭据' }]
         : []
     }
@@ -445,7 +470,8 @@ export class AccountManager {
     return this.importResolvedCredentials(
       prepared.credentials,
       prepared.errors,
-      prepared.recognized
+      prepared.recognized,
+      prepared.agentIdentities
     )
   }
 
@@ -465,10 +491,14 @@ export class AccountManager {
   private async importResolvedCredentials(
     input: readonly NormalizedCredential[],
     errors: readonly string[],
-    recognized = input.length
+    recognized = input.length,
+    agentInput: readonly NormalizedAgentIdentityCredential[] = []
   ): Promise<ScanResult> {
     const credentials = dedupeCredentials(input)
-    if (credentials.length === 0) {
+    const agentIdentities = dedupeAgentIdentities(agentInput)
+    const existingAgentIds = new Set((await this.options.agentIdentityVault?.list() ?? []).map((identity) => identity.id))
+    const freshAgentIdentities = agentIdentities.filter((identity) => !existingAgentIds.has(identity.id))
+    if (credentials.length === 0 && agentIdentities.length === 0) {
       return {
         imported: 0,
         skipped: 0,
@@ -477,6 +507,7 @@ export class AccountManager {
         accounts: await this.listAccounts()
       }
     }
+    if (agentIdentities.length > 0) await this.options.agentIdentityVault?.upsertMany(agentIdentities)
     await this.options.deletedStore?.removeMany(credentials.map((credential) => credential.id))
     const existing = dedupeCredentials(await this.options.vault.list())
     const freshCredentials = credentials.filter((credential) =>
@@ -503,8 +534,8 @@ export class AccountManager {
     ])
     await this.options.onCredentialsChanged?.()
     return {
-      imported,
-      skipped: credentials.length - imported,
+      imported: imported + freshAgentIdentities.length,
+      skipped: credentials.length - imported + agentIdentities.length - freshAgentIdentities.length,
       recognized,
       errors: [...errors],
       accounts: await this.listAccounts()
@@ -570,6 +601,11 @@ export class AccountManager {
 
   async listCredentials(): Promise<NormalizedCredential[]> {
     return this.options.vault.list()
+  }
+
+  /** Main-process only: local API source discovery reads the encrypted records. */
+  async listAgentIdentities(): Promise<NormalizedAgentIdentityCredential[]> {
+    return this.options.agentIdentityVault?.list() ?? []
   }
 
   async testAccounts(
@@ -787,7 +823,12 @@ export class AccountManager {
   private async parseCredentialFile(
     path: string,
     format: CredentialSourceFormat
-  ): Promise<{ credentials: NormalizedCredential[]; errors: string[]; unrecognized?: boolean }> {
+  ): Promise<{
+    credentials: NormalizedCredential[]
+    agentIdentities?: NormalizedAgentIdentityCredential[]
+    errors: string[]
+    unrecognized?: boolean
+  }> {
     if (format !== 'zip') {
       const metadata = await stat(path)
       if (!metadata.isFile()) throw new Error('账号来源不是文件')
@@ -796,9 +837,13 @@ export class AccountManager {
       const parsed = parseCredentialText(text, { sourcePath: path, format })
       if (
         parsed.credentials.length > 0 ||
+        (parsed.agentIdentities?.length ?? 0) > 0 ||
         !this.options.refreshTokenImporter ||
         !shouldAttemptRefreshTokenImport(text)
-      ) return { ...parsed, unrecognized: parsed.credentials.length === 0 }
+      ) return {
+        ...parsed,
+        unrecognized: parsed.credentials.length === 0 && (parsed.agentIdentities?.length ?? 0) === 0
+      }
       const refreshed = await this.options.refreshTokenImporter.resolve(text, 'auto', {
         sourcePath: path,
         format
@@ -831,6 +876,7 @@ export class AccountManager {
       }
     })
     const credentials: NormalizedCredential[] = []
+    const agentIdentities: NormalizedAgentIdentityCredential[] = []
     const errors: string[] = []
     let unrecognized = false
     for (const [entryName, bytes] of Object.entries(entries)) {
@@ -843,15 +889,19 @@ export class AccountManager {
       })
       const resolved =
         parsed.credentials.length > 0 ||
+        (parsed.agentIdentities?.length ?? 0) > 0 ||
         !this.options.refreshTokenImporter ||
         !shouldAttemptRefreshTokenImport(entryText)
-          ? { ...parsed, unrecognized: parsed.credentials.length === 0 }
+          ? {
+              ...parsed,
+              unrecognized: parsed.credentials.length === 0 && (parsed.agentIdentities?.length ?? 0) === 0
+            }
           : await this.options.refreshTokenImporter.resolve(entryText, 'auto', {
             sourcePath: `${path}::${entryName}`,
             format: entryFormat
           })
       if ('total' in resolved) unrecognized ||= resolved.credentials.length < resolved.total
-      else unrecognized ||= resolved.credentials.length === 0
+      else unrecognized ||= resolved.credentials.length === 0 && (resolved.agentIdentities?.length ?? 0) === 0
       credentials.push(
         ...resolved.credentials.map((credential) => ({
           ...credential,
@@ -859,9 +909,16 @@ export class AccountManager {
           sourceFormat: 'zip' as const
         }))
       )
+      agentIdentities.push(
+        ...(('agentIdentities' in resolved ? resolved.agentIdentities : []) ?? []).map((credential) => ({
+          ...credential,
+          sourcePath: path,
+          sourceFormat: 'zip' as const
+        }))
+      )
       errors.push(...resolved.errors)
     }
-    return { credentials, errors, unrecognized }
+    return { credentials, agentIdentities, errors, unrecognized }
   }
 
   private async persistManagedLibrary(

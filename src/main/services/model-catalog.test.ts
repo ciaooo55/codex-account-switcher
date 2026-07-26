@@ -386,6 +386,31 @@ describe('model catalog helpers', () => {
     })).resolves.toMatchObject({ output: 'legacy works', probeUrl: 'https://legacy.example/v1/completions' })
   })
 
+  it('persists the protocol proven by an auto probe and never returns a query key in diagnostics', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: string) => {
+      if (url === 'https://gateway.example/v1/chat/completions?token=query-secret') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'works' } }] }) }
+      }
+      return { ok: false, status: 404, text: async () => JSON.stringify({ error: { message: 'missing' } }) }
+    })
+    const result = await probeApiUpstreamModel({
+      protocol: 'auto', baseUrl: 'https://gateway.example/v1', apiKey: 'query-secret',
+      authMode: 'query', authQueryParam: 'token', model: 'chat-only', fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    expect(result).toMatchObject({ protocol: 'chat_completions', output: 'works' })
+    expect(result.probeUrl).toBe('https://gateway.example/v1/chat/completions')
+    expect(JSON.stringify(result)).not.toContain('query-secret')
+  })
+
+  it('redacts query authentication values from model discovery errors', async () => {
+    const listed = await fetchOpenAiCompatibleModelIds({
+      baseUrl: 'https://gateway.example/v1', apiKey: 'query-secret', authMode: 'query', authQueryParam: 'token',
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) }) as unknown as typeof fetch
+    })
+    expect(listed.errors.join('\n')).not.toContain('query-secret')
+    expect(listed.errors.join('\n')).toContain('https://gateway.example/v1/models')
+  })
+
   it('fails model probe when every common path is rejected', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: false,
