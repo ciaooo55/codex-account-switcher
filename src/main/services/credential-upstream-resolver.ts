@@ -77,6 +77,19 @@ function sourceLabel(credential: AnyCredential): string {
   ).slice(0, 128)
 }
 
+/**
+ * Sub2API/Cockpit exports can request an automatic pause for expired accounts.
+ * We honour that in the gateway without persisting a destructive account-state
+ * change: a 401/403 gets a long local pause and the next source is used.
+ */
+function sourceFailureCooldown(credential: AnyCredential): { unauthorized?: number; rateLimited?: number } | undefined {
+  if (credential.secretExtensions?.autoPauseOnExpired !== true) return undefined
+  return {
+    unauthorized: 24 * 60 * 60_000,
+    rateLimited: 15 * 60_000
+  }
+}
+
 function sourcePriority(credential: AnyCredential): number {
   const priority = credential.secretExtensions?.priority
   return priority !== null && priority !== undefined && Number.isFinite(priority)
@@ -291,7 +304,8 @@ export class CredentialUpstreamRegistry {
         url: compact ? `${CODEX_RESPONSES_URL}/compact` : CODEX_RESPONSES_URL,
         headers: agentIdentityHeaders(identity, compact),
         bodyPatch: { store: false },
-        upstreamModel: mappedSourceModel(identity, upstreamModel)
+        upstreamModel: mappedSourceModel(identity, upstreamModel),
+        failureCooldownMs: sourceFailureCooldown(identity)
       }
     }
 
@@ -304,7 +318,8 @@ export class CredentialUpstreamRegistry {
         url: compact ? `${CODEX_RESPONSES_URL}/compact` : CODEX_RESPONSES_URL,
         headers: codexHeaders(codex, compact),
         bodyPatch: { store: false },
-        upstreamModel: mappedSourceModel(codex, upstreamModel)
+        upstreamModel: mappedSourceModel(codex, upstreamModel),
+        failureCooldownMs: sourceFailureCooldown(codex)
       }
     }
 
@@ -313,7 +328,8 @@ export class CredentialUpstreamRegistry {
       url: GROK_RESPONSES_URL,
       headers: grokHeaders(credential as GrokCredential),
       bodyPatch: { store: false },
-      upstreamModel: mappedSourceModel(credential, upstreamModel)
+      upstreamModel: mappedSourceModel(credential, upstreamModel),
+      failureCooldownMs: sourceFailureCooldown(credential)
     }
   }
 

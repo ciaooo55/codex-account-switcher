@@ -231,6 +231,11 @@ export interface CredentialUpstreamResolution {
    * to the model that must be sent to the official upstream.
    */
   upstreamModel?: string
+  /** Credential-specific pause policy, evaluated only after an upstream error. */
+  failureCooldownMs?: {
+    unauthorized?: number
+    rateLimited?: number
+  }
 }
 
 export interface CredentialUpstreamResolveRequest {
@@ -2192,11 +2197,19 @@ export class LocalApiServer {
           break
         }
         if (isRetryableStatus(lastStatus)) {
-          const duration = lastStatus === 401 || lastStatus === 403
+          const defaultDuration = lastStatus === 401 || lastStatus === 403
             ? 5 * 60_000
             : lastStatus === 429
               ? 60_000
               : 10_000
+          const credentialPolicy = candidate.kind === 'credential'
+            ? credentialResolution?.failureCooldownMs
+            : undefined
+          const duration = lastStatus === 401 || lastStatus === 403
+            ? credentialPolicy?.unauthorized ?? defaultDuration
+            : lastStatus === 429
+              ? credentialPolicy?.rateLimited ?? defaultDuration
+              : defaultDuration
           this.sourceCooldowns.set(
             candidate.kind === 'api' ? candidate.upstream.id : candidate.source.id,
             Date.now() + duration

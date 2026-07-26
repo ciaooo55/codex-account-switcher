@@ -162,6 +162,7 @@ describe('CredentialUpstreamRegistry', () => {
     expect(first).toMatchObject({
       url: 'https://chatgpt.com/backend-api/codex/responses',
       upstreamModel: 'gpt-real',
+      failureCooldownMs: { unauthorized: 86_400_000, rateLimited: 900_000 },
       headers: {
         authorization: 'Bearer at-first',
         'chatgpt-account-id': 'account-codex-id',
