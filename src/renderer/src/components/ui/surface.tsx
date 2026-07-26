@@ -1,5 +1,5 @@
-import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
-import { forwardRef } from 'react'
+import type { ButtonHTMLAttributes, ForwardedRef, HTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
+import { forwardRef, useEffect, useRef } from 'react'
 import { cn } from '@/lib/cn'
 
 export function PageView({ className, ...props }: HTMLAttributes<HTMLElement>): React.JSX.Element {
@@ -54,13 +54,69 @@ export function DialogBackdrop({ className, ...props }: HTMLAttributes<HTMLDivEl
   )
 }
 
-export const DialogPanel = forwardRef<HTMLElement, HTMLAttributes<HTMLElement>>(function DialogPanel(
-  { className, ...props },
+export const DialogPanel = forwardRef<HTMLElement, HTMLAttributes<HTMLElement> & { onDismiss?: () => void }>(function DialogPanel(
+  { className, onDismiss, onKeyDown, ...props },
   ref
 ) {
+  const panelRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    const panel = panelRef.current
+    if (!panel) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const previousOverflow = document.body.style.overflow
+    const selector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    const focusFirst = (): void => {
+      const initial = panel.querySelector<HTMLElement>('[autofocus], [data-dialog-initial-focus]')
+        ?? panel.querySelector<HTMLElement>(selector)
+        ?? panel
+      initial.focus()
+    }
+    const onDocumentKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && onDismiss) {
+        event.preventDefault()
+        onDismiss()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = [...panel.querySelectorAll<HTMLElement>(selector)].filter((element) => !element.hasAttribute('disabled'))
+      if (focusable.length === 0) {
+        event.preventDefault()
+        panel.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable.at(-1)!
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.body.style.overflow = 'hidden'
+    const timer = window.setTimeout(focusFirst, 0)
+    document.addEventListener('keydown', onDocumentKeyDown)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('keydown', onDocumentKeyDown)
+      document.body.style.overflow = previousOverflow
+      previous?.focus()
+    }
+  }, [onDismiss])
+
+  const assignRef = (node: HTMLElement | null): void => {
+    panelRef.current = node
+    if (typeof ref === 'function') ref(node)
+    else if (ref) (ref as ForwardedRef<HTMLElement> & { current: HTMLElement | null }).current = node
+  }
+
   return (
     <section
-      ref={ref}
+      ref={assignRef}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
       className={cn(
         'compact-dialog my-6 w-full max-w-[720px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-0)] shadow-[var(--shadow-lg)]',
         className

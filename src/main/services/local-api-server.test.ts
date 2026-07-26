@@ -484,6 +484,34 @@ describe('LocalApiServer', () => {
     }))
   })
 
+  it('serializes media requests per source by default without delaying normal routing configuration', async () => {
+    let active = 0
+    let maximum = 0
+    const mock = await mockUpstream(async (_request, response) => {
+      active += 1
+      maximum = Math.max(maximum, active)
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      active -= 1
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }))
+    })
+    const port = await reservePort()
+    const service = new LocalApiServer(config(port, [upstream('media-queue', mock.baseUrl, 'auto')]))
+    cleanup.push(() => service.stop())
+    await service.start()
+
+    const request = (prompt: string) => fetch(`http://127.0.0.1:${port}/v1/images/generations`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sk-local', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'xxx', prompt })
+    })
+    const [first, second] = await Promise.all([request('first'), request('second')])
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    await Promise.all([first.json(), second.json()])
+    expect(maximum).toBe(1)
+  })
+
   it('relays OpenAI audio speech as binary through the selected third-party model route', async () => {
     let seen: { path: string; authorization: string | undefined; body: Record<string, unknown> } | null = null
     const audioBytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0xff, 0x00, 0x91])

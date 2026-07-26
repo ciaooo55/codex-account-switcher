@@ -132,6 +132,18 @@ interface CredentialRouteCandidate {
 
 type RouteCandidate = ApiRouteCandidate | CredentialRouteCandidate
 
+interface MediaQueueWaiter {
+  resolve: (release: () => void) => void
+  reject: (error: Error) => void
+  signal: AbortSignal
+  onAbort: () => void
+}
+
+interface SourceMediaQueue {
+  active: number
+  waiters: MediaQueueWaiter[]
+}
+
 interface ParsedUpstreamUsage {
   inputTokens: number
   cachedInputTokens: number
@@ -488,6 +500,19 @@ function redactUpstreamMessage(value: string): string {
 
 function isRetryableStatus(status: number): boolean {
   return RETRYABLE_UPSTREAM_STATUSES.has(status) || status >= 500
+}
+
+/** Requests that consume a provider's media generation/upload capacity. */
+function requiresMediaSlot(endpoint: SupportedEndpoint): boolean {
+  return endpoint === '/v1/audio/speech'
+    || endpoint === '/v1/audio/transcriptions'
+    || endpoint === '/v1/audio/translations'
+    || endpoint === '/v1/images/generations'
+    || endpoint === '/v1/images/edits'
+    || endpoint === '/v1/videos'
+    || endpoint === '/v1/videos/generations'
+    || endpoint === '/v1/videos/edits'
+    || endpoint === '/v1/videos/extensions'
 }
 
 function endpointSupported(upstream: Required<ApiUpstreamInput>, endpoint: string): boolean {
@@ -1071,6 +1096,8 @@ export class LocalApiServer {
   private lastError: string | null = null
   private readonly roundRobinOffsets = new Map<string, number>()
   private readonly sourceCooldowns = new Map<string, number>()
+  /** Per-source FIFO gates for quota-heavy image, audio and video requests. */
+  private readonly mediaQueues = new Map<string, SourceMediaQueue>()
   private readonly sessionAffinity = new Map<string, { sourceId: string; expiresAt: number }>()
   private readonly recentRequests: LocalApiRequestLog[] = []
   private readonly requestTelemetry = new WeakMap<ServerResponse, RequestTelemetry>()
@@ -1187,6 +1214,63 @@ export class LocalApiServer {
     if (current) Object.assign(current, patch)
   }
 
+  /**
+   * Acquires a FIFO per-source media slot. The slot covers the complete
+   * upstream relay (not merely opening the request), so a slow video/image
+   * response cannot make this source exceed the operator's safe concurrency.
+   * Waiting requests are removed immediately if their local client disconnects.
+   */
+  private acquireMediaSlot(sourceId: string, signal: AbortSignal): Promise<() => void> {
+    if (signal.aborted) return Promise.reject(new Error('client_disconnected'))
+    const limit = this.config.maxConcurrentMediaRequests ?? 1
+    let queue = this.mediaQueues.get(sourceId)
+    if (!queue) {
+      queue = { active: 0, waiters: [] }
+      this.mediaQueues.set(sourceId, queue)
+    }
+    if (queue.active < limit) return Promise.resolve(this.reserveMediaSlot(sourceId, queue))
+
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: MediaQueueWaiter = {
+        resolve,
+        reject,
+        signal,
+        onAbort: () => {
+          const index = queue!.waiters.indexOf(waiter)
+          if (index >= 0) queue!.waiters.splice(index, 1)
+          reject(new Error('client_disconnected'))
+          this.deleteEmptyMediaQueue(sourceId, queue!)
+        }
+      }
+      signal.addEventListener('abort', waiter.onAbort, { once: true })
+      queue.waiters.push(waiter)
+    })
+  }
+
+  private reserveMediaSlot(sourceId: string, queue: SourceMediaQueue): () => void {
+    queue.active += 1
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      queue.active = Math.max(0, queue.active - 1)
+      while (queue.waiters.length > 0) {
+        const waiter = queue.waiters.shift()!
+        waiter.signal.removeEventListener('abort', waiter.onAbort)
+        if (waiter.signal.aborted) continue
+        waiter.resolve(this.reserveMediaSlot(sourceId, queue))
+        return
+      }
+      this.deleteEmptyMediaQueue(sourceId, queue)
+    }
+  }
+
+  private deleteEmptyMediaQueue(sourceId: string, queue: SourceMediaQueue): void {
+    if (queue.active === 0 && queue.waiters.length === 0 && this.mediaQueues.get(sourceId) === queue) {
+      this.mediaQueues.delete(sourceId)
+    }
+  }
+
   private keyCanUseRoute(
     key: LocalApiServerRuntimeConfig['accessKeys'][number],
     route: ModelRoute
@@ -1245,6 +1329,7 @@ export class LocalApiServer {
     this.startedAt = null
     this.videoRouteCache.clear()
     this.sessionAffinity.clear()
+    this.mediaQueues.clear()
     return this.status()
   }
 
@@ -1265,6 +1350,7 @@ export class LocalApiServer {
       this.sourceCooldowns.clear()
       this.videoRouteCache.clear()
       this.sessionAffinity.clear()
+      this.mediaQueues.clear()
       this.lastError = null
       return this.status()
     }
@@ -1285,6 +1371,7 @@ export class LocalApiServer {
     this.sourceCooldowns.clear()
     this.videoRouteCache.clear()
     this.sessionAffinity.clear()
+    this.mediaQueues.clear()
     this.lastError = null
     await this.closeServer(previous)
     return this.status()
@@ -2030,20 +2117,39 @@ export class LocalApiServer {
       writeOpenAiError(outgoing, 404, `视频所属 API 不在当前密钥的来源池中`, 'source_not_allowed')
       return
     }
+    const abortController = new AbortController()
+    let requestTimeout: ReturnType<typeof setTimeout> | null = null
+    let releaseMediaSlot: (() => void) | null = null
+    let clientClosed = false
+    const onClientClose = (): void => {
+      if (!outgoing.writableEnded) {
+        clientClosed = true
+        abortController.abort()
+      }
+    }
+    outgoing.once('close', onClientClose)
     try {
+      releaseMediaSlot = await this.acquireMediaSlot(cached.upstream.id, abortController.signal)
       const suffix = content ? '/content' : ''
       const rawUrl = buildProviderUpstreamUrl(
         cached.upstream,
         `/v1/videos/${encodeURIComponent(videoId)}${suffix}`
       )
       const upstreamUrl = applyApiUpstreamAuthQuery(rawUrl, cached.upstream)
+      requestTimeout = setTimeout(
+        () => abortController.abort(new Error('upstream_open_timeout')),
+        this.config.requestTimeoutMs ?? 120_000
+      )
       const upstream = await this.fetchImpl(upstreamUrl, {
         method: 'GET',
         headers: {
           accept: incoming.headers.accept ?? '*/*',
           ...apiUpstreamAuthHeaders(cached.upstream)
-        }
+        },
+        signal: abortController.signal
       })
+      clearTimeout(requestTimeout)
+      requestTimeout = null
       if (upstream.ok) {
         this.setRequestTelemetry(outgoing, { sourceId: cached.upstream.id, sourceKind: 'api' })
         await relayResponse(upstream, outgoing)
@@ -2058,6 +2164,7 @@ export class LocalApiServer {
         status === 429 ? 'rate_limit_error' : 'server_error'
       )
     } catch (error) {
+      if (abortController.signal.aborted && clientClosed) return
       writeOpenAiError(
         outgoing,
         502,
@@ -2065,6 +2172,10 @@ export class LocalApiServer {
         'upstream_error',
         'server_error'
       )
+    } finally {
+      if (requestTimeout) clearTimeout(requestTimeout)
+      releaseMediaSlot?.()
+      outgoing.off('close', onClientClose)
     }
   }
 
@@ -2086,6 +2197,7 @@ export class LocalApiServer {
     for (const [index, candidate] of attemptedCandidates.entries()) {
       const abortController = new AbortController()
       let requestTimeout: ReturnType<typeof setTimeout> | null = null
+      let releaseMediaSlot: (() => void) | null = null
       let clientClosed = false
       const onClientClose = (): void => {
         if (!outgoing.writableEnded) {
@@ -2095,6 +2207,9 @@ export class LocalApiServer {
       }
       outgoing.once('close', onClientClose)
       try {
+        if (requiresMediaSlot(endpoint)) {
+          releaseMediaSlot = await this.acquireMediaSlot(routeCandidateSourceId(candidate), abortController.signal)
+        }
         const credentialResolution = candidate.kind === 'credential'
           ? await this.resolveCredentialUpstream?.({
               source: candidate.source,
@@ -2243,6 +2358,7 @@ export class LocalApiServer {
         if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
       } finally {
         if (requestTimeout) clearTimeout(requestTimeout)
+        releaseMediaSlot?.()
         outgoing.off('close', onClientClose)
       }
     }
@@ -2276,11 +2392,18 @@ export class LocalApiServer {
     for (const [index, candidate] of candidates.entries()) {
       if (candidate.kind !== 'api') continue
       const abortController = new AbortController()
+      let requestTimeout: ReturnType<typeof setTimeout> | null = null
+      let releaseMediaSlot: (() => void) | null = null
+      let clientClosed = false
       const onClientClose = (): void => {
-        if (!outgoing.writableEnded) abortController.abort()
+        if (!outgoing.writableEnded) {
+          clientClosed = true
+          abortController.abort()
+        }
       }
       outgoing.once('close', onClientClose)
       try {
+        releaseMediaSlot = await this.acquireMediaSlot(candidate.upstream.id, abortController.signal)
         this.setRequestTelemetry(outgoing, { sourceId: candidate.upstream.id, sourceKind: 'api' })
         const rawUpstreamUrl = buildProviderUpstreamUrl(candidate.upstream, endpoint)
         const upstreamUrl = applyApiUpstreamAuthQuery(rawUpstreamUrl, candidate.upstream)
@@ -2289,12 +2412,18 @@ export class LocalApiServer {
           contentType,
           candidate.target.upstreamModel
         )
+        requestTimeout = setTimeout(
+          () => abortController.abort(new Error('upstream_open_timeout')),
+          this.config.requestTimeoutMs ?? 120_000
+        )
         const upstream = await this.fetchImpl(upstreamUrl, {
           method: 'POST',
           headers: apiUpstreamRawHeaders(candidate.upstream, incoming, contentType),
           body: new Uint8Array(upstreamBody),
           signal: abortController.signal
         })
+        clearTimeout(requestTimeout)
+        requestTimeout = null
         if (upstream.ok) {
           this.setRequestTelemetry(outgoing, { sourceId: candidate.upstream.id, sourceKind: 'api' })
           this.sourceCooldowns.delete(candidate.upstream.id)
@@ -2314,7 +2443,7 @@ export class LocalApiServer {
           if (!outgoing.writableEnded) outgoing.destroy(error instanceof Error ? error : undefined)
           return
         }
-        if (abortController.signal.aborted) return
+        if (abortController.signal.aborted && clientClosed) return
         lastStatus = 502
         lastMessage = error instanceof Error && error.name !== 'TypeError'
           ? error.message.slice(0, 1000)
@@ -2322,6 +2451,8 @@ export class LocalApiServer {
         this.sourceCooldowns.set(candidate.upstream.id, Date.now() + 10_000)
         if (index === candidates.length - 1) break
       } finally {
+        if (requestTimeout) clearTimeout(requestTimeout)
+        releaseMediaSlot?.()
         outgoing.off('close', onClientClose)
       }
     }

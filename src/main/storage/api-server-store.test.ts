@@ -63,19 +63,21 @@ describe('ApiServerStore', () => {
     const path = join(root, 'server.json')
     const store = new ApiServerStore(path, cipher)
 
-    const summary = await store.save(configuration())
+    const summary = await store.save({ ...configuration(), maxConcurrentMediaRequests: 3 })
     const stored = await readFile(path, 'utf8')
 
     expect(stored).not.toContain('sk-client-secret')
     expect(stored).not.toContain('sk-upstream-secret')
     expect(summary.accessKeys[0]).toMatchObject({ hasKey: true, keyPreview: 'sk-cl••••cret', allowedSourceIds: ['upstream'] })
     expect(summary.upstreams[0]).toMatchObject({ hasApiKey: true, keyPreview: 'sk-up••••cret' })
+    expect(summary.maxConcurrentMediaRequests).toBe(3)
     await expect(store.getAccessKey('client')).resolves.toBe('sk-client-secret')
     await expect(store.getAccessKey('missing')).resolves.toBeNull()
     await expect(store.getUpstreamKey('upstream')).resolves.toBe('sk-upstream-secret')
     await expect(store.getUpstreamKey('missing')).resolves.toBeNull()
     await expect(store.runtimeConfig()).resolves.toMatchObject({
       port: 8888,
+      maxConcurrentMediaRequests: 3,
       accessKeys: [{ key: 'sk-client-secret', allowedSourceIds: ['upstream'] }],
       upstreams: [{ apiKey: 'sk-upstream-secret', authMode: 'custom', authHeaderName: 'x-provider-key', authHeaderPrefix: 'Token ' }],
       credentialSources: [{ id: 'codex:credential-id', credentialId: 'credential-id' }],
@@ -122,7 +124,7 @@ describe('ApiServerStore', () => {
     const root = await mkdtemp(join(tmpdir(), 'api-server-store-'))
     roots.push(root)
     const store = new ApiServerStore(join(root, 'missing.json'), cipher)
-    await expect(store.summary()).resolves.toMatchObject({ port: 8888, autoStart: false })
+    await expect(store.summary()).resolves.toMatchObject({ port: 8888, autoStart: false, maxConcurrentMediaRequests: 1 })
   })
 
   it('loads version 1 files written before credential source references were added', async () => {

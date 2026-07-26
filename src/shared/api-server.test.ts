@@ -23,6 +23,17 @@ describe('api server shared configuration', () => {
     })).toThrow('1 到 65535')
   })
 
+  it('uses a safe per-source media concurrency default and rejects unsafe bounds', () => {
+    const input = { port: 8888, autoStart: false, accessKeys: [], upstreams: [], routes: [] }
+    expect(normalizeLocalApiServerConfig(input)).toMatchObject({ maxConcurrentMediaRequests: 1 })
+    expect(normalizeLocalApiServerConfig({ ...input, maxConcurrentMediaRequests: 4 }))
+      .toMatchObject({ maxConcurrentMediaRequests: 4 })
+    expect(() => normalizeLocalApiServerConfig({ ...input, maxConcurrentMediaRequests: 0 }))
+      .toThrow('媒体并发数')
+    expect(() => normalizeLocalApiServerConfig({ ...input, maxConcurrentMediaRequests: 17 }))
+      .toThrow('媒体并发数')
+  })
+
   it('builds the correct endpoint for root, /v1, and nested /v1 bases', () => {
     expect(buildOpenAiUpstreamUrl('https://api.example.com', '/v1/responses')).toBe(
       'https://api.example.com/v1/responses'

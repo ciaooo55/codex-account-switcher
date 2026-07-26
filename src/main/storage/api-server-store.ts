@@ -1,6 +1,7 @@
 import type { SecretCipher } from '../../shared/types'
 import {
   DEFAULT_LOCAL_API_SERVER_PORT,
+  DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS,
   DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
   DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
   DEFAULT_LOCAL_API_RETRY_DELAY_MS,
@@ -46,6 +47,7 @@ interface ApiServerFile {
   requestTimeoutMs?: number
   maxRetrySources?: number
   retryDelayMs?: number
+  maxConcurrentMediaRequests?: number
   sessionAffinity?: boolean
   accessKeys: StoredAccessKey[]
   upstreams: StoredUpstream[]
@@ -61,6 +63,7 @@ const EMPTY_FILE: ApiServerFile = {
   requestTimeoutMs: DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
   maxRetrySources: DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
   retryDelayMs: DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+  maxConcurrentMediaRequests: DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS,
   sessionAffinity: true,
   accessKeys: [],
   upstreams: [],
@@ -133,6 +136,7 @@ export class ApiServerStore {
         requestTimeoutMs: normalized.requestTimeoutMs,
         maxRetrySources: normalized.maxRetrySources,
         retryDelayMs: normalized.retryDelayMs,
+        maxConcurrentMediaRequests: normalized.maxConcurrentMediaRequests,
         sessionAffinity: normalized.sessionAffinity,
         accessKeys,
         upstreams,
@@ -162,6 +166,7 @@ export class ApiServerStore {
         requestTimeoutMs: file.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
         maxRetrySources: file.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
         retryDelayMs: file.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+        maxConcurrentMediaRequests: file.maxConcurrentMediaRequests ?? DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS,
         sessionAffinity: file.sessionAffinity !== false,
         accessKeys: file.accessKeys.map((entry) => ({
           id: entry.id,
@@ -264,6 +269,7 @@ export class ApiServerStore {
       requestTimeoutMs: file.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
       maxRetrySources: file.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
       retryDelayMs: file.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+      maxConcurrentMediaRequests: file.maxConcurrentMediaRequests ?? DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS,
       sessionAffinity: file.sessionAffinity !== false,
       accessKeys,
       upstreams,
@@ -296,6 +302,7 @@ export class ApiServerStore {
         requestTimeoutMs: parsed.requestTimeoutMs ?? DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS,
         maxRetrySources: parsed.maxRetrySources ?? DEFAULT_LOCAL_API_MAX_RETRY_SOURCES,
         retryDelayMs: parsed.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS,
+        maxConcurrentMediaRequests: parsed.maxConcurrentMediaRequests ?? DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS,
         sessionAffinity: parsed.sessionAffinity !== false,
         credentialSources: Array.isArray(parsed.credentialSources) ? parsed.credentialSources : [],
         codexBinding: parsed.codexBinding && typeof parsed.codexBinding === 'object'

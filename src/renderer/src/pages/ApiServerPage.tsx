@@ -58,7 +58,8 @@ import { cn } from '@/lib/cn'
 import { codexApi } from '@/services/codexApi'
 
 type Notice = { kind: 'ok' | 'warn' | 'error'; text: string }
-type SectionId = 'overview' | 'access-keys' | 'upstreams' | 'credentials' | 'routes'
+/** The workbench keeps four persistent boards; per-item editing happens in dialogs. */
+type SectionId = 'overview' | 'upstreams' | 'credentials' | 'routes' | 'access-keys'
 type UpstreamDialogMode = 'quick' | 'manual' | null
 
 type AccessKeyDraft = LocalApiAccessKeyInput & {
@@ -109,6 +110,7 @@ function draftFromState(state: LocalApiServerState): ApiServerDraft {
     requestTimeoutMs: state.config.requestTimeoutMs,
     maxRetrySources: state.config.maxRetrySources,
     retryDelayMs: state.config.retryDelayMs,
+    maxConcurrentMediaRequests: state.config.maxConcurrentMediaRequests,
     sessionAffinity: state.config.sessionAffinity,
     codexBinding: state.config.codexBinding ?? null,
     accessKeys: state.config.accessKeys.map((entry) => ({ ...entry, reveal: false })),
@@ -128,6 +130,7 @@ function configFromDraft(draft: ApiServerDraft): LocalApiServerConfigInput {
     requestTimeoutMs: draft.requestTimeoutMs,
     maxRetrySources: draft.maxRetrySources,
     retryDelayMs: draft.retryDelayMs,
+    maxConcurrentMediaRequests: draft.maxConcurrentMediaRequests,
     sessionAffinity: draft.sessionAffinity,
     codexBinding: draft.codexBinding ?? null,
     accessKeys: draft.accessKeys.map(({
@@ -248,6 +251,7 @@ export function ApiServerPage(): React.JSX.Element {
   const [pasteNote, setPasteNote] = useState('')
   const [manualUpstream, setManualUpstream] = useState<UpstreamDraft | null>(null)
   const [editingUpstreamId, setEditingUpstreamId] = useState<string | null>(null)
+  const [editingCredentialSourceId, setEditingCredentialSourceId] = useState<string | null>(null)
   const [editingRouteIndex, setEditingRouteIndex] = useState<number | null>(null)
   const [codexKeyId, setCodexKeyId] = useState('')
   const [codexModel, setCodexModel] = useState('')
@@ -1057,7 +1061,7 @@ export function ApiServerPage(): React.JSX.Element {
     : '应用到 Codex'
   const sectionTitle = {
     overview: '总览',
-    'access-keys': '客户端密钥',
+    'access-keys': '本软件密钥',
     upstreams: '第三方 API',
     credentials: '账号凭证源',
     routes: '模型总览'
@@ -1223,7 +1227,6 @@ export function ApiServerPage(): React.JSX.Element {
           <nav className="flex flex-col gap-1 border-r border-[var(--color-border)] bg-[var(--color-surface-1)] p-2" aria-label="API 服务配置">
             {([
               ['overview', Activity, '总览', metrics?.totalRequests ?? 0],
-              ['access-keys', KeyRound, '客户端密钥', draft.accessKeys.length],
               ['upstreams', Network, '第三方 API', draft.upstreams.length],
               ['credentials', ShieldCheck, '账号凭证源', draft.credentialSources.length],
               ['routes', Route, '模型总览', draft.routes.length]
@@ -1275,7 +1278,7 @@ export function ApiServerPage(): React.JSX.Element {
                 ['credentials', '凭证池', draft.credentialSources.filter((entry) => entry.enabled).length, `${draft.credentialSources.length} 个可选来源`],
                 ['routes', '公开模型', draft.routes.length, '与 /v1/models 一致']
               ] as const).map(([id, label, value, detail]) => (
-                <button key={id} type="button" className="api-overview-summary-item" onClick={() => openManagementSection(id)}>
+                <button key={id} type="button" className="api-overview-summary-item" aria-label={id === 'access-keys' ? '打开 客户端密钥' : `查看${label}统计`} onClick={() => openManagementSection(id)}>
                   <span>{label}</span>
                   <strong>{value}</strong>
                   <small>{detail}</small>
@@ -1312,14 +1315,14 @@ export function ApiServerPage(): React.JSX.Element {
                     </button>
                   ))}
                   {draft.credentialSources.slice(0, Math.max(0, 4 - Math.min(3, draft.upstreams.length))).map((entry) => (
-                    <button key={entry.id} type="button" onClick={() => openManagementSection('credentials')}>
+                    <button key={entry.id} type="button" onClick={() => { openManagementSection('credentials'); setEditingCredentialSourceId(entry.id) }}>
                       <span className={cn('api-overview-dot', entry.enabled ? 'is-enabled' : 'is-disabled')} />
                       <span><strong>{entry.label}</strong><small>{entry.models.length} 个模型 · 优先级 {entry.priority}</small></span>
                       <em>凭证</em>
                     </button>
                   ))}
                 </div>
-                {draft.upstreams.length + draft.credentialSources.length > 4 ? <button type="button" className="api-overview-more" onClick={() => openManagementSection('credentials')}>查看全部 {draft.upstreams.length + draft.credentialSources.length} 个来源</button> : null}
+                {draft.upstreams.length + draft.credentialSources.length > 4 ? <button type="button" className="api-overview-more" onClick={() => openManagementSection(draft.upstreams.length >= draft.credentialSources.length ? 'upstreams' : 'credentials')}>查看全部 {draft.upstreams.length + draft.credentialSources.length} 个来源</button> : null}
               </section>
 
               <section className="api-overview-panel api-overview-health" aria-labelledby="api-overview-health-title">
@@ -1379,7 +1382,7 @@ export function ApiServerPage(): React.JSX.Element {
 
           {chatTestDialogOpen ? createPortal(
             <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setChatTestDialogOpen(false) }}>
-              <DialogPanel className="api-upstream-dialog max-w-[660px]" role="dialog" aria-modal="true" aria-labelledby="api-chat-test-title">
+              <DialogPanel className="api-upstream-dialog max-w-[660px]" role="dialog" aria-modal="true" aria-labelledby="api-chat-test-title" onDismiss={() => setChatTestDialogOpen(false)}>
                 <DialogHeader>
                   <div><h2 id="api-chat-test-title" className="text-[15px] font-semibold text-[var(--color-text)]">测试本地 API 对话</h2><p className="mt-1 text-[11px] text-[var(--color-text-muted)]">请求会通过本软件的本地地址、项目密钥和当前模型路由发送，不会把上游密钥暴露给页面。</p></div>
                   <Button size="icon" variant="ghost" aria-label="关闭本地 API 对话测试窗口" title="关闭" onClick={() => setChatTestDialogOpen(false)}><X size={17} /></Button>
@@ -1617,34 +1620,26 @@ export function ApiServerPage(): React.JSX.Element {
                         'agent-identity': 'Codex · Agent Identity'
                       }[source.provider]
                       return (
-                        <article key={source.id} className="api-credential-row grid grid-cols-[minmax(180px,1.3fr)_100px_110px_minmax(220px,1.5fr)] items-center gap-3 px-3 py-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
+                        <article key={source.id} className="api-api-card api-credential-card">
+                          <div className="api-api-card-head">
+                            <button type="button" className="api-api-card-primary" aria-expanded={editingCredentialSourceId === source.id} onClick={() => setEditingCredentialSourceId(source.id)}>
                               <span className={cn('h-2 w-2 shrink-0 rounded-full', source.enabled ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-text-muted)]')} />
-                              <strong className="truncate text-[12.5px]" title={source.label}>{source.label}</strong>
+                              <span className="api-api-card-identity"><strong title={source.label}>{source.label}</strong><code title={source.credentialId}>{source.credentialId}</code></span>
+                            </button>
+                            <div className="api-api-card-actions">
+                              <Toggle checked={source.enabled} onChange={(enabled) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, enabled } : entry) }))} label={source.enabled ? '入池' : '未入池'} />
+                              <Button size="icon" variant="ghost" aria-label={`编辑凭证来源 ${source.label}`} title="编辑凭证来源" onClick={() => setEditingCredentialSourceId(source.id)}><Pencil size={14} /></Button>
                             </div>
-                            <span className="ml-4 block truncate font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]" title={source.credentialId}>{source.credentialId}</span>
                           </div>
-                          <span className="w-fit rounded-[var(--radius-pill)] bg-[var(--color-surface-2)] px-2 py-1 text-[10.5px] font-medium text-[var(--color-text-secondary)]">{providerLabel}</span>
-                          <Field label="优先级">
-                            <Input aria-label={`${source.label} 优先级`} type="number" value={source.priority} onChange={(event) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, priority: Number(event.target.value) } : entry) }))} />
-                          </Field>
-                          <div className="grid min-w-0 gap-2">
-                            <Field label={`可用模型 · ${source.models.length}`} hint="凭证映射会自动发现；也可手动补充，逗号或换行分隔">
-                              <Input
-                                aria-label={`${source.label} 可用模型`}
-                                className="font-[var(--font-mono)] text-[11px]"
-                                value={source.models.join(', ')}
-                                placeholder="未声明模型，路由时手动填写"
-                                onChange={(event) => updateCredentialSourceModels(source.id, parseModelList(event.target.value))}
-                              />
-                            </Field>
-                            <Toggle checked={source.enabled} onChange={(enabled) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, enabled } : entry) }))} label={source.enabled ? '已加入 API 池' : '仅账号切换'} />
+                          <div className="api-api-card-meta" aria-label={`${source.label} 凭证摘要`}>
+                            <span>{providerLabel}</span><span>{source.models.length} 个模型</span><span>优先级 {source.priority}</span><span>{source.enabled ? '已加入 API 服务' : '仅账号切换'}</span>
                           </div>
-                          <div className="api-entity-summary">
-                            <span>{source.enabled ? '已加入 API 服务' : '仅账号切换'}</span>
-                            <span>{source.models.length} 个可用模型</span>
-                            <span>优先级 {source.priority}</span>
+                          <div className={cn('api-api-card-result', source.enabled ? 'is-success' : 'is-idle')}>
+                            {source.enabled ? <Check size={13} /> : <ShieldCheck size={13} />}<span>{source.enabled ? '可作为本地 API 上游；故障时会按路由策略切换。' : '凭证已安全保留，尚未加入本地 API 来源池。'}</span>
+                          </div>
+                          <div className="api-api-card-models">
+                            {source.models.length > 0 ? source.models.slice(0, 5).map((model) => <code key={model} title={model}>{model}</code>) : <span>尚未声明模型；可在详情中刷新或手动补充。</span>}
+                            {source.models.length > 5 ? <small>+{source.models.length - 5}</small> : null}
                           </div>
                         </article>
                       )
@@ -1689,7 +1684,7 @@ export function ApiServerPage(): React.JSX.Element {
 
         {tuningDialogOpen ? createPortal(
           <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setTuningDialogOpen(false) }}>
-            <DialogPanel className="api-upstream-dialog max-w-[680px]" role="dialog" aria-modal="true" aria-labelledby="api-tuning-title">
+            <DialogPanel className="api-upstream-dialog max-w-[680px]" role="dialog" aria-modal="true" aria-labelledby="api-tuning-title" onDismiss={() => setTuningDialogOpen(false)}>
               <DialogHeader>
                 <div><h2 id="api-tuning-title" className="text-[15px] font-semibold text-[var(--color-text)]">超时、重试与会话路由</h2><p className="mt-1 text-[11px] text-[var(--color-text-muted)]">这些设置直接作用于运行中的 API 服务，保存后热更新。</p></div>
                 <Button size="icon" variant="ghost" aria-label="关闭超时与故障切换窗口" onClick={() => setTuningDialogOpen(false)}><X size={17} /></Button>
@@ -1697,10 +1692,11 @@ export function ApiServerPage(): React.JSX.Element {
               <div className="api-upstream-dialog-body api-editor-dialog-body">
                 <section className="api-editor-section">
                   <header><strong>上游请求</strong><span>只限制建立上游响应的等待时间；流已经开始后不会因为该值被中途截断。</span></header>
-                  <div className="api-editor-fields three-columns">
+                  <div className="api-editor-fields four-columns">
                     <Field label="请求超时（秒）" hint="5–1800 秒"><Input type="number" min={5} max={1800} value={Math.round((draft.requestTimeoutMs ?? 120000) / 1000)} onChange={(event) => updateDraft((current) => ({ ...current, requestTimeoutMs: Number(event.target.value) * 1000 }))} /></Field>
                     <Field label="最多尝试来源" hint="0 = 尝试全部可用来源"><Input type="number" min={0} max={100} value={draft.maxRetrySources ?? 0} onChange={(event) => updateDraft((current) => ({ ...current, maxRetrySources: Number(event.target.value) }))} /></Field>
                     <Field label="切换等待（毫秒）" hint="0–30000"><Input type="number" min={0} max={30000} value={draft.retryDelayMs ?? 0} onChange={(event) => updateDraft((current) => ({ ...current, retryDelayMs: Number(event.target.value) }))} /></Field>
+                    <Field label="每来源媒体并发" hint="图片、视频、音频；1–16"><Input type="number" min={1} max={16} value={draft.maxConcurrentMediaRequests ?? 1} onChange={(event) => updateDraft((current) => ({ ...current, maxConcurrentMediaRequests: Number(event.target.value) }))} /></Field>
                   </div>
                 </section>
                 <section className="api-editor-section">
@@ -1718,7 +1714,7 @@ export function ApiServerPage(): React.JSX.Element {
           if (!route) return null
           return (
             <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingRouteIndex(null) }}>
-              <DialogPanel className="api-upstream-dialog api-editor-dialog max-w-[860px]" role="dialog" aria-modal="true" aria-labelledby="route-editor-title">
+              <DialogPanel className="api-upstream-dialog api-editor-dialog max-w-[860px]" role="dialog" aria-modal="true" aria-labelledby="route-editor-title" onDismiss={() => setEditingRouteIndex(null)}>
                 <DialogHeader>
                   <div><h2 id="route-editor-title" className="text-[15px] font-semibold text-[var(--color-text)]">模型路由</h2><p className="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">客户端名称与每个 API 或凭证来源的真实模型映射。</p></div>
                   <Button size="icon" variant="ghost" aria-label="关闭模型路由窗口" title="关闭" onClick={() => setEditingRouteIndex(null)}><X size={17} /></Button>
@@ -1741,7 +1737,7 @@ export function ApiServerPage(): React.JSX.Element {
           const storedUpstreamKey = entry.apiKey === undefined && entry.hasApiKey
           return (
             <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeUpstreamEditor() }}>
-              <DialogPanel className="api-upstream-dialog api-editor-dialog max-w-[860px]" role="dialog" aria-modal="true" aria-labelledby="api-editor-title">
+              <DialogPanel className="api-upstream-dialog api-editor-dialog max-w-[860px]" role="dialog" aria-modal="true" aria-labelledby="api-editor-title" onDismiss={closeUpstreamEditor}>
                 <DialogHeader>
                   <div>
                     <h2 id="api-editor-title" className="text-[15px] font-semibold text-[var(--color-text)]">编辑 API</h2>
@@ -1791,6 +1787,47 @@ export function ApiServerPage(): React.JSX.Element {
           )
         })(), document.body) : null}
 
+        {editingCredentialSourceId ? createPortal((() => {
+          const source = draft.credentialSources.find((entry) => entry.id === editingCredentialSourceId)
+          if (!source) return null
+          const providerLabel = {
+            codex: 'Codex', 'cpa-codex': 'CPA · Codex', grok: 'Grok', 'cpa-grok': 'CPA · Grok', 'agent-identity': 'Codex · Agent Identity'
+          }[source.provider]
+          const updateSource = (patch: Partial<CredentialSourceInput>): void => updateDraft((current) => ({
+            ...current,
+            credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, ...patch } : entry)
+          }))
+          return (
+            <DialogBackdrop className="api-upstream-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingCredentialSourceId(null) }}>
+              <DialogPanel className="api-upstream-dialog api-editor-dialog max-w-[720px]" role="dialog" aria-modal="true" aria-labelledby="credential-source-editor-title" onDismiss={() => setEditingCredentialSourceId(null)}>
+                <DialogHeader>
+                  <div><h2 id="credential-source-editor-title" className="text-[15px] font-semibold text-[var(--color-text)]">账号凭证来源</h2><p className="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{providerLabel} · {source.credentialId}</p></div>
+                  <Button size="icon" variant="ghost" aria-label="关闭账号凭证来源窗口" title="关闭" onClick={() => setEditingCredentialSourceId(null)}><X size={17} /></Button>
+                </DialogHeader>
+                <div className="api-upstream-dialog-body api-editor-dialog-body">
+                  <section className="api-editor-section">
+                    <header><strong>API 来源状态</strong><span>这里仅保存账号库的安全引用；Token、私钥和上游凭证不会进入页面或 Codex 配置。</span></header>
+                    <div className="api-editor-fields two-columns">
+                      <Field label="显示名称"><Input autoFocus value={source.label} onChange={(event) => updateSource({ label: event.target.value })} /></Field>
+                      <Field label="调度优先级" hint="数值越小越优先"><Input type="number" value={source.priority} onChange={(event) => updateSource({ priority: Number(event.target.value) })} /></Field>
+                    </div>
+                    <Toggle checked={source.enabled} onChange={(enabled) => updateSource({ enabled })} label={source.enabled ? '已加入本地 API 来源池' : '仅作为账号切换来源'} />
+                  </section>
+                  <section className="api-editor-section">
+                    <header><strong>可用模型 · {source.models.length}</strong><span>刷新账号模型后自动更新；必要时可手动补充，路由会与此列表双向同步。</span></header>
+                    <textarea aria-label={`${source.label} 可用模型`} className={cn(textareaClass, 'api-model-editor')} value={source.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateCredentialSourceModels(source.id, parseModelList(event.target.value))} />
+                  </section>
+                </div>
+                <DialogActions>
+                  <Button variant="ghost" onClick={() => setEditingCredentialSourceId(null)}>完成</Button>
+                  <Button disabled={isBusy} onClick={() => void refreshModels({ upstreams: [], testUpstreams: false, refreshCredentials: true })}>{action === 'refresh-all-models' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}刷新凭证模型</Button>
+                  <Button variant="default" disabled={!dirty || isBusy} onClick={() => void save()}>{action === 'save' ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{dirty ? '保存并热更新' : '已保存'}</Button>
+                </DialogActions>
+              </DialogPanel>
+            </DialogBackdrop>
+          )
+        })(), document.body) : null}
+
         {upstreamDialogMode ? createPortal(
           <DialogBackdrop
             className="api-upstream-dialog-backdrop"
@@ -1798,7 +1835,7 @@ export function ApiServerPage(): React.JSX.Element {
               if (event.target === event.currentTarget) closeUpstreamDialog()
             }}
           >
-            <DialogPanel className="api-upstream-dialog max-w-[820px]" role="dialog" aria-modal="true" aria-labelledby="upstream-dialog-title">
+            <DialogPanel className="api-upstream-dialog max-w-[820px]" role="dialog" aria-modal="true" aria-labelledby="upstream-dialog-title" onDismiss={closeUpstreamDialog}>
               <DialogHeader>
                 <div>
                   <h2 id="upstream-dialog-title" className="text-[15px] font-semibold text-[var(--color-text)]">添加 API</h2>

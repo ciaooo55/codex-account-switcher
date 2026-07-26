@@ -3,6 +3,12 @@ export const LOCAL_API_SERVER_HOST = '127.0.0.1' as const
 export const DEFAULT_LOCAL_API_REQUEST_TIMEOUT_MS = 120_000
 export const DEFAULT_LOCAL_API_MAX_RETRY_SOURCES = 0
 export const DEFAULT_LOCAL_API_RETRY_DELAY_MS = 0
+/**
+ * Media generation is typically far more resource- and quota-intensive than
+ * text. Keep one in-flight media request per source by default so a single
+ * local client cannot accidentally exhaust one upstream account.
+ */
+export const DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS = 1
 
 /**
  * Wire format exposed by a third-party upstream.  `auto` is intentionally
@@ -150,6 +156,8 @@ export interface LocalApiServerConfigInput {
   maxRetrySources?: number
   /** Optional bounded pause before trying the next source. */
   retryDelayMs?: number
+  /** Per-source concurrency cap for image, video and audio requests. */
+  maxConcurrentMediaRequests?: number
   /** Keeps an identified conversation on the same healthy source. */
   sessionAffinity?: boolean
   accessKeys: LocalApiAccessKeyInput[]
@@ -575,9 +583,13 @@ export function normalizeLocalApiServerConfig(
   const retryDelayMs = Number.isFinite(input.retryDelayMs)
     ? Math.trunc(input.retryDelayMs ?? DEFAULT_LOCAL_API_RETRY_DELAY_MS)
     : DEFAULT_LOCAL_API_RETRY_DELAY_MS
+  const maxConcurrentMediaRequests = Number.isFinite(input.maxConcurrentMediaRequests)
+    ? Math.trunc(input.maxConcurrentMediaRequests ?? DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS)
+    : DEFAULT_LOCAL_API_MAX_CONCURRENT_MEDIA_REQUESTS
   if (requestTimeoutMs < 5_000 || requestTimeoutMs > 30 * 60_000) throw new Error('上游请求超时必须在 5 秒到 30 分钟之间')
   if (maxRetrySources < 0 || maxRetrySources > 100) throw new Error('最大尝试来源数必须在 0 到 100 之间')
   if (retryDelayMs < 0 || retryDelayMs > 30_000) throw new Error('故障切换等待必须在 0 到 30 秒之间')
+  if (maxConcurrentMediaRequests < 1 || maxConcurrentMediaRequests > 16) throw new Error('每来源媒体并发数必须在 1 到 16 之间')
 
   return {
     port: input.port,
@@ -585,6 +597,7 @@ export function normalizeLocalApiServerConfig(
     requestTimeoutMs,
     maxRetrySources,
     retryDelayMs,
+    maxConcurrentMediaRequests,
     sessionAffinity: input.sessionAffinity !== false,
     accessKeys,
     upstreams,

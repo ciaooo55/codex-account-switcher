@@ -2148,6 +2148,7 @@ async function main(): Promise<void> {
     requestTimeoutMs: z.number().int().min(5_000).max(30 * 60_000).optional(),
     maxRetrySources: z.number().int().min(0).max(100).optional(),
     retryDelayMs: z.number().int().min(0).max(30_000).optional(),
+    maxConcurrentMediaRequests: z.number().int().min(1).max(16).optional(),
     sessionAffinity: z.boolean().optional(),
     accessKeys: z.array(z.object({
       id: z.string().min(1).max(128),

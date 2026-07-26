@@ -331,8 +331,18 @@ table thead th {
 }
 /* Local API server workbench */
 .api-server-view {
+  /* Bridge legacy controls onto the API workbench's semantic surface scale.
+   * This prevents a `--ui-*` control from reading as a differently tinted
+   * strip beside a `--color-surface-*` panel in either theme. */
+  --ui-bg: var(--color-bg);
+  --ui-surface: var(--color-surface-0);
+  --ui-surface-raised: var(--color-surface-1);
+  --ui-surface-hover: var(--color-surface-2);
+  --ui-surface-selected: var(--color-surface-3);
+  --ui-border: var(--color-border);
+  --ui-border-strong: var(--color-border-strong);
   scrollbar-gutter: stable;
-  background: var(--ui-bg);
+  background: var(--color-bg);
 }
 
 .api-server-status dd,
@@ -1760,8 +1770,10 @@ table thead th {
   .api-credential-list,
   .api-route-list { grid-template-columns: 1fr; padding: 8px; }
 
-  .api-route-summary-main { grid-template-columns: minmax(130px, 1fr) minmax(110px, .8fr) minmax(130px, 1fr); gap: 8px; }
-  .api-route-summary-main small { display: none; }
+  /* Preserve public name, source and mapped upstream model at every width.
+   * These are route semantics, not decorative secondary information. */
+  .api-route-summary-main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .api-route-summary-main small { display: block; grid-column: 1 / -1; }
 }
 
 @media (max-width: 460px) {
@@ -1792,8 +1804,8 @@ table thead th {
   .api-activity-log-head > span:first-child { display: none; }
   .api-route-summary-card { grid-template-columns: 1fr; }
   .api-route-summary-actions { justify-content: space-between; min-height: 34px; padding: 4px 10px; border-top: 1px solid var(--color-border); border-left: 0; }
-  .api-route-summary-main { grid-template-columns: minmax(0, 1fr) auto; }
-  .api-route-summary-main > span:nth-of-type(2) { display: none; }
+  .api-route-summary-main { grid-template-columns: minmax(0, 1fr); }
+  .api-route-summary-main > span:nth-of-type(2) { display: block; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1921,11 +1933,11 @@ table thead th {
 .app-header__import { min-width: 96px; }
 .app-header__api-import { min-width: 122px; }
 
-/* API service is a workbench, not a stack of modal forms. The global header
- * deliberately uses the same neutral surface in both themes so the dark mode
- * does not inherit the old colored header glow. */
-.app-shell { background: var(--ui-bg); }
-.app-header { background: var(--ui-surface); }
+/* API service is a workbench, not a stack of modal forms. Keep the global
+ * header on the same semantic surface scale as the workbench so its top edge
+ * does not switch to the legacy `--ui-*` tint in dark or light mode. */
+.app-shell { background: var(--color-bg); }
+.app-header { background: var(--color-surface-0); }
 
 .api-management-section {
   display: flex;
@@ -2191,8 +2203,8 @@ table thead th {
 
 .accounts-view .selection-count { margin-left: auto; }
 
-:root[data-theme="light"] .app-shell { background: var(--ui-bg); }
-:root[data-theme="light"] .app-header { background: #fbfcfc; }
+:root[data-theme="light"] .app-shell { background: var(--color-bg); }
+:root[data-theme="light"] .app-header { background: var(--color-surface-0); }
 :root[data-theme="light"] .accounts-view .current-account-overview { background: #f4f9f6; }
 :root[data-theme="light"] .accounts-view .selection-toolbar { background: #f1f7f8; }
 
@@ -2400,7 +2412,9 @@ table thead th {
 }
 
 .api-server-layout {
-  min-height: 470px !important;
+  /* The workbench is content-sized. Empty states keep their own local
+   * minimums, while short sections no longer leave a large blank panel. */
+  min-height: 0 !important;
   border-radius: 10px !important;
 }
 

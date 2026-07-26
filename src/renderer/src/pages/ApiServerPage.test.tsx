@@ -160,6 +160,16 @@ describe('ApiServerPage', () => {
     expect(await within(dialog).findByText('测试成功')).toBeInTheDocument()
   })
 
+  it('让 API 编辑浮窗支持 Escape 关闭，避免焦点停留在遮罩后方', async () => {
+    render(<ApiServerPage />)
+    await openApiSection('API')
+    fireEvent.click(screen.getByRole('button', { name: '编辑 API 上游 A' }))
+    expect(await screen.findByRole('dialog', { name: '编辑 API' })).toBeInTheDocument()
+    expect(document.body.style.overflow).toBe('hidden')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '编辑 API' })).not.toBeInTheDocument())
+  })
+
   it('保存端口和自启设置时不将已保存秘密回传 Renderer', async () => {
     render(<ApiServerPage />)
     await openApiSection('客户端密钥')
@@ -184,6 +194,7 @@ describe('ApiServerPage', () => {
     fireEvent.change(within(dialog).getByLabelText(/请求超时/), { target: { value: '45' } })
     fireEvent.change(within(dialog).getByLabelText(/最多尝试来源/), { target: { value: '2' } })
     fireEvent.change(within(dialog).getByLabelText(/切换等待/), { target: { value: '250' } })
+    fireEvent.change(within(dialog).getByLabelText(/每来源媒体并发/), { target: { value: '3' } })
     fireEvent.click(within(dialog).getByLabelText('保持同一会话使用相同来源'))
     fireEvent.click(within(dialog).getByRole('button', { name: '保存并热更新' }))
 
@@ -192,6 +203,7 @@ describe('ApiServerPage', () => {
       requestTimeoutMs: 45_000,
       maxRetrySources: 2,
       retryDelayMs: 250,
+      maxConcurrentMediaRequests: 3,
       sessionAffinity: false
     })
   })
@@ -388,9 +400,11 @@ describe('ApiServerPage', () => {
     }))
 
     await openApiSection('账号凭证源')
+    fireEvent.click(await screen.findByRole('button', { name: '编辑凭证来源 user@example.com' }))
+    const credentialDialog = await screen.findByRole('dialog', { name: '账号凭证来源' })
     const models = await screen.findByLabelText('user@example.com 可用模型')
     fireEvent.change(models, { target: { value: 'gpt-5.4, gpt-5.5' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+    fireEvent.click(within(credentialDialog).getByRole('button', { name: '保存并热更新' }))
 
     await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
     expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].credentialSources[0].models).toEqual(['gpt-5.4', 'gpt-5.5'])
@@ -417,8 +431,10 @@ describe('ApiServerPage', () => {
 
     expect(screen.getAllByText('user@example.com').length).toBeGreaterThan(0)
     expect(screen.getByText('credential-1')).toBeInTheDocument()
-    fireEvent.click(screen.getByLabelText('仅账号切换'))
-    fireEvent.click(screen.getByRole('button', { name: '保存并热更新' }))
+    fireEvent.click(screen.getByRole('button', { name: '编辑凭证来源 user@example.com' }))
+    const dialog = await screen.findByRole('dialog', { name: '账号凭证来源' })
+    fireEvent.click(within(dialog).getByLabelText('仅作为账号切换来源'))
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存并热更新' }))
 
     await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
     expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].credentialSources[0]).toMatchObject({
