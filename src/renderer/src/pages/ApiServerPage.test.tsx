@@ -302,6 +302,38 @@ describe('ApiServerPage', () => {
     ]))
   })
 
+  it('让模型总览反向补全 API 卡片的目标模型列表', async () => {
+    render(<ApiServerPage />)
+    await openApiSection('公开模型路由')
+    fireEvent.click(screen.getAllByRole('button', { name: '编辑模型 xxx' })[0])
+    const dialog = screen.getByRole('dialog', { name: '模型路由' })
+    fireEvent.change(within(dialog).getByLabelText('xxx 目标模型'), { target: { value: 'gpt-5.4-alias' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存更改' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0]).toMatchObject({
+      upstreams: [expect.objectContaining({ id: 'upstream-a', models: ['gpt-5.4', 'gpt-5.4-alias'] })],
+      routes: [expect.objectContaining({
+        publicModel: 'xxx',
+        targets: [expect.objectContaining({ sourceId: 'upstream-a', upstreamModel: 'gpt-5.4-alias' })]
+      })]
+    })
+  })
+
+  it('在 API 卡片移除模型时暂停对应路由，而不是静默删除映射', async () => {
+    render(<ApiServerPage />)
+    await openApiSection('API')
+    fireEvent.click(screen.getByRole('button', { name: '编辑 API 上游 A' }))
+    const dialog = screen.getByRole('dialog', { name: '编辑 API' })
+    fireEvent.change(within(dialog).getByDisplayValue('gpt-5.4'), { target: { value: '' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存更改' }))
+
+    await waitFor(() => expect(api.saveLocalApiServerConfig).toHaveBeenCalled())
+    expect(api.saveLocalApiServerConfig.mock.calls.at(-1)?.[0].routes[0].targets[0]).toMatchObject({
+      sourceId: 'upstream-a', upstreamModel: 'gpt-5.4', enabled: false
+    })
+  })
+
   it('保存第三方上游的自定义鉴权头而不把密钥重复写进配置', async () => {
     render(<ApiServerPage />)
     await openApiSection('API')

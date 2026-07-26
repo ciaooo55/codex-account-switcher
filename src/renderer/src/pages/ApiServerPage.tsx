@@ -821,6 +821,44 @@ export function ApiServerPage(): React.JSX.Element {
     ...(route.sourceMode === 'api_only' ? [] : draft?.credentialSources.map((entry) => ({ id: entry.id, label: entry.label, models: entry.models, kind: 'credential' as const })) ?? [])
   ]
 
+  /**
+   * API cards and model routes intentionally share one source-model list.
+   * Removing a model never silently deletes a route: its target is paused so
+   * the user can restore the model or edit the mapping without losing work.
+   */
+  const reconcileSourceModels = (
+    current: ApiServerDraft,
+    sourceId: string,
+    models: string[]
+  ): ApiServerDraft => {
+    const allowed = new Set(models)
+    return {
+      ...current,
+      routes: current.routes.map((route) => ({
+        ...route,
+        targets: route.targets.map((target) => (
+          target.sourceId === sourceId && !allowed.has(target.upstreamModel)
+            ? { ...target, enabled: false }
+            : target
+        ))
+      }))
+    }
+  }
+
+  const updateApiSourceModels = (sourceId: string, models: string[]): void => {
+    updateDraft((current) => reconcileSourceModels({
+      ...current,
+      upstreams: current.upstreams.map((entry) => entry.id === sourceId ? { ...entry, models } : entry)
+    }, sourceId, models))
+  }
+
+  const updateCredentialSourceModels = (sourceId: string, models: string[]): void => {
+    updateDraft((current) => reconcileSourceModels({
+      ...current,
+      credentialSources: current.credentialSources.map((entry) => entry.id === sourceId ? { ...entry, models } : entry)
+    }, sourceId, models))
+  }
+
   const updateRoute = (index: number, patch: Partial<ModelRoute>): void => {
     updateDraft((current) => ({
       ...current,
@@ -829,13 +867,32 @@ export function ApiServerPage(): React.JSX.Element {
   }
 
   const updateTarget = (routeIndex: number, targetIndex: number, patch: Partial<ModelRouteTarget>): void => {
-    updateDraft((current) => ({
-      ...current,
-      routes: current.routes.map((route, currentRouteIndex) => currentRouteIndex !== routeIndex ? route : {
-        ...route,
-        targets: route.targets.map((target, currentTargetIndex) => currentTargetIndex === targetIndex ? { ...target, ...patch } : target)
-      })
-    }))
+    updateDraft((current) => {
+      const route = current.routes[routeIndex]
+      const previous = route?.targets[targetIndex]
+      const sourceId = patch.sourceId ?? previous?.sourceId
+      const upstreamModel = patch.upstreamModel?.trim()
+      let next: ApiServerDraft = {
+        ...current,
+        routes: current.routes.map((candidate, currentRouteIndex) => currentRouteIndex !== routeIndex ? candidate : {
+          ...candidate,
+          targets: candidate.targets.map((target, currentTargetIndex) => currentTargetIndex === targetIndex ? { ...target, ...patch } : target)
+        })
+      }
+      // Editing a target model is the reverse half of the shared mapping:
+      // keep the matching API/credential card aware of the value immediately.
+      if (sourceId && upstreamModel) {
+        const api = next.upstreams.find((entry) => entry.id === sourceId)
+        if (api && !api.models.includes(upstreamModel)) {
+          next = { ...next, upstreams: next.upstreams.map((entry) => entry.id === sourceId ? { ...entry, models: [...entry.models, upstreamModel] } : entry) }
+        }
+        const credential = next.credentialSources.find((entry) => entry.id === sourceId)
+        if (credential && !credential.models.includes(upstreamModel)) {
+          next = { ...next, credentialSources: next.credentialSources.map((entry) => entry.id === sourceId ? { ...entry, models: [...entry.models, upstreamModel] } : entry) }
+        }
+      }
+      return next
+    })
   }
 
   const selectedCodexKey = draft?.accessKeys.find((entry) => entry.id === codexKeyId)
@@ -1579,7 +1636,7 @@ export function ApiServerPage(): React.JSX.Element {
                                 className="font-[var(--font-mono)] text-[11px]"
                                 value={source.models.join(', ')}
                                 placeholder="未声明模型，路由时手动填写"
-                                onChange={(event) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, models: parseModelList(event.target.value) } : entry) }))}
+                                onChange={(event) => updateCredentialSourceModels(source.id, parseModelList(event.target.value))}
                               />
                             </Field>
                             <Toggle checked={source.enabled} onChange={(enabled) => updateDraft((current) => ({ ...current, credentialSources: current.credentialSources.map((entry) => entry.id === source.id ? { ...entry, enabled } : entry) }))} label={source.enabled ? '已加入 API 池' : '仅账号切换'} />
@@ -1720,7 +1777,7 @@ export function ApiServerPage(): React.JSX.Element {
                   </section>
                   <section className="api-editor-section">
                     <header><strong>可用模型 · {entry.models.length}</strong><span>测试成功后自动填充，也可以逐行编辑。</span></header>
-                    <textarea className={cn(textareaClass, 'api-model-editor')} value={entry.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateDraft((current) => ({ ...current, upstreams: current.upstreams.map((item) => item.id === entry.id ? { ...item, models: parseModelList(event.target.value) } : item) }))} />
+                    <textarea className={cn(textareaClass, 'api-model-editor')} value={entry.models.join('\n')} placeholder="gpt-5.4\nmy-model" onChange={(event) => updateApiSourceModels(entry.id, parseModelList(event.target.value))} />
                     {probe?.message ? <details className={cn('api-probe-details', probe.catalogOk ? probe.probeOk === false ? 'is-warning' : 'is-neutral' : 'is-error')}><summary>查看模型探测与协议诊断</summary><pre>{probe.message}</pre></details> : null}
                   </section>
                 </div>
