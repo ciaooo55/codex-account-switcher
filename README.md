@@ -1,6 +1,15 @@
 # Codex Account Switcher
 
-## 项目速览
+![Version](https://img.shields.io/badge/version-0.14.10-2563eb)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows)
+![Electron](https://img.shields.io/badge/Electron-43-47848F?logo=electron)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
+![App](https://img.shields.io/badge/app-local%20desktop-6b7280)
+
+> Windows 本地 Codex / Grok / CPA 账号管理、检测、切换与 OpenAI 兼容 API 工作台。
+
+## 📌 项目速览
 
 | 项目 | 说明 |
 | --- | --- |
@@ -15,7 +24,35 @@
 
 Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测真实请求能力与额度，安全切换 Codex `auth.json` / `config.toml`，并统一管理 CPA 目录中的 Codex 与 Grok 凭据。
 
-## 0.14 本地 API 服务
+## 🚀 安装与首次运行
+
+### 使用发布版
+
+1. 在仓库的 [Releases](https://github.com/ciaooo55/codex-account-switcher/releases) 页面下载 `Codex-Account-Switcher-Setup-<版本>.exe` 或 `Codex-Account-Switcher-Portable-<版本>.exe`。
+2. 安装版按向导选择目录；便携版放入一个长期固定、仅当前用户可访问的目录。
+3. 启动应用，在“设置”中确认 Codex 主目录、CPA `auth-dir` 与账号库路径。
+4. 先通过“导入预检”查看识别结果，再选择要写入的账号；无法识别的来源必须处理或明确跳过。
+5. 首次切换前建议先运行账号检测，并保留应用创建的配置备份。
+
+### 从源码运行
+
+需要 Node.js 与 npm。在仓库根目录执行：
+
+```powershell
+npm install
+npm run dev
+```
+
+## 🧭 基本使用流程
+
+1. **导入**：从文件、文件夹、ZIP 或粘贴内容进入统一预检中心。
+2. **确认**：核对提供商、邮箱、等级、重复项与身份冲突，并按需执行额度或完整检测。
+3. **入库**：确认后写入应用管理的 `aa/codex` 或 `aa/grok`，原始外部文件不被改写。
+4. **切换**：选择目标账号或自定义 API，应用原子更新 Codex 认证与受管配置项。
+5. **验证**：按提示修复并重启 Codex，确认当前账号摘要、额度和模型调用正常。
+6. **自动化（可选）**：配置定时检测、候选池与本地 API 路由；先用小范围账号验证规则。
+
+## 🌐 0.14 本地 API 服务
 
 - 内置真正的 OpenAI 兼容服务，固定监听 `127.0.0.1`，默认端口 `8888`；端口被占用时明确失败，不会改用 9593 等随机端口。
 - 支持 `GET /v1/models`、Responses、Responses compact、Chat Completions、SSE 和 Responses WebSocket，并可在 Responses / Chat Completions 之间转换常用的文本、图片、工具调用和流式事件。
@@ -24,7 +61,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - API 上游可粘贴 URL + Key、JSON、键值对、Base64 或 URL-safe Base64；检测会尝试带 `/v1` 和不带 `/v1` 的常见路径，并在真实请求成功后同步模型。
 - 项目密钥和上游 Key 使用 Windows DPAPI 加密保存；账号 token 在请求时从主进程凭据库动态解析，不进入 Renderer、API 服务配置或日志。
 
-## 主要功能
+## ✨ 主要功能
 
 - 统一导入入口可选择单个文件、多个文件、整个文件夹或粘贴内容；支持 `.json`、`.json.0`、`.json.无用量`、`.json.无权限`、`.jsonl`、`.txt`、`.md`、`.js`、`.mjs`、`.cjs`、`.zip`，兼容一账号一文件、一文件多账号、Codex/Grok 混合文件、CPA 扁平凭据和 SubAPI `accounts[].credentials`。普通导入只写应用自己的 `aa`，不会同步到 CPA 共享目录。
 - 导入会先进入预检中心，不会在用户确认前写入账号库；预检按 Codex/Grok、邮箱、等级、来源和“新增/更新/重复/身份冲突”筛选，支持点击整行累积单选/多选、筛选结果全选、逐条选择新增/合并更新/跳过，以及“检测选中”或“一键检测全部”。检测按设置的并发数逐账号实时显示状态和额度，刷新后的 token 仅保留在主进程会话中，确认写入后才保存选中账号及其检测结果。任何无法识别的来源都会单独列出并锁定确认按钮，可手动选择 Codex JSON/AT、Grok JSON/AT、Codex RT 或移动端 RT 重新识别；只有识别成功或显式勾选跳过后才能继续，绝不会无脑写入。
@@ -58,7 +95,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 安装或升级时只按安装目录精确查找并关闭旧程序，不会把下载目录中的安装器自身当成应用进程。应用内更新会按已安装 EXE 的完整路径等待所有旧进程，超时后只结束该路径对应的进程再继续覆盖安装。
 - 应用启用 Windows 单实例锁；重复启动会聚焦已有窗口。
 
-## CPA 账号管理
+## 🗂️ CPA 账号管理
 
 - CPA 页面包含 Codex 和 Grok 两个独立子页。两类账号共用 `E:\home\<当前用户名>\.cli-proxy-api`，但测试全部、测试选中、实时进度、取消和筛选互不串台，CPA 页面也不会写入 `.codex`。
 - 只有 CPA 页面中的明确管理操作，或 Codex/Grok 本地库的“导出到 CPA”会写共享目录；直接导出按稳定身份去重，已有 Codex 账号会原位更新凭证和导出优先级，不创建副本。
@@ -72,7 +109,7 @@ Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测
 - 支持搜索、状态筛选、额度/等级/状态排序、单选/多选、右键检测/启停/打开文件位置/复制/导出/删除、二次确认删除、CPA 一账号一文件导出和 Sub2API 多账号合并导出。
 - CPA 共享目录中的凭据是供 CPA/Sub2API 直接使用的明文 OAuth JSON，请限制该目录访问。应用状态文件和 renderer 数据不包含 token。
 
-## CPA 与 SubAPI 导入导出
+## 🔄 CPA 与 SubAPI 导入导出
 
 | 格式 | 每账号一文件 | 多账号单文件 |
 | --- | --- | --- |
@@ -86,7 +123,7 @@ Sub2API 导出保留 `accounts[].credentials` 嵌套结构；CPA 导出转为一
 
 Sub2API 仅作为离线导入/导出格式兼容；应用不连接 Sub2API 服务、不读取其数据库，也没有 Sub2API 管理页面。
 
-## 第三方 API 配置格式
+## ⚙️ 第三方 API 配置格式
 
 切换成功后，应用写入的核心 `config.toml` 结构如下（其他用户配置和非本应用 provider 会保留）：
 
@@ -107,7 +144,24 @@ supports_websockets = false
 
 同时写入标准 API Key 认证文件 `{ "auth_mode": "apikey", "OPENAI_API_KEY": "..." }`。配置不包含顶层 `openai_base_url`。`account-switcher-model-catalog.json` 位于 `config.toml` 同一目录，采用 Cockpit 相同的 `{ "models": [...] }` 根结构；每个模型都写入 Codex 解析所需的完整元数据和非空 `base_instructions`，文件写完并通过 JSON/模型复检后才更新 `model_catalog_json` 引用，避免旧简化目录或半写文件导致启动卡住。
 
-## 开发与验证
+## 🧱 目录结构
+
+```text
+codex-account-switcher/
+├─ src/main/                 Electron 主进程、账号服务、存储与切换逻辑
+├─ src/preload/              受控 IPC 桥接
+├─ src/renderer/             React 界面、页面与组件
+├─ src/shared/               主进程与界面共享的类型和协议
+├─ tests/e2e/                Playwright 端到端测试
+├─ build/                    图标与 Windows 安装器脚本
+├─ docs/plans/               兼容性设计与实现记录
+├─ package.json              版本、脚本、依赖与打包配置
+└─ release/                  本地打包产物（构建后生成，不提交）
+```
+
+主进程负责凭据和文件系统操作；Renderer 只通过 Preload 暴露的 IPC 调用能力，避免把敏感字段直接送入页面上下文。
+
+## 🧪 开发与验证
 
 ```powershell
 npm install
@@ -122,7 +176,7 @@ npm run package:win
 - `Codex-Account-Switcher-Setup-<版本>.exe`：安装版
 - `Codex-Account-Switcher-Portable-<版本>.exe`：便携版
 
-## 默认路径
+## 📁 配置与数据位置
 
 - 导入文件默认目录：上次选择的目录；新安装默认 `E:\home\<当前用户名>\.cli-proxy-api`
 - Codex 本地凭证库：安装版为安装目录下的 `aa/codex`，便携版为 EXE 同目录下的 `aa/codex`
@@ -133,11 +187,22 @@ npm run package:win
 
 找不到 `.codex` 时应用会提示选择或创建目录；目录存在但没有 `auth.json` 时，首次切换会原子创建。找不到 CPA `auth-dir` 时也会提示选择目录，取消选择则在当前用户目录创建 `.cli-proxy-api`。所有路径均可在设置中修改。导入目录仅作为文件选择器的默认位置，应用不会删除、重命名或覆盖任何外部源文件。
 
+应用自身的设置、状态、加密凭据库、备份、隔离区和会话索引位于 Electron `userData` 目录。普通安装通常对应当前用户的 `%APPDATA%\Codex Account Switcher`；测试或显式设置 `CODEX_SWITCHER_USER_DATA` 时以实际路径为准。可移植账号库 `aa` 的位置则遵循上方规则，不应与加密状态库混为一谈。
+
 只有 access token、没有完整 `id_token` 与 `refresh_token` 的 CPA Team/K12 账号仍可检测额度、持久管理、导出和切换。切换器会写入 `auth_mode: "chatgpt"`、以 access JWT 作为 ID token、保留 workspace ID，并将 `refresh_token` 写为空字符串。该兼容格式可由文件认证读取，但不能持久刷新，切换后需重启 Codex；标准 OAuth 凭据仍由 Codex 正常自动刷新。
 
 `at-...` Personal Access Token 是另一种认证类型，不使用上面的 OAuth 外部 token 结构。应用会按官方 Codex 当前源码写入 `{ "OPENAI_API_KEY": null, "personal_access_token": "at-..." }`；Codex 通过该字段自动识别 `personalAccessToken` 模式。代理平台能使用这类 token、但把它放进 `tokens.access_token` 后 Codex 显示未登录，正是因为认证类型和持久化字段不匹配。
 
-## 历史会话修复
+## 🔐 安全与隐私
+
+- 项目不是 OpenAI、xAI、CPA 或 Sub2API 官方产品；仅管理你本人拥有或明确获准使用的账号与服务。
+- 应用内部凭据库、自定义 API Key 和切换备份使用 Electron `safeStorage` / Windows DPAPI；Renderer 与常规日志不接收原始 token。
+- `aa/codex`、`aa/grok`、CPA `auth-dir`、Codex `auth.json` 以及部分兼容配置必须以明文供目标程序读取。请使用仅当前 Windows 用户可访问的目录，不要放入网盘同步、公共共享目录或 Git 仓库。
+- 导出 ZIP / JSON、故障诊断、截图和会话备份都可能间接暴露账号信息；分享前逐项检查，使用后及时转移或删除。
+- 本地 API 固定监听回环地址并使用项目访问密钥。不要通过端口转发、反向代理或防火墙规则直接暴露到公网。
+- 删除、体检修复、CPA 同步和会话清理都有明确作用域；涉及真实库时先备份并从少量账号开始验证。
+
+## 🧩 历史会话修复
 
 修复操作只修改 `session_meta.payload.model_provider`、Codex 官方 `state_5.sqlite` 的 `threads` 索引（包括 `model_provider`、`has_user_event`、`thread_source`）和相关工作区路径，不修改消息正文。账号切换会自动关闭 Codex、修复并重启；第三方 API 保存后由用户选择是否执行同一流程。手动修复检测到 Codex 正在运行时会拒绝写入，避免当前对话继续追加时产生卡住或状态覆盖。应用在 `.codex\backups_state\account-switcher-provider-sync` 创建可审计备份，并在写入后重新扫描验证结果。
 
