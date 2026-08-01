@@ -1,5 +1,18 @@
 # Codex Account Switcher
 
+## 项目速览
+
+| 项目 | 说明 |
+| --- | --- |
+| 中文名称 | Codex 账号管理器 |
+| GitHub 仓库名 | `codex-account-switcher` |
+| 名称状态 | 保持当前名称，本轮没有改名 |
+| 主要用途 | 在 Windows 上导入、检测、分类、切换和导出 Codex、Grok 与 CPA 凭据 |
+| 附加能力 | 提供本机 OpenAI 兼容 API、额度检测、自动切换、会话修复和应用更新 |
+| 适用平台 | Windows 10/11 |
+
+这是一个功能较多的本地账号管理工具，不是 OpenAI 官方产品。第一次使用时建议先阅读下方的“主要功能”“默认路径”和安全说明，再导入真实账号。
+
 Windows 本地 Codex 与 CPA 账号管理器。应用扫描账号文件、检测真实请求能力与额度，安全切换 Codex `auth.json` / `config.toml`，并统一管理 CPA 目录中的 Codex 与 Grok 凭据。
 
 ## 0.14 本地 API 服务
