@@ -32,6 +32,7 @@ import { reconcileCodexStatuses, reconcileGrokStatuses } from './services/accoun
 import { AutoSwitchScheduler, shouldNotifyAutoSwitchCompletion } from './services/auto-switch'
 import { discoverCodexPaths, normalizeSelectedCodexDirectory } from './services/codex-paths'
 import { discoverCpaDirectory } from './services/cpa-paths'
+import { isInAppNavigation } from './services/navigation-guard'
 import { CodexProcessManager } from './services/codex-process'
 import { ConversationManager } from './services/conversation-manager'
 import { CpaCodexManager } from './services/cpa-codex-manager'
@@ -262,6 +263,9 @@ function createWindow(): BrowserWindow {
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isInAppNavigation(window.webContents.getURL(), url)) event.preventDefault()
   })
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)

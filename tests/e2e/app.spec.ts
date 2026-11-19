@@ -287,6 +287,21 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       has: page.getByLabel(`选择 ${email}`, { exact: true })
     }).first()
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
+    const appUrl = page.url()
+    await page.evaluate(() => {
+      window.location.href = 'https://example.com/'
+    })
+    await page.waitForTimeout(500)
+    await expect(electronApp.evaluate(async ({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]!.webContents
+      return {
+        url: contents.getURL(),
+        rendered: await contents.executeJavaScript("document.body.innerText.includes('e2e@example.com')")
+      }
+    })).resolves.toEqual({ url: appUrl, rendered: true })
+    await page.reload()
+    expect(page.url()).toBe(appUrl)
+    await expect(page.getByText('e2e@example.com').first()).toBeVisible()
     await expect(page.locator('meta[http-equiv="Content-Security-Policy"]')).toHaveAttribute(
       'content',
       /default-src 'self'/
