@@ -1,4 +1,4 @@
-import { join, win32 } from 'node:path'
+import { win32 } from 'node:path'
 import { z } from 'zod'
 import { normalizeCustomApiBaseUrl } from '../../shared/custom-api'
 import type { AppSettings } from '../../shared/types'
@@ -25,8 +25,8 @@ function defaults(homeDirectory: string): AppSettings {
   const accountName = win32.basename(win32.normalize(homeDirectory)) || 'user'
   return {
     accountDirectory: win32.join('E:\\home', accountName, '.cli-proxy-api'),
-    authPath: join(homeDirectory, '.codex', 'auth.json'),
-    configPath: join(homeDirectory, '.codex', 'config.toml'),
+    authPath: win32.join(homeDirectory, '.codex', 'auth.json'),
+    configPath: win32.join(homeDirectory, '.codex', 'config.toml'),
     concurrency: 4,
     timeoutMs: 30_000,
     backupRetention: 20,
