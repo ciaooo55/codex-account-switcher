@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CodexProcessManager,
   officialCodexRestartScript,
@@ -7,6 +7,27 @@ import {
 } from './codex-process'
 
 describe('CodexProcessManager', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
+
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' })
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', originalPlatform)
+  })
+
+  it('refuses to manage Codex processes on non-Windows platforms', async () => {
+    Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' })
+    const runner = vi.fn().mockResolvedValue('1')
+    const manager = new CodexProcessManager(runner)
+
+    await expect(manager.restart()).resolves.toEqual({ ok: false, message: '自动重启目前仅支持 Windows' })
+    await expect(manager.stop()).resolves.toEqual({ ok: false, message: '自动关闭目前仅支持 Windows' })
+    await expect(manager.isOfficialRunning()).resolves.toBe(false)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
   it('targets only official OpenAI Codex package processes and starts the AppID', async () => {
     expect(officialCodexRestartScript).toContain("-Name 'OpenAI.Codex'")
     expect(officialCodexRestartScript).toContain('$package.PackageFamilyName')
