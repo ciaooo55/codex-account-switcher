@@ -292,8 +292,13 @@ test.describe('Codex Account Switcher Electron workflow', () => {
       window.location.href = 'https://example.com/'
     })
     await page.waitForTimeout(500)
-    expect(page.url()).toBe(appUrl)
-    await expect(page.getByText('e2e@example.com').first()).toBeVisible()
+    await expect(electronApp.evaluate(async ({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]!.webContents
+      return {
+        url: contents.getURL(),
+        rendered: await contents.executeJavaScript("document.body.innerText.includes('e2e@example.com')")
+      }
+    })).resolves.toEqual({ url: appUrl, rendered: true })
     await page.reload()
     expect(page.url()).toBe(appUrl)
     await expect(page.getByText('e2e@example.com').first()).toBeVisible()
