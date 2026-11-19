@@ -357,7 +357,7 @@ export async function consumeInstallerResult(resultPath = getInstallerResultPath
 
 export async function cleanupLegacyUpdateCache(localAppData: string | undefined): Promise<void> {
   if (!localAppData) return
-  await rm(`${localAppData}\\codex-account-switcher-updater\\pending`, {
+  await rm(join(localAppData, 'codex-account-switcher-updater', 'pending'), {
     recursive: true,
     force: true
   })
