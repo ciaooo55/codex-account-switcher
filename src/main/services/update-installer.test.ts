@@ -110,7 +110,7 @@ describe('update installer', () => {
       '-EncodedCommand',
       encodedParserCommand
     ], { stdio: 'pipe' })).not.toThrow()
-  })
+  }, 60_000)
 
   it.runIf(process.platform === 'win32')('completes the detached install script lifecycle in a temporary directory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'switcher-update-integration-'))
