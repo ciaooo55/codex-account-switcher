@@ -7,7 +7,9 @@ export function isInAppNavigation(currentUrl: string, targetUrl: string): boolea
     const current = new URL(currentUrl)
     const target = new URL(targetUrl)
     if (current.protocol !== target.protocol) return false
-    if (current.protocol === 'file:') return current.pathname === target.pathname
+    if (current.protocol === 'file:') {
+      return current.host === target.host && current.pathname === target.pathname
+    }
     if (current.protocol === 'http:' || current.protocol === 'https:') {
       return current.origin === target.origin
     }

@@ -15,6 +15,13 @@ describe('isInAppNavigation', () => {
     expect(isInAppNavigation(packaged, 'javascript:alert(1)')).toBe(false)
   })
 
+  it('blocks the same path on a different network share host', () => {
+    const shared = 'file://fileserver/apps/switcher/out/renderer/index.html'
+    expect(isInAppNavigation(shared, shared)).toBe(true)
+    expect(isInAppNavigation(shared, 'file://attacker/apps/switcher/out/renderer/index.html')).toBe(false)
+    expect(isInAppNavigation(packaged, 'file://attacker/C:/app/resources/app.asar/out/renderer/index.html')).toBe(false)
+  })
+
   it('allows same-origin navigation on the dev server only', () => {
     const dev = 'http://localhost:5173/'
     expect(isInAppNavigation(dev, 'http://localhost:5173/index.html')).toBe(true)
